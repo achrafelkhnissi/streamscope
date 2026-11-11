@@ -1,7 +1,9 @@
 import type {
+  BodyPart,
   Directive,
   DirectiveKind,
   FileVariable,
+  Header,
   HttpFile,
   HttpRequest,
   Range,
@@ -12,6 +14,11 @@ const separatorPattern = /^#{3,}/;
 const commentPattern = /^\s*(#|\/{2})/;
 const metadataPattern = /^\s*(?:#|\/{2})\s*@([\w-]+)(?:\s+(.*?))?\s*$/d;
 const fileVariablePattern = /^\s*@([^\s=]+)\s*=\s*(.*?)\s*$/d;
+const methodPattern =
+  /^(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS|CONNECT|TRACE|LOCK|UNLOCK|PROPFIND|PROPPATCH|COPY|MOVE|MKCOL|MKCALENDAR|ACL|SEARCH)\s+/i;
+const httpVersionPattern = /\s+(HTTP\/.*)$/i;
+const queryContinuationPattern = /^\s*[&?]/;
+const bodyFilePattern = /^<(?:(@)(\w+)?)?\s+(.+?)\s*$/d;
 
 const directiveKinds: ReadonlySet<string> = new Set<DirectiveKind>([
   'name',
@@ -107,16 +114,173 @@ function parseDirective(text: string, line: number, lines: readonly string[]): D
   ];
 }
 
-function parseRequestLine(lines: readonly string[], line: number): RequestLine {
-  const range = lineSpan(lines, line);
+interface RequestSections {
+  urlLines: number[];
+  headerLines: number[];
+  bodyLines: number[];
+}
+
+interface UrlSegment {
+  line: number;
+  start: number;
+  end: number;
+}
+
+function contentLines(lines: readonly string[], from: number, to: number): number[] {
+  const content: number[] = [];
+  for (let line = from; line <= to; line++) {
+    if (!isComment(lines[line] ?? '')) {
+      content.push(line);
+    }
+  }
+  let end = content.length;
+  while (end > 1 && isBlank(lines[content[end - 1] ?? from] ?? '')) {
+    end--;
+  }
+  return content.slice(0, end);
+}
+
+function splitSections(lines: readonly string[], content: readonly number[]): RequestSections {
+  const sections: RequestSections = { urlLines: [], headerLines: [], bodyLines: [] };
+  let state: 'url' | 'header' | 'body' = 'url';
+  let skipNext = false;
+  for (const [index, line] of content.entries()) {
+    if (skipNext) {
+      skipNext = false;
+      continue;
+    }
+    const nextLine = content[index + 1];
+    const nextText = nextLine === undefined ? undefined : (lines[nextLine] ?? '');
+    switch (state) {
+      case 'url':
+        sections.urlLines.push(line);
+        if (nextText !== undefined && !queryContinuationPattern.test(nextText)) {
+          if (isBlank(nextText)) {
+            skipNext = true;
+            state = 'body';
+          } else {
+            state = 'header';
+          }
+        }
+        break;
+      case 'header':
+        sections.headerLines.push(line);
+        if (nextText !== undefined && isBlank(nextText)) {
+          skipNext = true;
+          state = 'body';
+        }
+        break;
+      case 'body':
+        sections.bodyLines.push(line);
+        break;
+    }
+  }
+  return sections;
+}
+
+function parseRequestLine(lines: readonly string[], urlLines: readonly number[]): RequestLine {
+  const firstLine = urlLines[0] ?? 0;
+  const firstText = lines[firstLine] ?? '';
+  const indent = firstText.length - firstText.trimStart().length;
+  const methodMatch = methodPattern.exec(firstText.trimStart());
+  const method = methodMatch?.[1];
+  const urlStart = indent + (methodMatch?.[0].length ?? 0);
+  const segments: UrlSegment[] = urlLines.map((line, index) => {
+    const text = lines[line] ?? '';
+    const start = index === 0 ? urlStart : text.length - text.trimStart().length;
+    return { line, start, end: Math.max(start, text.trimEnd().length) };
+  });
+  const joined = segments
+    .map((segment) => (lines[segment.line] ?? '').slice(segment.start, segment.end))
+    .join('');
+  const versionMatch = httpVersionPattern.exec(joined);
+  const lastSegment = segments.at(-1);
+  if (versionMatch && lastSegment) {
+    lastSegment.end = Math.max(
+      lastSegment.start,
+      lastSegment.end - (joined.length - versionMatch.index),
+    );
+  }
+  const lastEnd = lastSegment ?? { line: firstLine, end: firstText.trimEnd().length };
   return {
-    method: 'GET',
-    methodRange: undefined,
-    url: (lines[line] ?? '').trim(),
-    urlRanges: [range],
-    httpVersion: undefined,
-    range,
+    method: method ?? 'GET',
+    methodRange: method === undefined ? undefined : span(firstLine, indent, indent + method.length),
+    url: versionMatch ? joined.slice(0, versionMatch.index) : joined,
+    urlRanges: segments.map((segment) => span(segment.line, segment.start, segment.end)),
+    httpVersion: versionMatch?.[1],
+    range: {
+      start: { line: firstLine, character: indent },
+      end: { line: lastEnd.line, character: (lines[lastEnd.line] ?? '').trimEnd().length },
+    },
   };
+}
+
+function parseHeader(lines: readonly string[], line: number): Header {
+  const text = lines[line] ?? '';
+  const indent = text.length - text.trimStart().length;
+  const end = text.trimEnd().length;
+  const colon = text.indexOf(':', indent);
+  if (colon === -1) {
+    return {
+      name: text.trim(),
+      value: '',
+      range: span(line, indent, end),
+      nameRange: span(line, indent, end),
+      valueRange: span(line, end, end),
+    };
+  }
+  const name = text.slice(indent, colon).trim();
+  const afterColon = text.slice(colon + 1);
+  const valueStart = Math.min(end, colon + 1 + afterColon.length - afterColon.trimStart().length);
+  return {
+    name,
+    value: text.slice(valueStart, end),
+    range: span(line, indent, end),
+    nameRange: span(line, indent, indent + name.length),
+    valueRange: span(line, valueStart, end),
+  };
+}
+
+function textPart(lines: readonly string[], partLines: readonly number[]): BodyPart {
+  const first = partLines[0] ?? 0;
+  const last = partLines.at(-1) ?? first;
+  return {
+    kind: 'text',
+    lines: partLines.map((line) => lines[line] ?? ''),
+    range: {
+      start: { line: first, character: 0 },
+      end: { line: last, character: (lines[last] ?? '').length },
+    },
+  };
+}
+
+function parseBody(lines: readonly string[], bodyLines: readonly number[]): BodyPart[] {
+  const parts: BodyPart[] = [];
+  let pending: number[] = [];
+  for (const line of bodyLines) {
+    const match = bodyFilePattern.exec(lines[line] ?? '');
+    const pathIndices = match?.indices?.[3];
+    if (!match || !pathIndices) {
+      pending.push(line);
+      continue;
+    }
+    if (pending.length > 0) {
+      parts.push(textPart(lines, pending));
+      pending = [];
+    }
+    parts.push({
+      kind: 'file',
+      path: match[3] ?? '',
+      processVariables: match[1] === '@',
+      encoding: match[2],
+      range: lineSpan(lines, line),
+      pathRange: span(line, pathIndices[0], pathIndices[1]),
+    });
+  }
+  if (pending.length > 0) {
+    parts.push(textPart(lines, pending));
+  }
+  return parts;
 }
 
 function separatorTitle(text: string): string | undefined {
@@ -143,6 +307,7 @@ function parseBlock(lines: readonly string[], block: Block): HttpRequest[] {
     return [];
   }
   const startLine = block.separatorLine ?? block.firstLine;
+  const sections = splitSections(lines, contentLines(lines, requestLineIndex, block.lastLine));
   return [
     {
       range: {
@@ -155,9 +320,9 @@ function parseBlock(lines: readonly string[], block: Block): HttpRequest[] {
           : separatorTitle(lines[block.separatorLine] ?? ''),
       name: directives.find((directive) => directive.kind === 'name')?.argument,
       directives,
-      requestLine: parseRequestLine(lines, requestLineIndex),
-      headers: [],
-      body: [],
+      requestLine: parseRequestLine(lines, sections.urlLines),
+      headers: sections.headerLines.map((line) => parseHeader(lines, line)),
+      body: parseBody(lines, sections.bodyLines),
       variableReferences: [],
     },
   ];
