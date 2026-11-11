@@ -19,8 +19,8 @@
       "match": "^(#{3,})(.*)$",
       "name": "meta.separator.http",
       "captures": {
-        "1": { "name": "punctuation.definition.separator.http" },
-        "2": { "name": "entity.name.section.http" }
+        "1": { "name": "markup.heading.http punctuation.definition.heading.http" },
+        "2": { "name": "markup.heading.http entity.name.section.http" }
       }
     },
     "directive": {
