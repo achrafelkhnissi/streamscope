@@ -3,9 +3,9 @@
   "compilerOptions": {
     "types": ["node", "mocha"],
     "noEmit": false,
-    "rootDir": ".",
-    "outDir": "../../out/integration",
+    "rootDir": "..",
+    "outDir": "../../out",
     "sourceMap": true
   },
-  "include": ["."]
+  "include": [".", "../support"]
 }
