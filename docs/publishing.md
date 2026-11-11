@@ -14,7 +14,7 @@ Status: draft for approval, 2026-11-11. Nothing is published, pushed or submitte
 | Repository            | [`achrafelkhnissi/streamscope`](https://github.com/achrafelkhnissi/streamscope)      | Public, empty                                                                                                                                      |
 | License               | MIT                                                                                  | Added in milestone M0                                                                                                                              |
 
-**Pending clean-up:** the Open VSX administrator was given temporary Reader access to the Marketplace publisher for the namespace claim. Remove that member (shown as "Brian King") from the publisher's **Members** tab once issue #15561 is closed.
+**Pending clean-up:** the Open VSX administrator was given temporary Reader access to the Marketplace publisher for the namespace claim. Remove that member from the publisher's **Members** tab once issue #15561 is closed.
 
 ## Manifest for the Marketplace
 
