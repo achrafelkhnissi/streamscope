@@ -128,15 +128,27 @@ function hostname(url: URL): string {
   return url.hostname.startsWith('[') ? url.hostname.slice(1, -1) : url.hostname;
 }
 
-function requestOptions(request: OutgoingRequest, headers: Headers): https.RequestOptions {
+function requestOptions(
+  request: OutgoingRequest,
+  headers: Headers,
+  options: TransportOptions,
+): https.RequestOptions {
   const { url } = request;
-  return {
+  const common: https.RequestOptions = {
     protocol: url.protocol,
     hostname: hostname(url),
     port: url.port === '' ? undefined : Number(url.port),
     path: `${url.pathname}${url.search}`,
     method: request.method.toUpperCase(),
     headers: nodeHeaders(headers),
+  };
+  if (url.protocol !== 'https:') {
+    return common;
+  }
+  return {
+    ...common,
+    rejectUnauthorized: options.rejectUnauthorized,
+    ...(options.ca === undefined ? {} : { ca: [...options.ca] }),
   };
 }
 
@@ -322,7 +334,7 @@ function exchange(context: ExchangeContext): Promise<ExchangeResult> {
     stop.addEventListener('abort', onStop, { once: true });
 
     try {
-      outgoing = (secure ? https : http).request(requestOptions(request, headers));
+      outgoing = (secure ? https : http).request(requestOptions(request, headers, options));
     } catch (error) {
       settle({ kind: 'failed', failure: classifyError(error, 'connect') });
       return;
