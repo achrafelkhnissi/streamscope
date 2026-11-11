@@ -2,6 +2,8 @@ import { open, type FileHandle } from 'node:fs/promises';
 import * as http from 'node:http';
 import * as https from 'node:https';
 import type { Socket } from 'node:net';
+import type { Transform } from 'node:stream';
+import { createDecoder } from './decompress';
 import { classifyError } from './failures';
 import type {
   BodyPart,
@@ -253,6 +255,7 @@ function exchange(context: ExchangeContext): Promise<ExchangeResult> {
     let headersTimer: NodeJS.Timeout | undefined;
     let response: http.IncomingMessage | undefined;
     let outgoing: http.ClientRequest | undefined;
+    let decoder: Transform | undefined;
 
     const timing = (): PartialTiming => {
       const result: PartialTiming = {};
@@ -280,6 +283,7 @@ function exchange(context: ExchangeContext): Promise<ExchangeResult> {
       clearTimeout(headersTimer);
       stop.removeEventListener('abort', onStop);
       if (terminal.kind !== 'completed') {
+        decoder?.destroy();
         response?.destroy();
         outgoing?.destroy();
       }
@@ -362,13 +366,46 @@ function exchange(context: ExchangeContext): Promise<ExchangeResult> {
         headers: headerPairs(incoming.rawHeaders),
       };
       sink.onHead(head, sent);
-      incoming.on('data', (chunk: Buffer) => {
-        counters.wireBytes += chunk.length;
+      const deliver = (chunk: Buffer): void => {
         counters.decodedBytes += chunk.length;
         sink.onData(chunk);
+      };
+      let decoding = false;
+      incoming.on('data', (chunk: Buffer) => {
+        counters.wireBytes += chunk.length;
+        if (!decoding) {
+          decoding = true;
+          decoder = createDecoder(
+            head.headers
+              .filter(([name]) => name.toLowerCase() === 'content-encoding')
+              .map(([, value]) => value)
+              .join(', '),
+          );
+          decoder?.on('data', deliver);
+          decoder?.on('end', () => {
+            settle({ kind: 'completed' });
+          });
+          decoder?.on('error', (error) => {
+            settle(
+              failed(
+                'decompression',
+                `The response body could not be decompressed: ${error.message}.`,
+              ),
+            );
+          });
+        }
+        if (decoder) {
+          decoder.write(chunk);
+        } else {
+          deliver(chunk);
+        }
       });
       incoming.on('end', () => {
-        settle({ kind: 'completed' });
+        if (decoder) {
+          decoder.end();
+        } else {
+          settle({ kind: 'completed' });
+        }
       });
       incoming.on('error', (error) => {
         settle({ kind: 'failed', failure: classifyError(error, 'body') });
