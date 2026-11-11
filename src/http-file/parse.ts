@@ -16,13 +16,13 @@ import { scanReferences } from './references';
 
 const separatorPattern = /^#{3,}/;
 const commentPattern = /^\s*(#|\/{2})/;
-const metadataPattern = /^\s*(?:#|\/{2})\s*@([\w-]+)(?:\s+(.*?))?\s*$/d;
-const fileVariablePattern = /^\s*@([^\s=]+)\s*=\s*(.*?)\s*$/d;
+const metadataPattern = /^\s*(?:#|\/{2})\s*@([\w-]+)(?:\s+(\S(?:.*\S)?))?\s*$/d;
+const fileVariablePattern = /^\s*@([^\s=]+)\s*=\s*(\S(?:.*\S)?)?\s*$/d;
 const methodPattern =
   /^(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS|CONNECT|TRACE|LOCK|UNLOCK|PROPFIND|PROPPATCH|COPY|MOVE|MKCOL|MKCALENDAR|ACL|SEARCH)\s+/i;
-const httpVersionPattern = /\s+(HTTP\/.*)$/i;
+const httpVersionPattern = /(?<!\s)\s+(HTTP\/.*)$/i;
 const queryContinuationPattern = /^\s*[&?]/;
-const bodyFilePattern = /^<(?:(@)(\w+)?)?\s+(.+?)\s*$/d;
+const bodyFilePattern = /^<(?:(@)(\w+)?)?\s+(\S(?:.*\S)?)\s*$/d;
 const responseStatusPattern = /^\s*HTTP\/[\d.]+/;
 
 const directiveKinds: ReadonlySet<string> = new Set<DirectiveKind>([
@@ -84,17 +84,18 @@ function splitBlocks(lines: readonly string[]): Block[] {
 function parseFileVariable(text: string, line: number, lines: readonly string[]): FileVariable[] {
   const match = fileVariablePattern.exec(text);
   const nameIndices = match?.indices?.[1];
-  const valueIndices = match?.indices?.[2];
-  if (!match || !nameIndices || !valueIndices) {
+  if (!match || !nameIndices) {
     return [];
   }
+  const end = text.trimEnd().length;
+  const [valueStart, valueEnd] = match.indices?.[2] ?? [end, end];
   return [
     {
       name: match[1] ?? '',
       value: match[2] ?? '',
       range: lineSpan(lines, line),
       nameRange: span(line, nameIndices[0], nameIndices[1]),
-      valueRange: span(line, valueIndices[0], valueIndices[1]),
+      valueRange: span(line, valueStart, valueEnd),
     },
   ];
 }
