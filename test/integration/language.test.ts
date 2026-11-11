@@ -70,6 +70,21 @@ describe('http language features', () => {
     ]);
   });
 
+  it('never shows file variable values in the outline', async () => {
+    const document = await open(
+      'secrets.http',
+      ['@token = synthetic-secret-value', 'GET https://api.example.test/me'].join('\n'),
+    );
+    const symbols = await vscode.commands.executeCommand<vscode.DocumentSymbol[]>(
+      'vscode.executeDocumentSymbolProvider',
+      document.uri,
+    );
+    const token = symbols.find((symbol) => symbol.name === 'token');
+
+    assert.ok(token);
+    assert.equal(token.detail, '');
+  });
+
   it('folds each request', async () => {
     const document = await open('folding.http', sample);
     const ranges = await vscode.commands.executeCommand<vscode.FoldingRange[]>(

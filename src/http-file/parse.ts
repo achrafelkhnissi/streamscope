@@ -23,6 +23,7 @@ const methodPattern =
 const httpVersionPattern = /\s+(HTTP\/.*)$/i;
 const queryContinuationPattern = /^\s*[&?]/;
 const bodyFilePattern = /^<(?:(@)(\w+)?)?\s+(.+?)\s*$/d;
+const responseStatusPattern = /^\s*HTTP\/[\d.]+/;
 
 const directiveKinds: ReadonlySet<string> = new Set<DirectiveKind>([
   'name',
@@ -356,7 +357,9 @@ function parseBlock(
       directives.push(...parseDirective(text, line, lines));
       continue;
     }
-    requestLineIndex = line;
+    if (!responseStatusPattern.test(text)) {
+      requestLineIndex = line;
+    }
     break;
   }
   diagnostics.push(...directives.flatMap(directiveDiagnostics));
@@ -375,7 +378,7 @@ function parseBlock(
   const startLine = block.separatorLine ?? block.firstLine;
   const sections = splitSections(lines, contentLines(lines, requestLineIndex, block.lastLine));
   diagnostics.push(...layoutDiagnostics(lines, requestLineIndex, block, sections.headerLines));
-  const name = directives.find((directive) => directive.kind === 'name')?.argument;
+  const name = directives.findLast((directive) => directive.kind === 'name')?.argument;
   const body = parseBody(lines, sections.bodyLines);
   return [
     {
@@ -401,7 +404,7 @@ function duplicateNameDiagnostics(requests: readonly HttpRequest[]): ParseDiagno
   const seen = new Set<string>();
   const diagnostics: ParseDiagnostic[] = [];
   for (const request of requests) {
-    const nameDirective = request.directives.find((directive) => directive.kind === 'name');
+    const nameDirective = request.directives.findLast((directive) => directive.kind === 'name');
     if (request.name === undefined || !nameDirective) {
       continue;
     }

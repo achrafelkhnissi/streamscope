@@ -24,7 +24,7 @@ function documentSymbols(file: HttpFile): vscode.DocumentSymbol[] {
     (variable) =>
       new vscode.DocumentSymbol(
         variable.name,
-        variable.value,
+        '',
         vscode.SymbolKind.Variable,
         toRange(variable.range),
         toRange(variable.nameRange),

@@ -35,7 +35,6 @@ jobs:
         with:
           path: .vscode-test/vscode-*
           key: vscode-test-${{ runner.os }}-${{ hashFiles('.vscode-test.mjs') }}-${{ steps.week.outputs.value }}
-          restore-keys: vscode-test-${{ runner.os }}-${{ hashFiles('.vscode-test.mjs') }}-
       - run: npm ci
       - run: npm run check
       - name: Integration tests
@@ -64,7 +63,6 @@ jobs:
         with:
           path: .vscode-test/vscode-*
           key: vscode-test-${{ runner.os }}-${{ hashFiles('.vscode-test.mjs') }}-${{ steps.week.outputs.value }}
-          restore-keys: vscode-test-${{ runner.os }}-${{ hashFiles('.vscode-test.mjs') }}-
       - run: npm ci
       - run: npm run verify:vsix
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9

@@ -1,6 +1,14 @@
 {
   "name": "HTTP (Streamscope)",
   "scopeName": "source.http.streamscope",
+  "injections": {
+    "L:meta.embedded.block.json": {
+      "patterns": [
+        { "match": "^\\s*(#|//).*$", "name": "comment.line.http" },
+        { "include": "#reference" }
+      ]
+    }
+  },
   "patterns": [
     { "include": "#separator" },
     { "include": "#directive" },
@@ -84,7 +92,7 @@
     },
     "jsonBody": {
       "begin": "^\\s*(?=\\[|\\{(?!\\{))",
-      "end": "^(?=#{3,})",
+      "while": "^(?!#{3,})",
       "contentName": "meta.embedded.block.json",
       "patterns": [{ "include": "#reference" }, { "include": "source.json" }]
     },

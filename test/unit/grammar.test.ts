@@ -17,6 +17,7 @@ interface Rule {
 interface Grammar extends Rule {
   scopeName: string;
   repository?: Record<string, Rule>;
+  injections?: Record<string, Rule>;
 }
 
 const grammar = JSON.parse(
@@ -33,7 +34,11 @@ function allRules(rule: Rule): Rule[] {
   return [rule, ...nested.flatMap(allRules)];
 }
 
-const rules = [grammar, ...Object.values(grammar.repository ?? {})].flatMap(allRules);
+const rules = [
+  grammar,
+  ...Object.values(grammar.repository ?? {}),
+  ...Object.values(grammar.injections ?? {}),
+].flatMap(allRules);
 
 describe('http grammar', () => {
   it('declares the Streamscope scope', () => {
@@ -51,6 +56,22 @@ describe('http grammar', () => {
     for (const pattern of patterns) {
       expect(() => new RegExp(pattern), pattern).not.toThrow();
     }
+  });
+
+  it('keeps an unbalanced JSON body from spilling into the next request', () => {
+    const jsonBody = grammar.repository?.jsonBody;
+
+    expect(jsonBody?.while).toBe('^(?!#{3,})');
+    expect(jsonBody?.end).toBeUndefined();
+  });
+
+  it('highlights references and comment lines inside JSON bodies', () => {
+    const injection = grammar.injections?.['L:meta.embedded.block.json'];
+
+    expect(injection?.patterns).toEqual([
+      { match: '^\\s*(#|//).*$', name: 'comment.line.http' },
+      { include: '#reference' },
+    ]);
   });
 
   it('covers each line kind', () => {
