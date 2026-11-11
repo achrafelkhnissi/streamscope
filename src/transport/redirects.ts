@@ -15,6 +15,8 @@ const originHeaders: ReadonlySet<string> = new Set([
   'authorization',
   'proxy-authorization',
   'cookie',
+  'x-api-key',
+  'api-key',
   'host',
 ]);
 

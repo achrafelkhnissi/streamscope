@@ -13,6 +13,8 @@ function request(overrides: Partial<OutgoingRequest> = {}): OutgoingRequest {
       ['Proxy-Authorization', 'Basic synthetic'],
       ['Cookie', 'session=synthetic'],
       ['Host', 'api.example.test'],
+      ['X-Api-Key', 'synthetic-key'],
+      ['api-key', 'synthetic-key'],
       ['Content-Type', 'application/json'],
       ['Content-Length', '2'],
       ['Content-Encoding', 'identity'],
@@ -54,6 +56,8 @@ describe('redirectTarget', () => {
         'Proxy-Authorization',
         'Cookie',
         'Host',
+        'X-Api-Key',
+        'api-key',
         'X-Trace',
       ]);
     }
@@ -81,7 +85,7 @@ describe('redirectTarget', () => {
     expect(target(307, '//other.example.test/x').url.href).toBe('http://other.example.test/x');
   });
 
-  it('drops Authorization, Proxy-Authorization, Cookie and a user Host across origins', () => {
+  it('drops credentials, API keys and a user Host across origins', () => {
     for (const location of [
       'https://api.example.test/start',
       'http://api.example.test:8080/start',
