@@ -86,7 +86,7 @@ describe('extension manifest', () => {
         language: 'http',
         scopeName: 'source.http.streamscope',
         path: './syntaxes/http.tmLanguage.json',
-        embeddedLanguages: { 'source.json': 'json' },
+        embeddedLanguages: { 'meta.embedded.block.json': 'json' },
       },
     ]);
   });

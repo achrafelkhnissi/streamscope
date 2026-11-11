@@ -133,6 +133,16 @@ describe('parseHttpFile request content', () => {
     expect(body.map((part) => part.kind)).toEqual(['text', 'file', 'text']);
   });
 
+  it('reports references inside body file paths', () => {
+    const { variableReferences } = firstRequest(
+      'POST https://api.example.test/upload',
+      '',
+      '< ./{{dir}}/payload.json',
+    );
+
+    expect(variableReferences).toEqual([{ expression: 'dir', range: at(2, 4, 11) }]);
+  });
+
   it('has no body without a blank line after the headers', () => {
     const { headers, body } = firstRequest(
       'GET https://api.example.test/me',

@@ -1,12 +1,9 @@
-import type { ParseDiagnostic, Range, VariableReference } from './model';
+import type { ParseDiagnostic, VariableReference } from './model';
+import { span } from './ranges';
 
 export interface ReferenceScan {
   references: VariableReference[];
   diagnostics: ParseDiagnostic[];
-}
-
-function span(line: number, start: number, end: number): Range {
-  return { start: { line, character: start }, end: { line, character: end } };
 }
 
 export function scanReferences(text: string, line: number): ReferenceScan {

@@ -3,7 +3,16 @@ import type { HttpFile, HttpRequest, ParseDiagnostic, Range } from '../../http-f
 import { ParseCache } from './parse-cache';
 
 const languageId = 'http';
-const selector: vscode.DocumentSelector = { language: languageId };
+const supportedSchemes: ReadonlySet<string> = new Set(['file', 'untitled']);
+
+export const httpSelector: vscode.DocumentFilter[] = [
+  { language: languageId, scheme: 'file' },
+  { language: languageId, scheme: 'untitled' },
+];
+
+function isSupported(document: vscode.TextDocument): boolean {
+  return document.languageId === languageId && supportedSchemes.has(document.uri.scheme);
+}
 const diagnosticDelayMs = 200;
 
 function toRange(range: Range): vscode.Range {
@@ -62,7 +71,7 @@ export function registerLanguageFeatures(context: vscode.ExtensionContext): void
   const pending = new Map<string, ReturnType<typeof setTimeout>>();
 
   const refresh = (document: vscode.TextDocument): void => {
-    if (document.languageId === languageId) {
+    if (isSupported(document)) {
       diagnostics.set(document.uri, cache.get(document).diagnostics.map(toDiagnostic));
     }
   };
@@ -74,7 +83,7 @@ export function registerLanguageFeatures(context: vscode.ExtensionContext): void
   };
 
   const scheduleRefresh = (document: vscode.TextDocument): void => {
-    if (document.languageId !== languageId) {
+    if (!isSupported(document)) {
       return;
     }
     cancelPending(document.uri);
@@ -89,10 +98,10 @@ export function registerLanguageFeatures(context: vscode.ExtensionContext): void
 
   context.subscriptions.push(
     diagnostics,
-    vscode.languages.registerDocumentSymbolProvider(selector, {
+    vscode.languages.registerDocumentSymbolProvider(httpSelector, {
       provideDocumentSymbols: (document) => documentSymbols(cache.get(document)),
     }),
-    vscode.languages.registerFoldingRangeProvider(selector, {
+    vscode.languages.registerFoldingRangeProvider(httpSelector, {
       provideFoldingRanges: (document) =>
         cache
           .get(document)
@@ -102,7 +111,9 @@ export function registerLanguageFeatures(context: vscode.ExtensionContext): void
     }),
     vscode.workspace.onDidOpenTextDocument(refresh),
     vscode.workspace.onDidChangeTextDocument((event) => {
-      scheduleRefresh(event.document);
+      if (event.contentChanges.length > 0) {
+        scheduleRefresh(event.document);
+      }
     }),
     vscode.workspace.onDidCloseTextDocument((document) => {
       cancelPending(document.uri);

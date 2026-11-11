@@ -76,7 +76,7 @@
         "scopeName": "source.http.streamscope",
         "path": "./syntaxes/http.tmLanguage.json",
         "embeddedLanguages": {
-          "source.json": "json"
+          "meta.embedded.block.json": "json"
         }
       }
     ]
