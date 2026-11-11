@@ -92,6 +92,21 @@ describe('renderHeadersDocument', () => {
     );
   });
 
+  it('renders a run that failed after its head with the failure first', () => {
+    const rendered = renderHeadersDocument(
+      snapshot({
+        status: 'failed',
+        failure: { kind: 'premature-close', message: 'The connection closed early.' },
+      }),
+    );
+
+    expect(
+      rendered.startsWith(
+        '### Failed\nThe connection closed early.\n\nHTTP/1.1 200 OK\nContent-Type: application/json\n',
+      ),
+    ).toBe(true);
+  });
+
   it('renders a run cancelled after its head', () => {
     const rendered = renderHeadersDocument(snapshot({ status: 'cancelled' }));
 

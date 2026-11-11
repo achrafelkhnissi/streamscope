@@ -20,30 +20,38 @@ function timingLine(timing: Timing): string {
     .join(' · ');
 }
 
-function opening(run: RunSnapshot): string[] {
-  if (run.head) {
-    const { httpVersion, status, statusText, headers } = run.head;
-    return [`HTTP/${httpVersion} ${String(status)} ${statusText}`, ...headerLines(headers)];
-  }
+function opening(run: RunSnapshot): string[][] {
+  const status = run.head
+    ? [
+        [
+          `HTTP/${run.head.httpVersion} ${String(run.head.status)} ${run.head.statusText}`,
+          ...headerLines(run.head.headers),
+        ],
+      ]
+    : [];
   switch (run.status) {
     case 'failed':
-      return ['### Failed', run.failure?.message ?? ''];
+      return [['### Failed', run.failure?.message ?? ''], ...status];
     case 'blocked':
       return [
-        '### Not sent',
-        ...run.problems.map(
-          (problem) => `${problem.message} (line ${String(problem.range.start.line + 1)})`,
-        ),
+        [
+          '### Not sent',
+          ...run.problems.map(
+            (problem) => `${problem.message} (line ${String(problem.range.start.line + 1)})`,
+          ),
+        ],
       ];
     case 'cancelled':
-      return ['### Cancelled', `Cancelled after ${formatDuration(run.elapsedMs)}.`];
+      return status.length > 0
+        ? status
+        : [['### Cancelled', `Cancelled after ${formatDuration(run.elapsedMs)}.`]];
     default:
-      return ['### Sending'];
+      return status.length > 0 ? status : [['### Sending']];
   }
 }
 
 export function renderHeadersDocument(run: RunSnapshot): string {
-  const sections: string[][] = [opening(run)];
+  const sections: string[][] = opening(run);
   if (run.sent) {
     sections.push([
       '### Request',

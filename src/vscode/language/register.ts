@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import type { HttpFile, HttpRequest, ParseDiagnostic, Range } from '../../http-file/model';
-import { ParseCache } from './parse-cache';
+import type { ParseCache } from './parse-cache';
 
 const languageId = 'http';
 const supportedSchemes: ReadonlySet<string> = new Set(['file', 'untitled']);
@@ -65,8 +65,10 @@ function toDiagnostic(problem: ParseDiagnostic): vscode.Diagnostic {
   return diagnostic;
 }
 
-export function registerLanguageFeatures(context: vscode.ExtensionContext): void {
-  const cache = new ParseCache();
+export function registerLanguageFeatures(
+  context: vscode.ExtensionContext,
+  cache: ParseCache,
+): void {
   const diagnostics = vscode.languages.createDiagnosticCollection('streamscope');
   const pending = new Map<string, ReturnType<typeof setTimeout>>();
 

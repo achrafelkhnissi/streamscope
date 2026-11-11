@@ -53,11 +53,132 @@
   "contributes": {
     "commands": [
       {
+        "command": "streamscope.sendRequest",
+        "title": "Send Request",
+        "category": "Streamscope",
+        "icon": "$(play)"
+      },
+      {
+        "command": "streamscope.stopRequest",
+        "title": "Stop Request",
+        "category": "Streamscope",
+        "icon": "$(debug-stop)"
+      },
+      {
+        "command": "streamscope.saveResponse",
+        "title": "Save Response",
+        "category": "Streamscope",
+        "icon": "$(save)"
+      },
+      {
+        "command": "streamscope.showResponseHeaders",
+        "title": "Show Response Headers",
+        "category": "Streamscope",
+        "icon": "$(list-flat)"
+      },
+      {
+        "command": "streamscope.showResponseBody",
+        "title": "Show Response Body",
+        "category": "Streamscope",
+        "icon": "$(file-code)"
+      },
+      {
         "command": "streamscope.showLog",
         "title": "Show Log",
         "category": "Streamscope"
       }
     ],
+    "keybindings": [
+      {
+        "command": "streamscope.sendRequest",
+        "key": "ctrl+alt+enter",
+        "mac": "cmd+alt+enter",
+        "when": "editorTextFocus && editorLangId == http && resourceScheme != streamscope-response"
+      }
+    ],
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "streamscope.sendRequest",
+          "when": "editorLangId == http && resourceScheme != streamscope-response"
+        },
+        {
+          "command": "streamscope.stopRequest",
+          "when": "editorLangId == http || resourceScheme == streamscope-response"
+        },
+        {
+          "command": "streamscope.saveResponse",
+          "when": "editorLangId == http || resourceScheme == streamscope-response"
+        },
+        {
+          "command": "streamscope.showResponseHeaders",
+          "when": "editorLangId == http || resourceScheme == streamscope-response"
+        },
+        {
+          "command": "streamscope.showResponseBody",
+          "when": "editorLangId == http || resourceScheme == streamscope-response"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "streamscope.showResponseHeaders",
+          "when": "resourceScheme == streamscope-response && !(resourceFilename =~ /\\.headers\\.http$/)",
+          "group": "navigation@1"
+        },
+        {
+          "command": "streamscope.showResponseBody",
+          "when": "resourceScheme == streamscope-response && resourceFilename =~ /\\.headers\\.http$/",
+          "group": "navigation@1"
+        },
+        {
+          "command": "streamscope.saveResponse",
+          "when": "resourceScheme == streamscope-response",
+          "group": "navigation@2"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Streamscope",
+      "properties": {
+        "streamscope.request.connectTimeout": {
+          "type": "string",
+          "default": "30s",
+          "pattern": "^\\d+(ms|s|m)$",
+          "patternErrorMessage": "Use a duration such as 500ms, 30s or 5m.",
+          "markdownDescription": "How long to wait for the connection, including the TLS handshake, before giving up. A duration such as `500ms`, `30s` or `5m`."
+        },
+        "streamscope.request.headersTimeout": {
+          "type": "string",
+          "default": "300s",
+          "pattern": "^\\d+(ms|s|m)$",
+          "patternErrorMessage": "Use a duration such as 500ms, 30s or 5m.",
+          "markdownDescription": "How long to wait for the response headers once connected. A duration such as `500ms`, `30s` or `5m`. Use `# @timeout` on a request to limit its total time."
+        },
+        "streamscope.request.followRedirects": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Follow redirects. Use `# @no-redirect` to turn this off for one request."
+        },
+        "streamscope.request.maxRedirects": {
+          "type": "integer",
+          "default": 10,
+          "minimum": 0,
+          "maximum": 50,
+          "markdownDescription": "The most redirects to follow for one request."
+        },
+        "streamscope.request.caFile": {
+          "type": "string",
+          "default": "",
+          "scope": "resource",
+          "markdownDescription": "A PEM file of extra certificate authorities to trust, added to the default and system ones. An absolute path, or a path relative to the workspace folder."
+        },
+        "streamscope.codeLens.enabled": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Show Send Request and the last outcome above each request."
+        }
+      }
+    },
     "languages": [
       {
         "id": "http",
