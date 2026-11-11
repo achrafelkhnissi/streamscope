@@ -1,3 +1,4 @@
+import { directiveDiagnostics, requestNamePattern } from './directives';
 import type {
   BodyPart,
   Directive,
@@ -6,9 +7,12 @@ import type {
   Header,
   HttpFile,
   HttpRequest,
+  ParseDiagnostic,
   Range,
   RequestLine,
+  VariableReference,
 } from './model';
+import { scanReferences } from './references';
 
 const separatorPattern = /^#{3,}/;
 const commentPattern = /^\s*(#|\/{2})/;
@@ -288,7 +292,59 @@ function separatorTitle(text: string): string | undefined {
   return title === '' ? undefined : title;
 }
 
-function parseBlock(lines: readonly string[], block: Block): HttpRequest[] {
+function referencesIn(
+  lines: readonly string[],
+  lineNumbers: readonly number[],
+): VariableReference[] {
+  return lineNumbers.flatMap((line) => scanReferences(lines[line] ?? '', line).references);
+}
+
+function requestReferences(
+  lines: readonly string[],
+  sections: RequestSections,
+): VariableReference[] {
+  const bodyTextLines = sections.bodyLines.filter(
+    (line) => !bodyFilePattern.test(lines[line] ?? ''),
+  );
+  return referencesIn(lines, [...sections.urlLines, ...sections.headerLines, ...bodyTextLines]);
+}
+
+function layoutDiagnostics(
+  lines: readonly string[],
+  requestLineIndex: number,
+  block: Block,
+  headerLines: readonly number[],
+): ParseDiagnostic[] {
+  const diagnostics: ParseDiagnostic[] = [];
+  for (let line = requestLineIndex + 1; line <= block.lastLine; line++) {
+    const text = lines[line] ?? '';
+    if (isComment(text) && parseDirective(text, line, lines).length > 0) {
+      diagnostics.push({
+        code: 'misplaced-directive',
+        message: 'Directives must come before the request line; this line is treated as a comment.',
+        severity: 'warning',
+        range: lineSpan(lines, line),
+      });
+    }
+  }
+  for (const line of headerLines) {
+    if (!(lines[line] ?? '').includes(':')) {
+      diagnostics.push({
+        code: 'header-without-colon',
+        message: 'Expected "Name: value"; this header is sent with an empty value.',
+        severity: 'warning',
+        range: lineSpan(lines, line),
+      });
+    }
+  }
+  return diagnostics;
+}
+
+function parseBlock(
+  lines: readonly string[],
+  block: Block,
+  diagnostics: ParseDiagnostic[],
+): HttpRequest[] {
   const directives: Directive[] = [];
   let requestLineIndex: number | undefined;
   for (let line = block.firstLine; line <= block.lastLine; line++) {
@@ -303,11 +359,24 @@ function parseBlock(lines: readonly string[], block: Block): HttpRequest[] {
     requestLineIndex = line;
     break;
   }
+  diagnostics.push(...directives.flatMap(directiveDiagnostics));
+  const firstDirective = directives[0];
   if (requestLineIndex === undefined) {
+    if (firstDirective) {
+      diagnostics.push({
+        code: 'directives-without-request',
+        message: 'These directives have no request line below them.',
+        severity: 'warning',
+        range: firstDirective.range,
+      });
+    }
     return [];
   }
   const startLine = block.separatorLine ?? block.firstLine;
   const sections = splitSections(lines, contentLines(lines, requestLineIndex, block.lastLine));
+  diagnostics.push(...layoutDiagnostics(lines, requestLineIndex, block, sections.headerLines));
+  const name = directives.find((directive) => directive.kind === 'name')?.argument;
+  const body = parseBody(lines, sections.bodyLines);
   return [
     {
       range: {
@@ -318,21 +387,54 @@ function parseBlock(lines: readonly string[], block: Block): HttpRequest[] {
         block.separatorLine === undefined
           ? undefined
           : separatorTitle(lines[block.separatorLine] ?? ''),
-      name: directives.find((directive) => directive.kind === 'name')?.argument,
+      name: name !== undefined && requestNamePattern.test(name) ? name : undefined,
       directives,
       requestLine: parseRequestLine(lines, sections.urlLines),
       headers: sections.headerLines.map((line) => parseHeader(lines, line)),
-      body: parseBody(lines, sections.bodyLines),
-      variableReferences: [],
+      body,
+      variableReferences: requestReferences(lines, sections),
     },
   ];
 }
 
+function duplicateNameDiagnostics(requests: readonly HttpRequest[]): ParseDiagnostic[] {
+  const seen = new Set<string>();
+  const diagnostics: ParseDiagnostic[] = [];
+  for (const request of requests) {
+    const nameDirective = request.directives.find((directive) => directive.kind === 'name');
+    if (request.name === undefined || !nameDirective) {
+      continue;
+    }
+    if (seen.has(request.name)) {
+      diagnostics.push({
+        code: 'duplicate-name',
+        message: `Another request is already named "${request.name}".`,
+        severity: 'error',
+        range: nameDirective.argumentRange,
+      });
+    }
+    seen.add(request.name);
+  }
+  return diagnostics;
+}
+
+function referenceDiagnostics(lines: readonly string[]): ParseDiagnostic[] {
+  return lines.flatMap((text, line) =>
+    isComment(text) ? [] : scanReferences(text, line).diagnostics,
+  );
+}
+
 export function parseHttpFile(text: string): HttpFile {
   const lines = text.split(/\r?\n/);
+  const diagnostics: ParseDiagnostic[] = [];
+  const requests = splitBlocks(lines).flatMap((block) => parseBlock(lines, block, diagnostics));
   return {
-    requests: splitBlocks(lines).flatMap((block) => parseBlock(lines, block)),
+    requests,
     fileVariables: lines.flatMap((line, index) => parseFileVariable(line, index, lines)),
-    diagnostics: [],
+    diagnostics: [
+      ...referenceDiagnostics(lines),
+      ...diagnostics,
+      ...duplicateNameDiagnostics(requests),
+    ],
   };
 }
