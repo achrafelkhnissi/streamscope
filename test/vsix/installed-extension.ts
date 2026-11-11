@@ -1,5 +1,5 @@
 import * as assert from 'node:assert/strict';
-import { realpathSync } from 'node:fs';
+import { existsSync, realpathSync } from 'node:fs';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 
@@ -21,6 +21,10 @@ export async function run(): Promise<void> {
     installedFrom.startsWith(extensionsDir + path.sep),
     `${extensionId} was loaded from ${installedFrom}, not from ${extensionsDir}`,
   );
+
+  for (const file of ['syntaxes/http.tmLanguage.json', 'language-configuration.json']) {
+    assert.ok(existsSync(path.join(installedFrom, file)), `${file} is missing from the package`);
+  }
 
   await extension.activate();
   assert.equal(extension.isActive, true);

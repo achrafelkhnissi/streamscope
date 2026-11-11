@@ -1,0 +1,119 @@
+{
+  "name": "HTTP (Streamscope)",
+  "scopeName": "source.http.streamscope",
+  "patterns": [
+    { "include": "#separator" },
+    { "include": "#directive" },
+    { "include": "#comment" },
+    { "include": "#fileVariable" },
+    { "include": "#requestLine" },
+    { "include": "#bareUrl" },
+    { "include": "#queryContinuation" },
+    { "include": "#jsonBody" },
+    { "include": "#bodyFile" },
+    { "include": "#header" },
+    { "include": "#reference" }
+  ],
+  "repository": {
+    "separator": {
+      "match": "^(#{3,})(.*)$",
+      "name": "meta.separator.http",
+      "captures": {
+        "1": { "name": "punctuation.definition.separator.http" },
+        "2": { "name": "entity.name.section.http" }
+      }
+    },
+    "directive": {
+      "match": "^\\s*(#|//)\\s*(@)(name|capture|expect|stream|timeout|until|insecure|no-redirect|no-cookie-jar|note|prompt)\\b(.*)$",
+      "name": "meta.directive.http",
+      "captures": {
+        "1": { "name": "punctuation.definition.comment.http" },
+        "2": { "name": "keyword.other.directive.http" },
+        "3": { "name": "keyword.other.directive.http" },
+        "4": {
+          "name": "string.unquoted.argument.http",
+          "patterns": [{ "include": "#reference" }]
+        }
+      }
+    },
+    "comment": {
+      "match": "^\\s*(#|//).*$",
+      "name": "comment.line.http"
+    },
+    "fileVariable": {
+      "match": "^\\s*(@)([^\\s=]+)\\s*(=)\\s*(.*)$",
+      "captures": {
+        "1": { "name": "punctuation.definition.variable.http" },
+        "2": { "name": "variable.other.definition.http" },
+        "3": { "name": "keyword.operator.assignment.http" },
+        "4": {
+          "name": "string.unquoted.value.http",
+          "patterns": [{ "include": "#reference" }]
+        }
+      }
+    },
+    "requestLine": {
+      "match": "^\\s*((?i:GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS|CONNECT|TRACE|LOCK|UNLOCK|PROPFIND|PROPPATCH|COPY|MOVE|MKCOL|MKCALENDAR|ACL|SEARCH))\\s+(.+?)(\\s+HTTP/[\\d.]+)?\\s*$",
+      "captures": {
+        "1": { "name": "keyword.control.method.http" },
+        "2": {
+          "name": "markup.underline.link.url.http",
+          "patterns": [{ "include": "#reference" }]
+        },
+        "3": { "name": "constant.language.http-version.http" }
+      }
+    },
+    "bareUrl": {
+      "match": "^\\s*((?:https?://|\\{\\{)\\S.*?)(\\s+HTTP/[\\d.]+)?\\s*$",
+      "captures": {
+        "1": {
+          "name": "markup.underline.link.url.http",
+          "patterns": [{ "include": "#reference" }]
+        },
+        "2": { "name": "constant.language.http-version.http" }
+      }
+    },
+    "queryContinuation": {
+      "match": "^\\s*([&?].*)$",
+      "captures": {
+        "1": {
+          "name": "markup.underline.link.query.http",
+          "patterns": [{ "include": "#reference" }]
+        }
+      }
+    },
+    "jsonBody": {
+      "begin": "^\\s*(?=\\[|\\{(?!\\{))",
+      "end": "^(?=#{3,})",
+      "contentName": "meta.embedded.block.json",
+      "patterns": [{ "include": "#reference" }, { "include": "source.json" }]
+    },
+    "bodyFile": {
+      "match": "^(<(?:@\\w*)?)\\s+(.+)$",
+      "captures": {
+        "1": { "name": "keyword.operator.file.http" },
+        "2": { "name": "string.unquoted.path.http" }
+      }
+    },
+    "header": {
+      "match": "^\\s*([\\w!#$%&'*+.^`|~-]+)\\s*(:)\\s*(.*)$",
+      "captures": {
+        "1": { "name": "entity.name.tag.header.http" },
+        "2": { "name": "punctuation.separator.key-value.http" },
+        "3": {
+          "name": "string.unquoted.header-value.http",
+          "patterns": [{ "include": "#reference" }]
+        }
+      }
+    },
+    "reference": {
+      "match": "(\\{\\{)\\s*([^}]*?)\\s*(\\}\\})",
+      "name": "meta.template.expression.http",
+      "captures": {
+        "1": { "name": "punctuation.definition.template-expression.begin.http" },
+        "2": { "name": "variable.other.reference.http" },
+        "3": { "name": "punctuation.definition.template-expression.end.http" }
+      }
+    }
+  }
+}
