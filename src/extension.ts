@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { registerLanguageFeatures } from './vscode/language/register';
 
 export function activate(context: vscode.ExtensionContext): void {
   const log = vscode.window.createOutputChannel('Streamscope', { log: true });
@@ -8,5 +9,6 @@ export function activate(context: vscode.ExtensionContext): void {
       log.show();
     }),
   );
+  registerLanguageFeatures(context);
   log.info('Extension activated');
 }

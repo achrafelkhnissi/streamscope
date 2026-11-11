@@ -44,6 +44,8 @@
   "main": "./dist/extension.js",
   "files": [
     "dist/extension.js",
+    "syntaxes/http.tmLanguage.json",
+    "language-configuration.json",
     "CHANGELOG.md",
     "LICENSE"
   ],
@@ -53,6 +55,29 @@
         "command": "streamscope.showLog",
         "title": "Show Log",
         "category": "Streamscope"
+      }
+    ],
+    "languages": [
+      {
+        "id": "http",
+        "aliases": [
+          "HTTP"
+        ],
+        "extensions": [
+          ".http",
+          ".rest"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "http",
+        "scopeName": "source.http.streamscope",
+        "path": "./syntaxes/http.tmLanguage.json",
+        "embeddedLanguages": {
+          "source.json": "json"
+        }
       }
     ]
   },

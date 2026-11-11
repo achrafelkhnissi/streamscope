@@ -1,6 +1,6 @@
 # Streamscope implementation roadmap
 
-Status: draft for approval, 2026-11-11. Each milestone is small enough to test on its own and ends with a working, packaged extension. Before a milestone starts, it gets a detailed task plan, which the user approves; nothing in this roadmap is implemented before then.
+Status: approved 2026-11-11. Each milestone is small enough to test on its own and ends with a working, packaged extension. Before a milestone starts, it gets a detailed task plan, which the user approves; nothing in this roadmap is implemented before then.
 
 Every milestone also meets the standing gate: `npm run check` passes, `npm run test:integration` passes on VS Code 1.101.0 and stable when VS Code-facing code changed, `npm run verify:vsix` passes when packaging or activation changed, and the relevant review agent (`vscode-api-verifier`, `extension-security-reviewer`) reports no open issues.
 
@@ -43,8 +43,8 @@ flowchart LR
 ## M1 .http language and parser
 
 - **Objective:** `.http` files open as `http`, look right, and are understood structurally.
-- **Includes:** parser for REST Client syntax and Streamscope directives; grammar `source.http.streamscope`; outline; folding; syntax diagnostics; coexistence notice for REST Client and httpyac.
-- **Tasks:** `src/http-file` parser producing requests with ranges; TextMate grammar; document symbol and folding providers; diagnostic provider for syntax; notice offering to turn off REST Client's Send CodeLens.
+- **Includes:** parser for REST Client syntax and Streamscope directives; grammar `source.http.streamscope`; outline; folding; syntax diagnostics.
+- **Tasks:** `src/http-file` parser producing requests with ranges; TextMate grammar; document symbol and folding providers; diagnostic provider for syntax.
 - **Depends on:** M0.
 - **Acceptance:** a synthetic corpus of REST Client files parses identically to REST Client's interpretation (request boundaries, names, variables, bodies); outline and folding show one entry per request; colouring covers directives.
 - **Tests:** parser unit tests (separators, comments, directives, bodies, `< file`, edge cases such as `###` inside bodies); integration tests for outline, folding and diagnostics.
@@ -53,7 +53,7 @@ flowchart LR
 ## M2 Transport and normal responses
 
 - **Objective:** send a request and see a normal response reliably.
-- **Includes:** `node:https` transport with redirects, decompression (gzip, deflate, br, zstd), timeouts, per-request TLS opt-out, custom CA merge, timing, cancellation; Send and Stop commands, CodeLens and `Cmd+Alt+Enter`; file and system variables; a basic response document (status, Headers, pretty Body); Save Response; redacting log channel.
+- **Includes:** `node:https` transport with redirects, decompression (gzip, deflate, br, zstd), timeouts, per-request TLS opt-out, custom CA merge, timing, cancellation; Send and Stop commands, CodeLens and `Cmd+Alt+Enter`; one-time notice offering to turn off REST Client's and httpyac's Send CodeLens; file and system variables; a basic response document (status, Headers, pretty Body); Save Response; redacting log channel.
 - **Tasks:** `src/transport`; request builder from the parser; `src/variables` with file and system variables; response session model; basic native response document; masking registry skeleton.
 - **Depends on:** M1.
 - **Acceptance:** requests to a local test server succeed for every method and body type; redirects show each hop; a 50 MB JSON body opens without freezing; cancel closes the socket; TLS opt-out works only for the marked request; proxy settings apply (patch harness).

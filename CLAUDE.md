@@ -11,7 +11,7 @@ The product is **Streamscope** (`achrafelkhnissi.streamscope`, display name "Str
 
 ## Status and workflow
 
-- Work runs in approved phases: research (done), project setup (done), product planning and technical design (written, awaiting approval), then the implementation milestones in `docs/roadmap.md`. Do not build product functionality before the user approves the design, and ask before starting a new phase or milestone.
+- Work runs in approved phases: research (done), project setup (done), product planning and technical design (approved 2026-11-11), then the implementation milestones in `docs/roadmap.md`. Do not build product functionality before the user approves the design, and ask before starting a new phase or milestone.
 - The design is `docs/design.md`, the milestone plan `docs/roadmap.md`, the release process `docs/publishing.md`, and the approved response view mockup `docs/mockups/response-view.html`. They win over anything older in this file.
 - Settled decisions: VS Code `^1.101.0` with forks best effort; desktop only; native VS Code UI first, with a planned spike deciding whether a webview is needed; REST Client syntax compatibility (core syntax, request references, system variables, `rest-client.environmentVariables`, JetBrains env files); language id `http` with our own grammar scope; in-memory history for the MVP; captured values wait up to 30 s and never auto-run producers; Marketplace and Open VSX via OIDC trusted publishing.
 
@@ -26,6 +26,7 @@ The product is **Streamscope** (`achrafelkhnissi.streamscope`, display name "Str
 | `test/vsix/`              | Check that the packaged VSIX installs and activates in an isolated profile                                 |
 | `scripts/verify-vsix.mjs` | Installs the VSIX into a temporary profile and runs `test/vsix`                                            |
 | `.claude/`                | Project plugins, subagents, hooks and security-review rules                                                |
+| `.github/`                | CI on Linux, macOS and Windows; Dependabot                                                                 |
 
 ## Architecture conventions
 
@@ -76,6 +77,7 @@ The product is **Streamscope** (`achrafelkhnissi.streamscope`, display name "Str
 ## Verification
 
 - `npm run check` must pass before work is reported done. The Stop hook runs it automatically when files changed since the last passing run.
+- CI runs `npm run check`, the integration tests and `npm run verify:vsix` on every push to `main` and every pull request, on Linux, macOS and Windows.
 - Also run `npm run test:integration` when activation, commands, contributions or other `vscode`-facing code change, and `npm run verify:vsix` when packaging, `files` or activation change.
 - Streaming code needs tests that split input at every byte boundary; the `stream-parser-test-author` agent writes them.
 

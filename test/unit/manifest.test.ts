@@ -14,7 +14,11 @@ interface Manifest {
   files: string[];
   engines: { vscode: string };
   devDependencies: Record<string, string>;
-  contributes: { commands: { command: string; title: string; category?: string }[] };
+  contributes: {
+    commands: { command: string; title: string; category?: string }[];
+    languages: unknown[];
+    grammars: unknown[];
+  };
 }
 
 const manifest = JSON.parse(
@@ -58,7 +62,32 @@ describe('extension manifest', () => {
     expect(manifest.files).toContain('dist/extension.js');
   });
 
-  it('ships the license and changelog', () => {
-    expect(manifest.files).toEqual(['dist/extension.js', 'CHANGELOG.md', 'LICENSE']);
+  it('ships the bundle, language files, changelog and license', () => {
+    expect(manifest.files).toEqual([
+      'dist/extension.js',
+      'syntaxes/http.tmLanguage.json',
+      'language-configuration.json',
+      'CHANGELOG.md',
+      'LICENSE',
+    ]);
+  });
+
+  it('contributes the http language and grammar', () => {
+    expect(manifest.contributes.languages).toEqual([
+      {
+        id: 'http',
+        aliases: ['HTTP'],
+        extensions: ['.http', '.rest'],
+        configuration: './language-configuration.json',
+      },
+    ]);
+    expect(manifest.contributes.grammars).toEqual([
+      {
+        language: 'http',
+        scopeName: 'source.http.streamscope',
+        path: './syntaxes/http.tmLanguage.json',
+        embeddedLanguages: { 'source.json': 'json' },
+      },
+    ]);
   });
 });
