@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
@@ -12,6 +12,15 @@ const root = path.resolve(import.meta.dirname, '..');
 const manifest = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8'));
 const extensionId = `${manifest.publisher}.${manifest.name}`;
 const vsix = path.join(root, `${manifest.name}-${manifest.version}.vsix`);
+const maxVsixBytes = 409600;
+
+const vsixBytes = statSync(vsix).size;
+console.log(`VSIX is ${String(vsixBytes)} bytes (limit ${String(maxVsixBytes)})`);
+if (vsixBytes > maxVsixBytes) {
+  throw new Error(
+    `VSIX is ${String(vsixBytes)} bytes, over the ${String(maxVsixBytes)}-byte limit`,
+  );
+}
 
 const sandbox = realpathSync(mkdtempSync(path.join(tmpdir(), 'vsix-verify-')));
 const userDataDir = path.join(sandbox, 'user-data');

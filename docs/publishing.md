@@ -1,6 +1,6 @@
 # Publishing Streamscope
 
-Status: draft for approval, 2026-11-11. Nothing is published, pushed or submitted without the user's go-ahead.
+Status: approved 2026-11-11. Nothing is published, pushed or submitted without the user's go-ahead.
 
 ## Identity (reserved 2026-11-11)
 

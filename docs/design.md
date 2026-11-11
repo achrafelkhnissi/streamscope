@@ -1,6 +1,6 @@
 # Streamscope design
 
-Status: draft for approval, 2026-11-11. Author of decisions: Achraf (publisher `achrafelkhnissi`). Items marked **(builder's call)** were decided by Claude during design and are open to change; everything else was decided by Achraf in Phase 1 to 3.
+Status: approved 2026-11-11. Author of decisions: Achraf (publisher `achrafelkhnissi`). Items marked **(builder's call)** were decided by Claude during design and are open to change; everything else was decided by Achraf in Phase 1 to 3.
 
 ## 1. Product scope and MVP boundaries
 
