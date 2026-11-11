@@ -1,0 +1,457 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Streamscope response view mockup</title>
+    <style>
+      body {
+        font-family: -apple-system, 'Segoe UI', sans-serif;
+        background: #111;
+        color: #ddd;
+        padding: 24px;
+      }
+      .subtitle {
+        color: #999;
+      }
+    </style>
+  </head>
+  <body>
+    <style>
+      .vs {
+        background: #1e1e1e;
+        color: #cccccc;
+        font:
+          12px/1.5 -apple-system,
+          'Segoe UI',
+          sans-serif;
+        border-radius: 6px;
+        overflow: hidden;
+        border: 1px solid #333;
+        max-width: 900px;
+      }
+      .vs-bar {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 6px 10px;
+        background: #252526;
+        border-bottom: 1px solid #333;
+        font-size: 11px;
+        flex-wrap: wrap;
+      }
+      .req {
+        font-family: Menlo, monospace;
+        color: #9cdcfe;
+      }
+      .req b {
+        color: #c586c0;
+        font-weight: 600;
+      }
+      .pill {
+        padding: 1px 8px;
+        border-radius: 10px;
+        font-size: 10.5px;
+        white-space: nowrap;
+      }
+      .pill.live {
+        background: #0e639c;
+        color: #fff;
+      }
+      .pill.done {
+        background: #2d6a3e;
+        color: #fff;
+      }
+      .pill.stopped {
+        background: #6c5a1e;
+        color: #fff;
+      }
+      .stop {
+        margin-left: auto;
+        background: #3a3d41;
+        color: #ddd;
+        border: 1px solid #555;
+        border-radius: 3px;
+        font-size: 11px;
+        padding: 1px 10px;
+        cursor: pointer;
+      }
+      .stop:disabled {
+        opacity: 0.4;
+        cursor: default;
+      }
+      .tabs {
+        display: flex;
+        gap: 0;
+        padding: 0 10px;
+        background: #252526;
+        border-bottom: 1px solid #333;
+      }
+      .tab {
+        padding: 5px 12px;
+        font-size: 11.5px;
+        color: #969696;
+        cursor: pointer;
+        border-bottom: 2px solid transparent;
+      }
+      .tab.on {
+        color: #ffffff;
+        border-bottom-color: #0e639c;
+      }
+      .caps {
+        display: flex;
+        gap: 8px;
+        padding: 5px 10px;
+        background: #1e1e1e;
+        border-bottom: 1px solid #2d2d2d;
+        font-size: 11px;
+        color: #888;
+      }
+      .capv {
+        font-family: Menlo, monospace;
+        padding: 0 6px;
+        border-radius: 3px;
+        background: #2d2d30;
+      }
+      .capv.wait {
+        color: #888;
+      }
+      .capv.ok {
+        color: #89d185;
+      }
+      .vs-body {
+        height: 300px;
+        overflow-y: auto;
+        padding: 6px 0;
+      }
+      .pane {
+        display: none;
+      }
+      .pane.on {
+        display: block;
+      }
+      .mono {
+        font-family: Menlo, Monaco, monospace;
+        font-size: 11px;
+      }
+      .row {
+        display: grid;
+        grid-template-columns: 26px 48px 170px 1fr;
+        gap: 6px;
+        padding: 2px 10px;
+        align-items: center;
+        white-space: nowrap;
+        cursor: pointer;
+      }
+      .row:hover {
+        background: #2a2d2e;
+      }
+      .row .n,
+      .row .t {
+        color: #858585;
+      }
+      .row .n {
+        text-align: right;
+      }
+      .row .preview {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        color: #ce9178;
+      }
+      .badge {
+        font-family: Menlo, monospace;
+        font-size: 10px;
+        padding: 0 6px;
+        border-radius: 3px;
+        background: #3a3d41;
+        display: inline-block;
+      }
+      .b-run {
+        color: #4ec9b0;
+      }
+      .b-text {
+        color: #dcdcaa;
+      }
+      .b-tool {
+        color: #c586c0;
+      }
+      .cap {
+        margin-left: 6px;
+        font-size: 10px;
+        color: #89d185;
+      }
+      .expanded {
+        margin: 2px 10px 4px 90px;
+        padding: 6px 8px;
+        background: #252526;
+        border-left: 2px solid #0e639c;
+        white-space: pre;
+        color: #d4d4d4;
+      }
+      .chat {
+        padding: 10px 14px;
+      }
+      .chips {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin-bottom: 10px;
+        min-height: 20px;
+      }
+      .chip {
+        font-size: 10.5px;
+        padding: 1px 8px;
+        border-radius: 10px;
+        background: #2d2d30;
+        border: 1px solid #3c3c3c;
+        color: #bbb;
+      }
+      .bubble {
+        background: #2b2b2b;
+        border: 1px solid #3c3c3c;
+        border-radius: 8px;
+        padding: 10px 12px;
+        font-size: 13px;
+        color: #e0e0e0;
+        min-height: 60px;
+      }
+      .caret {
+        display: inline-block;
+        width: 7px;
+        height: 14px;
+        background: #ccc;
+        vertical-align: -2px;
+        animation: blink 1s steps(1) infinite;
+      }
+      .raw {
+        padding: 6px 10px;
+        white-space: pre;
+        color: #d4d4d4;
+      }
+      .hdr {
+        padding: 8px 12px;
+        white-space: pre;
+        color: #d4d4d4;
+      }
+      .hdr .k {
+        color: #9cdcfe;
+      }
+      @keyframes blink {
+        50% {
+          opacity: 0;
+        }
+      }
+      .note {
+        font-size: 13px;
+        color: var(--text-secondary, #888);
+        margin-top: 12px;
+        max-width: 900px;
+      }
+    </style>
+
+    <h2>One response view, three ways to watch it</h2>
+    <p class="subtitle">
+      Switch tabs while the stream is running; nothing is lost. Try Stop too. Captured values fill
+      in as their events arrive.
+    </p>
+
+    <div class="vs">
+      <div class="vs-bar">
+        <span class="req"><b>POST</b> {{baseUrl}}/agent/run</span>
+        <span class="pill live" id="st">Streaming…</span>
+        <span id="meta" style="color: #888">NDJSON (detected) · 200 OK</span>
+        <button class="stop" id="stop">Stop</button>
+      </div>
+      <div class="tabs">
+        <div class="tab on" data-p="events">Events</div>
+        <div class="tab" data-p="reply">Reply</div>
+        <div class="tab" data-p="raw">Raw</div>
+        <div class="tab" data-p="headers">Headers</div>
+      </div>
+      <div class="caps">
+        Captured: <span class="capv wait" id="c1">threadId · waiting</span
+        ><span class="capv wait" id="c2">messageId · waiting</span>
+      </div>
+      <div class="vs-body">
+        <div class="pane on" id="events"></div>
+        <div class="pane chat" id="reply">
+          <div class="chips" id="chips"></div>
+          <div class="bubble" id="text"><span class="caret"></span></div>
+        </div>
+        <div class="pane raw mono" id="raw"></div>
+        <div class="pane hdr mono" id="headers">
+          <span class="k">HTTP/1.1</span> 200 OK
+          <span class="k">content-type:</span> application/json
+          <span class="k">transfer-encoding:</span> chunked <span class="k">date:</span> Wed, 11 Nov
+          2026 16:00:00 GMT
+        </div>
+      </div>
+    </div>
+
+    <p class="note">
+      Made-up data. "Reply" appears only when the extension recognises which field carries the text
+      (AG-UI, OpenAI-style and Anthropic-style streams); otherwise you'd see Events, Raw and
+      Headers.
+    </p>
+
+    <script>
+      (() => {
+        const events = [
+          { type: 'RUN_STARTED', threadId: 'thread-7f3a', runId: 'run-1' },
+          { type: 'TOOL_CALL_START', toolCallId: 'call-1', toolCallName: 'search_docs' },
+          { type: 'TOOL_CALL_ARGS', toolCallId: 'call-1', delta: '{"query":"refund policy"}' },
+          { type: 'TOOL_CALL_END', toolCallId: 'call-1' },
+          { type: 'TEXT_MESSAGE_START', messageId: 'msg-42', role: 'assistant' },
+          ...[
+            'The',
+            ' refund',
+            ' window',
+            ' is',
+            ' 30',
+            ' days',
+            ' from',
+            ' delivery.',
+            ' Items',
+            ' must',
+            ' be',
+            ' unused',
+            ' and',
+            ' in',
+            ' their',
+            ' original',
+            ' packaging.',
+          ].map((delta) => ({ type: 'TEXT_MESSAGE_CONTENT', messageId: 'msg-42', delta })),
+          { type: 'TEXT_MESSAGE_END', messageId: 'msg-42' },
+          {
+            type: 'RUN_FINISHED',
+            threadId: 'thread-7f3a',
+            runId: 'run-1',
+            result: { messageId: 'msg-42' },
+          },
+        ];
+        const $ = (id) => document.getElementById(id);
+        const esc = (s) =>
+          String(s).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[c]);
+        const badge = (t) =>
+          t.startsWith('RUN') ? 'b-run' : t.startsWith('TEXT') ? 'b-text' : 'b-tool';
+        const preview = (e) =>
+          Object.entries(e)
+            .filter(([k]) => k !== 'type')
+            .map(([k, v]) => `${k}: ${JSON.stringify(v)}`)
+            .join('  ');
+        let i = 0,
+          t0 = 0,
+          timer = null,
+          expanded = null,
+          stopped = false;
+
+        document.querySelectorAll('.tab').forEach(
+          (tab) =>
+            (tab.onclick = () => {
+              document.querySelectorAll('.tab').forEach((x) => x.classList.toggle('on', x === tab));
+              document
+                .querySelectorAll('.pane')
+                .forEach((p) => p.classList.toggle('on', p.id === tab.dataset.p));
+            }),
+        );
+
+        $('stop').onclick = () => {
+          if (stopped || i >= events.length) return;
+          stopped = true;
+          clearTimeout(timer);
+          const secs = ((performance.now() - t0) / 1000).toFixed(2);
+          $('st').className = 'pill stopped';
+          $('st').textContent = `Cancelled · ${i} events · ${secs}s`;
+          $('stop').disabled = true;
+          if (i < events.length) {
+            $('c2').textContent = 'messageId · not received (cancelled)';
+            $('c2').className = 'capv wait';
+          }
+          timer = setTimeout(restart, 5000);
+        };
+
+        function restart() {
+          i = 0;
+          t0 = performance.now();
+          expanded = null;
+          stopped = false;
+          $('events').innerHTML = '';
+          $('raw').innerHTML = '';
+          $('chips').innerHTML = '';
+          $('text').innerHTML = '<span class="caret"></span>';
+          $('st').className = 'pill live';
+          $('st').textContent = 'Streaming… 0 events';
+          $('stop').disabled = false;
+          $('c1').className = 'capv wait';
+          $('c1').textContent = 'threadId · waiting';
+          $('c2').className = 'capv wait';
+          $('c2').textContent = 'messageId · waiting';
+          timer = setTimeout(step, 600);
+        }
+
+        function step() {
+          const e = events[i++];
+          const secs = ((performance.now() - t0) / 1000).toFixed(2);
+          const row = document.createElement('div');
+          row.className = 'row mono';
+          const cap =
+            e.type === 'RUN_STARTED'
+              ? '<span class="cap">● threadId</span>'
+              : e.type === 'RUN_FINISHED'
+                ? '<span class="cap">● messageId</span>'
+                : '';
+          row.innerHTML = `<span class="n">${i}</span><span class="t">${secs}s</span><span><span class="badge ${badge(e.type)}">${e.type}</span></span><span class="preview">${esc(preview(e))}${cap}</span>`;
+          row.onclick = () => {
+            if (expanded) expanded.remove();
+            const box = document.createElement('div');
+            box.className = 'expanded mono';
+            box.textContent = JSON.stringify(e, null, 2);
+            row.after(box);
+            expanded = box;
+          };
+          $('events').appendChild(row);
+          const line = document.createElement('div');
+          line.textContent = JSON.stringify(e);
+          $('raw').appendChild(line);
+          if (e.type === 'TEXT_MESSAGE_CONTENT') {
+            $('text').querySelector('.caret').insertAdjacentText('beforebegin', e.delta);
+          } else if (
+            ['RUN_STARTED', 'TOOL_CALL_START', 'TOOL_CALL_END', 'RUN_FINISHED'].includes(e.type)
+          ) {
+            const chip = document.createElement('span');
+            chip.className = 'chip';
+            chip.textContent = {
+              RUN_STARTED: '▶ run started',
+              TOOL_CALL_START: `🔧 ${e.toolCallName}`,
+              TOOL_CALL_END: '🔧 done',
+              RUN_FINISHED: '✓ run finished',
+            }[e.type];
+            $('chips').appendChild(chip);
+          }
+          if (e.type === 'RUN_STARTED') {
+            $('c1').className = 'capv ok';
+            $('c1').textContent = `threadId = ${e.threadId}`;
+          }
+          if (e.type === 'RUN_FINISHED') {
+            $('c2').className = 'capv ok';
+            $('c2').textContent = `messageId = ${e.result.messageId}`;
+          }
+          const body = document.querySelector('.vs-body');
+          body.scrollTop = body.scrollHeight;
+          $('st').textContent = `Streaming… ${i} events · ${secs}s`;
+          if (i < events.length) {
+            timer = setTimeout(step, e.type === 'TOOL_CALL_END' ? 900 : 260 + Math.random() * 180);
+          } else {
+            $('text').querySelector('.caret')?.remove();
+            $('st').className = 'pill done';
+            $('st').textContent = `✓ Completed · ${i} events · ${secs}s`;
+            $('stop').disabled = true;
+            timer = setTimeout(restart, 6000);
+          }
+        }
+
+        restart();
+      })();
+    </script>
+  </body>
+</html>

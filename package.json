@@ -1,0 +1,95 @@
+{
+  "name": "streamscope",
+  "displayName": "Streamscope: HTTP Client with Live Streaming",
+  "description": "Send requests from .http files and watch streaming responses (NDJSON, SSE, LLM streams) arrive event by event. Capture values from any event and reuse them.",
+  "version": "0.0.1",
+  "publisher": "achrafelkhnissi",
+  "private": true,
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/achrafelkhnissi/streamscope.git"
+  },
+  "bugs": {
+    "url": "https://github.com/achrafelkhnissi/streamscope/issues"
+  },
+  "homepage": "https://github.com/achrafelkhnissi/streamscope#readme",
+  "preview": true,
+  "engines": {
+    "vscode": "^1.101.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Testing",
+    "Other"
+  ],
+  "keywords": [
+    "http",
+    "rest",
+    "rest client",
+    "api",
+    "sse",
+    "server-sent events",
+    "ndjson",
+    "streaming",
+    "llm",
+    "agent",
+    "ag-ui",
+    "api testing"
+  ],
+  "extensionKind": [
+    "workspace",
+    "ui"
+  ],
+  "main": "./dist/extension.js",
+  "files": [
+    "dist/extension.js",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "streamscope.showLog",
+        "title": "Show Log",
+        "category": "Streamscope"
+      }
+    ]
+  },
+  "scripts": {
+    "build": "node esbuild.mjs",
+    "build:production": "node esbuild.mjs --production",
+    "watch": "node esbuild.mjs --watch",
+    "watch:types": "tsc --noEmit --watch --project tsconfig.json",
+    "typecheck": "tsc --noEmit --project tsconfig.json && tsc --noEmit --project test/unit/tsconfig.json && tsc --noEmit --project test/integration/tsconfig.json && tsc --noEmit --project test/vsix/tsconfig.json",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test:unit": "vitest run",
+    "test:unit:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "compile:host-tests": "tsc --project test/integration/tsconfig.json && tsc --project test/vsix/tsconfig.json",
+    "test:integration": "npm run build && npm run compile:host-tests && vscode-test",
+    "test": "npm run test:unit && npm run test:integration",
+    "check": "npm run typecheck && npm run lint && npm run format:check && npm run test:unit",
+    "vscode:prepublish": "npm run build:production",
+    "package": "vsce package --no-dependencies",
+    "package:list": "vsce ls --tree --no-dependencies",
+    "verify:vsix": "npm run package && npm run compile:host-tests && node scripts/verify-vsix.mjs"
+  },
+  "devDependencies": {
+    "@types/mocha": "10.0.10",
+    "@types/node": "22.20.5",
+    "@types/vscode": "1.101.0",
+    "@vitest/coverage-v8": "5.1.0",
+    "@vscode/test-cli": "0.0.15",
+    "@vscode/test-electron": "3.1.0",
+    "@vscode/vsce": "4.1.0",
+    "esbuild": "0.28.2",
+    "eslint": "10.14.0",
+    "prettier": "3.9.10",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.72.1",
+    "vitest": "5.1.0"
+  }
+}
