@@ -49,6 +49,7 @@ export interface Timing {
 }
 
 export interface ResponseSink {
+  onRequest(sent: SentRequest): void;
   onHead(head: ResponseHead, sent: SentRequest): void;
   onData(chunk: Uint8Array): void;
 }

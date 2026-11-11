@@ -177,6 +177,26 @@ describe('NodeTransport exchange', () => {
     );
   });
 
+  it('reports each request as it is sent, before any response', async () => {
+    const server = await http(ok);
+    await server.close();
+    servers.pop();
+
+    const { outcome, sink } = await send({ url: `${server.url}/items`, method: 'delete' });
+
+    expect(outcome.kind).toBe('failed');
+    expect(sink.requests).toEqual([
+      {
+        method: 'DELETE',
+        url: `${server.url}/items`,
+        headers: [
+          ['Host', `127.0.0.1:${String(server.port)}`],
+          ['Accept-Encoding', 'gzip, deflate, br, zstd'],
+        ],
+      },
+    ]);
+  });
+
   it('fails with dns for an unresolvable host', async () => {
     const { outcome } = await send({ url: 'http://streamscope.invalid/' });
 

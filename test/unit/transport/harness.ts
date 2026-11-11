@@ -11,6 +11,7 @@ import { NodeTransport } from '../../../src/transport/node-transport';
 export interface CollectingSink extends ResponseSink {
   head: ResponseHead | undefined;
   sent: SentRequest | undefined;
+  requests: SentRequest[];
   chunks: Uint8Array[];
   body(): string;
 }
@@ -19,7 +20,11 @@ export function collector(onData?: (chunk: Uint8Array) => void): CollectingSink 
   const sink: CollectingSink = {
     head: undefined,
     sent: undefined,
+    requests: [],
     chunks: [],
+    onRequest(sent) {
+      sink.requests.push(sent);
+    },
     onHead(head, sent) {
       sink.head = head;
       sink.sent = sent;

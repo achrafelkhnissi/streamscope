@@ -135,6 +135,16 @@ describe('parseHttpFile diagnostics', () => {
     expect(diagnostic).toMatchObject({ severity: 'error', range: at(0, 11, 21) });
   });
 
+  it('reports a timeout longer than a timer can wait', () => {
+    const diagnostic = only(
+      'invalid-timeout',
+      '# @timeout 2147484s',
+      'GET https://api.example.test/a',
+    );
+
+    expect(diagnostic).toMatchObject({ severity: 'error', range: at(0, 11, 19) });
+  });
+
   it('reports an empty until', () => {
     const diagnostic = only('empty-until', '# @until', 'GET https://api.example.test/a');
 

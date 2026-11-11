@@ -351,6 +351,8 @@ function exchange(context: ExchangeContext): Promise<ExchangeResult> {
       return;
     }
 
+    sink.onRequest(sent);
+
     outgoing.on('error', (error) => {
       settle({ kind: 'failed', failure: classifyError(error, phase) });
     });
