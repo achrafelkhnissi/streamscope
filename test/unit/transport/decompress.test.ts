@@ -100,6 +100,36 @@ describe('response decompression', () => {
     expect(sink.body()).toBe('plain');
   });
 
+  it('decodes up to five chained codings', async () => {
+    let compressed = Buffer.from(original);
+    for (let round = 0; round < 5; round += 1) {
+      compressed = zlib.gzipSync(compressed);
+    }
+    const server = await serving(200, 'gzip, gzip, gzip, gzip, gzip', compressed);
+
+    const { outcome, sink } = await send({ url: server.url });
+
+    expect(outcome.kind).toBe('completed');
+    expect(sink.body()).toBe(original);
+  });
+
+  it('fails with decompression for more than five codings', async () => {
+    let compressed = Buffer.from(original);
+    for (let round = 0; round < 6; round += 1) {
+      compressed = zlib.gzipSync(compressed);
+    }
+    const server = await serving(
+      200,
+      Array.from({ length: 6 }, () => 'gzip').join(', '),
+      compressed,
+    );
+
+    const { outcome } = await send({ url: server.url });
+
+    expect(outcome.kind === 'failed' && outcome.failure.kind).toBe('decompression');
+    expect(outcome.kind === 'failed' && outcome.failure.message).toContain('at most 5');
+  });
+
   it('fails with decompression for a corrupt gzip body', async () => {
     const server = await serving(200, 'gzip', Buffer.from('this is not gzip at all'));
 

@@ -53,6 +53,11 @@ function failed(kind: Failure['kind'], message: string): Terminal {
   return { kind: 'failed', failure: { kind, message, code: undefined } };
 }
 
+function decompressionMessage(error: unknown): string {
+  const reason = error instanceof Error ? error.message : String(error);
+  return `The response body could not be decompressed: ${reason}.`;
+}
+
 function hasHeader(headers: Headers, name: string): boolean {
   return headers.some(([header]) => header.toLowerCase() === name);
 }
@@ -396,32 +401,36 @@ function exchange(context: ExchangeContext): Promise<ExchangeResult> {
         counters.decodedBytes += chunk.length;
         sink.onData(chunk);
       };
+      const contentEncoding = head.headers
+        .filter(([name]) => name.toLowerCase() === 'content-encoding')
+        .map(([, value]) => value)
+        .join(', ');
       let decoding = false;
       incoming.on('data', (chunk: Buffer) => {
         counters.wireBytes += chunk.length;
         if (!decoding) {
           decoding = true;
-          decoder = createDecoder(
-            head.headers
-              .filter(([name]) => name.toLowerCase() === 'content-encoding')
-              .map(([, value]) => value)
-              .join(', '),
-          );
+          try {
+            decoder = createDecoder(contentEncoding);
+          } catch (error) {
+            settle(failed('decompression', decompressionMessage(error)));
+            return;
+          }
           decoder?.on('data', deliver);
+          decoder?.on('drain', () => {
+            incoming.resume();
+          });
           decoder?.on('end', () => {
             settle({ kind: 'completed' });
           });
           decoder?.on('error', (error) => {
-            settle(
-              failed(
-                'decompression',
-                `The response body could not be decompressed: ${error.message}.`,
-              ),
-            );
+            settle(failed('decompression', decompressionMessage(error)));
           });
         }
         if (decoder) {
-          decoder.write(chunk);
+          if (!decoder.write(chunk)) {
+            incoming.pause();
+          }
         } else {
           deliver(chunk);
         }

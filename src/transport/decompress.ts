@@ -1,6 +1,7 @@
 import { Transform, type TransformCallback } from 'node:stream';
 import * as zlib from 'node:zlib';
 
+const maxCodings = 5;
 const knownCodings: ReadonlySet<string> = new Set(['gzip', 'x-gzip', 'deflate', 'br', 'zstd']);
 const zlibOptions: zlib.ZlibOptions = {
   flush: zlib.constants.Z_SYNC_FLUSH,
@@ -92,6 +93,11 @@ export function createDecoder(contentEncoding: string | undefined): Transform | 
     .filter((coding) => coding !== '' && coding !== 'identity');
   if (codings.length === 0 || codings.some((coding) => !knownCodings.has(coding))) {
     return undefined;
+  }
+  if (codings.length > maxCodings) {
+    throw new Error(
+      `the response lists ${String(codings.length)} content codings and Streamscope decodes at most ${String(maxCodings)}`,
+    );
   }
   return new Decoder(codings.reverse());
 }
