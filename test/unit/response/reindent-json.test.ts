@@ -50,6 +50,17 @@ describe('reindentJson', () => {
     expect(reindentJson('{"a":1,"a":2}')).toBe(['{', '  "a": 1,', '  "a": 2', '}'].join('\n'));
   });
 
+  it('gives up on nesting deeper than 256 levels', () => {
+    expect(reindentJson('['.repeat(256) + ']'.repeat(256))).toBeDefined();
+    expect(reindentJson('['.repeat(257) + ']'.repeat(257))).toBeUndefined();
+  });
+
+  it('gives up when the output would grow far beyond the input', () => {
+    const deep = `${'['.repeat(100)}${Array.from({ length: 20_000 }, () => '1').join(',')}${']'.repeat(100)}`;
+
+    expect(reindentJson(deep)).toBeUndefined();
+  });
+
   it('leaves scalars as they are', () => {
     expect(reindentJson(' "text" ')).toBe('"text"');
     expect(reindentJson('42')).toBe('42');

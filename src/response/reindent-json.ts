@@ -1,4 +1,7 @@
 const indentUnit = '  ';
+const maxDepth = 256;
+const outputGrowthLimit = 8;
+const outputAllowance = 1_048_576;
 
 function isWhitespace(code: number): boolean {
   return code === 0x20 || code === 0x0a || code === 0x0d || code === 0x09;
@@ -27,49 +30,63 @@ function stringEnd(text: string, start: number): number {
   return index;
 }
 
-export function reindentJson(text: string): string {
+export function reindentJson(text: string): string | undefined {
   const parts: string[] = [];
   const indents: string[] = [];
+  const budget = text.length * outputGrowthLimit + outputAllowance;
+  let size = 0;
+  const emit = (...pieces: string[]): void => {
+    for (const piece of pieces) {
+      size += piece.length;
+      parts.push(piece);
+    }
+  };
   const indent = (level: number): string => (indents[level] ??= indentUnit.repeat(level));
   let level = 0;
   let index = 0;
   while (index < text.length) {
+    if (size > budget) {
+      return undefined;
+    }
     const character = text[index] ?? '';
     if (isWhitespace(text.charCodeAt(index))) {
       index += 1;
     } else if (character === '"') {
       const end = stringEnd(text, index);
-      parts.push(text.slice(index, end));
+      emit(text.slice(index, end));
       index = end;
     } else if (character === '{' || character === '[') {
+      if (level >= maxDepth) {
+        return undefined;
+      }
       const next = nextSignificant(text, index + 1);
       const closing = character === '{' ? '}' : ']';
       if (text[next] === closing) {
-        parts.push(character + closing);
+        emit(character + closing);
         index = next + 1;
       } else {
         level += 1;
-        parts.push(character, '\n', indent(level));
+        emit(character, '\n', indent(level));
         index += 1;
       }
     } else if (character === '}' || character === ']') {
       level -= 1;
-      parts.push('\n', indent(level), character);
+      emit('\n', indent(level), character);
       index += 1;
     } else if (character === ',') {
-      parts.push(',\n', indent(level));
+      emit(',\n', indent(level));
       index += 1;
     } else if (character === ':') {
-      parts.push(': ');
+      emit(': ');
       index += 1;
     } else {
       let end = index + 1;
       while (end < text.length && !'{}[],:" \n\r\t'.includes(text[end] ?? '')) {
         end += 1;
       }
-      parts.push(text.slice(index, end));
+      emit(text.slice(index, end));
       index = end;
     }
   }
-  return parts.join('');
+  return size > budget ? undefined : parts.join('');
 }

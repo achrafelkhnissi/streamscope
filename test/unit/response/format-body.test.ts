@@ -45,6 +45,16 @@ describe('formatBody', () => {
     });
   });
 
+  it('shows JSON too deep to indent unchanged as plaintext', () => {
+    const deep = '['.repeat(300) + ']'.repeat(300);
+
+    expect(format(deep, 'application/json')).toEqual({
+      languageId: 'plaintext',
+      text: deep,
+      binary: false,
+    });
+  });
+
   it('maps xml, html, javascript and css', () => {
     expect(format('<a/>', 'application/xml').languageId).toBe('xml');
     expect(format('<a/>', 'text/xml').languageId).toBe('xml');
