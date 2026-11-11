@@ -44,6 +44,7 @@
   "main": "./dist/extension.js",
   "files": [
     "dist/extension.js",
+    "dist/format-worker.js",
     "syntaxes/http.tmLanguage.json",
     "language-configuration.json",
     "CHANGELOG.md",
