@@ -5,6 +5,7 @@ import type { Socket } from 'node:net';
 import type { Transform } from 'node:stream';
 import { createDecoder } from './decompress';
 import { classifyError } from './failures';
+import { redirectStatuses, redirectTarget } from './redirects';
 import type {
   BodyPart,
   Failure,
@@ -22,6 +23,7 @@ import type {
 
 type Terminal =
   { kind: 'completed' } | { kind: 'failed'; failure: Failure } | { kind: 'cancelled' };
+type Step = Terminal | { kind: 'redirect'; hop: RedirectHop };
 type PartialTiming = Omit<Timing, 'totalMs'>;
 
 interface Counters {
@@ -35,7 +37,7 @@ interface PreparedPart {
 }
 
 interface ExchangeResult {
-  terminal: Terminal;
+  step: Step;
   timing: PartialTiming;
 }
 
@@ -286,7 +288,7 @@ function exchange(context: ExchangeContext): Promise<ExchangeResult> {
       return result;
     };
 
-    const settle = (terminal: Terminal): void => {
+    const settle = (step: Step): void => {
       if (settled) {
         return;
       }
@@ -294,12 +296,12 @@ function exchange(context: ExchangeContext): Promise<ExchangeResult> {
       clearTimeout(connectTimer);
       clearTimeout(headersTimer);
       stop.removeEventListener('abort', onStop);
-      if (terminal.kind !== 'completed') {
+      if (step.kind !== 'completed') {
         decoder?.destroy();
         response?.destroy();
         outgoing?.destroy();
       }
-      resolve({ terminal, timing: timing() });
+      resolve({ step, timing: timing() });
     };
 
     const onStop = (): void => {
@@ -331,6 +333,10 @@ function exchange(context: ExchangeContext): Promise<ExchangeResult> {
       }, options.headersTimeoutMs);
     };
 
+    if (stop.aborted) {
+      settle(context.stopReason());
+      return;
+    }
     stop.addEventListener('abort', onStop, { once: true });
 
     try {
@@ -377,6 +383,14 @@ function exchange(context: ExchangeContext): Promise<ExchangeResult> {
         statusText: incoming.statusMessage ?? '',
         headers: headerPairs(incoming.rawHeaders),
       };
+      const location = incoming.headers.location;
+      if (options.followRedirects && redirectStatuses.has(head.status) && location) {
+        settle({
+          kind: 'redirect',
+          hop: { request: sent, status: head.status, statusText: head.statusText, location },
+        });
+        return;
+      }
       sink.onHead(head, sent);
       const deliver = (chunk: Buffer): void => {
         counters.decodedBytes += chunk.length;
@@ -485,17 +499,38 @@ export class NodeTransport implements Transport {
       if (signal.aborted) {
         return outcome({ kind: 'cancelled' });
       }
-      const result = await exchange({
-        request,
-        options,
-        sink,
-        body: prepared.parts,
-        stop: stop.signal,
-        stopReason: () => stopReason,
-        counters,
-      });
-      timing = result.timing;
-      return outcome(result.terminal);
+      const handles = new Map(prepared.parts.map(({ part, handle }) => [part, handle]));
+      let current = request;
+      for (;;) {
+        const result = await exchange({
+          request: current,
+          options,
+          sink,
+          body: current.body.map((part) => ({ part, handle: handles.get(part) })),
+          stop: stop.signal,
+          stopReason: () => stopReason,
+          counters,
+        });
+        timing = result.timing;
+        if (result.step.kind !== 'redirect') {
+          return outcome(result.step);
+        }
+        if (hops.length >= options.maxRedirects) {
+          return outcome(
+            failed(
+              'redirect',
+              `The server redirected more than ${String(options.maxRedirects)} times. Raise streamscope.request.maxRedirects to follow more.`,
+            ),
+          );
+        }
+        const { hop } = result.step;
+        hops.push(hop);
+        const next = redirectTarget(current, hop.status, hop.location);
+        if (!next.ok) {
+          return outcome(failed('redirect', next.message));
+        }
+        current = next.request;
+      }
     } finally {
       clearTimeout(totalTimer);
       signal.removeEventListener('abort', onCancel);
