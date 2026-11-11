@@ -2,18 +2,28 @@ import type { Headers } from '../transport/model';
 
 export const maskedValue = '••••••';
 
-const sensitiveHeaders: ReadonlySet<string> = new Set([
+const sensitiveWords: ReadonlySet<string> = new Set([
   'authorization',
-  'proxy-authorization',
+  'auth',
+  'token',
+  'apikey',
+  'key',
+  'secret',
+  'password',
+  'passwd',
+  'credential',
+  'credentials',
+  'session',
   'cookie',
-  'set-cookie',
-  'x-api-key',
-  'api-key',
+  'signature',
 ]);
-const urlPasswordPattern = /^([a-z][a-z\d+.-]*:\/\/[^/?#@:]*:)[^/?#@]*@/i;
+const userInfoPattern = /^([a-z][a-z\d+.-]*:\/\/)[^/?#]*@/i;
 
 export function isSensitiveHeader(name: string): boolean {
-  return sensitiveHeaders.has(name.toLowerCase());
+  return name
+    .toLowerCase()
+    .split(/[-_]/)
+    .some((word) => sensitiveWords.has(word));
 }
 
 export function maskHeaders(headers: Headers): [string, string][] {
@@ -21,5 +31,5 @@ export function maskHeaders(headers: Headers): [string, string][] {
 }
 
 export function maskUrl(url: string): string {
-  return url.replace(urlPasswordPattern, `$1${maskedValue}@`);
+  return url.replace(userInfoPattern, `$1${maskedValue}@`);
 }

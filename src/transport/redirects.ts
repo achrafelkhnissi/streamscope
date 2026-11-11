@@ -1,3 +1,4 @@
+import { isSensitiveHeader, maskUrl } from '../masking/masking';
 import type { OutgoingRequest } from './model';
 
 export const redirectStatuses: ReadonlySet<number> = new Set([301, 302, 303, 307, 308]);
@@ -11,15 +12,6 @@ const bodyHeaders: ReadonlySet<string> = new Set([
   'content-location',
   'transfer-encoding',
 ]);
-const originHeaders: ReadonlySet<string> = new Set([
-  'authorization',
-  'proxy-authorization',
-  'cookie',
-  'x-api-key',
-  'api-key',
-  'host',
-]);
-
 export function redirectTarget(
   request: OutgoingRequest,
   status: number,
@@ -41,10 +33,22 @@ export function redirectTarget(
     };
   }
   const rewrite = rewritingStatuses.has(status);
+  if (
+    !rewrite &&
+    request.body.length > 0 &&
+    request.url.protocol === 'https:' &&
+    url.protocol === 'http:'
+  ) {
+    return {
+      ok: false,
+      message: `The server redirected to plain http (\`${maskUrl(location)}\`), so Streamscope did not resend the request body without TLS.`,
+    };
+  }
   const crossOrigin = url.origin !== request.url.origin;
   const headers = request.headers.filter(([name]) => {
     const lower = name.toLowerCase();
-    return !(rewrite && bodyHeaders.has(lower)) && !(crossOrigin && originHeaders.has(lower));
+    const credential = lower === 'host' || isSensitiveHeader(name);
+    return !(rewrite && bodyHeaders.has(lower)) && !(crossOrigin && credential);
   });
   return {
     ok: true,

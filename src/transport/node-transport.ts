@@ -6,6 +6,7 @@ import type { Transform } from 'node:stream';
 import { createDecoder } from './decompress';
 import { classifyError } from './failures';
 import { redirectStatuses, redirectTarget } from './redirects';
+import { decodeUserInfo } from './user-info';
 import type {
   BodyPart,
   Failure,
@@ -69,14 +70,6 @@ function bodyLength(parts: readonly BodyPart[]): number {
   );
 }
 
-function credentials(url: URL): string | undefined {
-  if (url.username === '' && url.password === '') {
-    return undefined;
-  }
-  const pair = `${decodeURIComponent(url.username)}:${decodeURIComponent(url.password)}`;
-  return `Basic ${Buffer.from(pair).toString('base64')}`;
-}
-
 function withoutCredentials(url: URL): string {
   const copy = new URL(url.href);
   copy.username = '';
@@ -84,13 +77,16 @@ function withoutCredentials(url: URL): string {
   return copy.href;
 }
 
-function outgoingHeaders(request: OutgoingRequest): [string, string][] {
+function outgoingHeaders(
+  request: OutgoingRequest,
+  credentials: { user: string; password: string } | undefined,
+): [string, string][] {
   const headers: [string, string][] = request.headers
     .filter(([name]) => name.toLowerCase() !== 'content-length')
     .map(([name, value]) => [name, value]);
-  const authorization = credentials(request.url);
-  if (authorization !== undefined && !hasHeader(headers, 'authorization')) {
-    headers.push(['Authorization', authorization]);
+  if (credentials !== undefined && !hasHeader(headers, 'authorization')) {
+    const pair = `${credentials.user}:${credentials.password}`;
+    headers.push(['Authorization', `Basic ${Buffer.from(pair).toString('base64')}`]);
   }
   if (!hasHeader(headers, 'host')) {
     headers.push(['Host', request.url.host]);
@@ -263,7 +259,12 @@ function exchange(context: ExchangeContext): Promise<ExchangeResult> {
       head?: number;
     } = { start: performance.now() };
     const secure = request.url.protocol === 'https:';
-    const headers = outgoingHeaders(request);
+    const userInfo = decodeUserInfo(request.url);
+    if (!userInfo.ok) {
+      resolve({ step: failed('invalid-request', userInfo.message), timing: {} });
+      return;
+    }
+    const headers = outgoingHeaders(request, userInfo.credentials);
     const sent: SentRequest = {
       method: request.method.toUpperCase(),
       url: withoutCredentials(request.url),

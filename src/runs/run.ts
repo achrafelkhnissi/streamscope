@@ -2,6 +2,7 @@ import type { Directive, DirectiveKind, HttpFile, HttpRequest } from '../http-fi
 import { formatBytes } from '../response/labels';
 import type {
   FailureKind,
+  Outcome,
   RedirectHop,
   ResponseHead,
   ResponseSink,
@@ -129,6 +130,7 @@ export function startRun(
   };
   const finish = (changes: Partial<RunState>): RunSnapshot => {
     Object.assign(state, changes, { body: Buffer.concat(chunks) });
+    chunks.length = 0;
     endedAt = dependencies.clock();
     notify();
     return snapshot();
@@ -208,12 +210,19 @@ export function startRun(
       followRedirects: settings.followRedirects && !hasDirective(request, 'no-redirect'),
       maxRedirects: settings.maxRedirects,
     };
-    const outcome = await dependencies.transport.send(
-      built.request,
-      options,
-      sink,
-      controller.signal,
-    );
+    let outcome: Outcome;
+    try {
+      outcome = await dependencies.transport.send(built.request, options, sink, controller.signal);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      return finish({
+        status: 'failed',
+        failure: {
+          kind: 'invalid-request',
+          message: `The request could not be sent: ${reason}.`,
+        },
+      });
+    }
     const exchange = { hops: outcome.hops, timing: outcome.timing, wireBytes: outcome.wireBytes };
     if (outcome.kind === 'completed') {
       return finish({ ...exchange, status: 'completed' });

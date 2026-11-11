@@ -218,6 +218,51 @@ describe('sending requests', () => {
     assert.equal(readFileSync(target.fsPath, 'utf8'), json);
   });
 
+  it('saves the response whose document the Save button was pressed in', async () => {
+    const server = await serve((_request, response) => {
+      response.writeHead(200, { 'Content-Type': 'application/json' });
+      response.end('{"from":"title"}');
+    });
+    await open('save-title.http', [`GET ${server.url}/title`]);
+    const target = vscode.Uri.file(path.join(folder, 'from-title.json'));
+
+    await send();
+    const body = responseTabs().find((uri) => uri.path.endsWith('.json'));
+    assert.ok(body);
+    await vscode.commands.executeCommand('streamscope.saveResponse', body, target);
+
+    assert.equal(readFileSync(target.fsPath, 'utf8'), '{"from":"title"}');
+  });
+
+  it('keeps the newest response when an older one finishes formatting last', async function () {
+    this.timeout(60_000);
+    const large = Buffer.from(
+      JSON.stringify({ items: Array.from({ length: 400_000 }, (_, id) => ({ id, first: true })) }),
+    );
+    let count = 0;
+    const server = await serve((_request, response) => {
+      count += 1;
+      response.writeHead(200, { 'Content-Type': 'application/json' });
+      response.end(count === 1 ? large : '{"second":true}');
+    });
+    const editor = await open('stale.http', [`GET ${server.url}/stale`]);
+
+    const first = send();
+    const deadline = Date.now() + 10_000;
+    while (
+      !/^200 OK/.test((await lensTitles(editor.document.uri))[1] ?? '') &&
+      Date.now() < deadline
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    const second = send();
+    await Promise.all([first, second]);
+
+    const body = responseTabs().find((uri) => uri.path.endsWith('.json'));
+    assert.ok(body);
+    assert.equal(await text(body), '{\n  "second": true\n}');
+  });
+
   it('trusts the CA named in streamscope.request.caFile', async () => {
     const credentials = createSelfSignedCertificate(['localhost', '127.0.0.1']);
     const server = await startHttpsServer(credentials, (_request, response) => {

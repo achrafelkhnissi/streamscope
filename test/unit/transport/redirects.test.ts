@@ -103,6 +103,32 @@ describe('redirectTarget', () => {
     }
   });
 
+  it('drops any sensitive header across origins', () => {
+    const base = request({
+      headers: [
+        ['Private-Token', 'synthetic'],
+        ['X-Auth-Token', 'synthetic'],
+        ['X-Trace', '1'],
+      ],
+    });
+
+    expect(names(target(307, 'https://other.example.test/x', base))).toEqual(['X-Trace']);
+  });
+
+  it('refuses to resend a body from https to http', () => {
+    const secure = request({ url: new URL('https://api.example.test/token') });
+
+    const result = redirectTarget(secure, 307, 'http://api.example.test/token');
+
+    expect(result.ok).toBe(false);
+    expect(!result.ok && result.message).toContain('plain http');
+    expect(target(303, 'http://api.example.test/next', secure).method).toBe('GET');
+    expect(
+      target(307, 'http://api.example.test/next', request({ url: secure.url, body: [] })).url
+        .protocol,
+    ).toBe('http:');
+  });
+
   it('keeps them within the same origin', () => {
     expect(names(target(307, 'http://api.example.test/other'))).toContain('Authorization');
     expect(names(target(307, 'http://api.example.test/other'))).toContain('Cookie');

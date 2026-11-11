@@ -1,5 +1,7 @@
 import { readFile } from 'node:fs/promises';
+import { maskUrl } from '../masking/masking';
 import type { BodyPart, OutgoingRequest } from '../transport/model';
+import { decodeUserInfo } from '../transport/user-info';
 import type {
   ResolutionProblem,
   ResolvedBodyPart,
@@ -24,19 +26,30 @@ function mediaType(resolved: ResolvedRequest): string {
   return (header(resolved, 'content-type') ?? '').split(';')[0]?.trim().toLowerCase() ?? '';
 }
 
-function targetUrl(resolved: ResolvedRequest): URL | undefined {
+function targetUrl(
+  resolved: ResolvedRequest,
+): { ok: true; url: URL } | { ok: false; message: string } {
   let text = resolved.url;
   const host = header(resolved, 'host')?.trim();
   if (text.startsWith('/') && host) {
     const port = hostPortPattern.exec(host)?.[1] ?? '';
     text = `${securePorts.has(port) ? 'https' : 'http'}://${host}${text}`;
   }
+  const invalid = {
+    ok: false,
+    message: `\`${maskUrl(resolved.writtenUrl)}\` is not a valid http or https URL.`,
+  } as const;
+  let url: URL;
   try {
-    const url = new URL(text);
-    return url.protocol === 'http:' || url.protocol === 'https:' ? url : undefined;
+    url = new URL(text);
   } catch {
-    return undefined;
+    return invalid;
   }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    return invalid;
+  }
+  const userInfo = decodeUserInfo(url);
+  return userInfo.ok ? { ok: true, url } : userInfo;
 }
 
 function joinLines(lines: readonly string[], lineEnding: string, form: boolean): string {
@@ -105,23 +118,20 @@ export async function buildOutgoingRequest(
   context: BodyFileContext,
 ): Promise<BuildResult> {
   const problems: ResolutionProblem[] = [];
-  const url = targetUrl(resolved);
-  if (!url) {
-    problems.push({
-      message: `\`${resolved.url}\` is not a valid http or https URL.`,
-      range: resolved.urlRange,
-    });
+  const target = targetUrl(resolved);
+  if (!target.ok) {
+    problems.push({ message: target.message, range: resolved.urlRange });
   }
   const body = await bodyParts(resolved, scope, context);
   problems.push(...body.problems);
-  if (!url || problems.length > 0) {
+  if (!target.ok || problems.length > 0) {
     return { ok: false, problems };
   }
   return {
     ok: true,
     request: {
       method: resolved.method,
-      url,
+      url: target.url,
       headers: resolved.headers.map(({ name, value }): [string, string] => [name, value]),
       body: body.parts,
     },

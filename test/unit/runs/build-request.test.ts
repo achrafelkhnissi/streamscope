@@ -102,6 +102,30 @@ describe('buildOutgoingRequest', () => {
     );
   });
 
+  it('quotes the url as written, with user info masked, when it is invalid', async () => {
+    const result = await build(
+      '@pw = synthetic-secret',
+      'GET https://admin:{{pw}}@api.example.test:99999/',
+    );
+
+    expect(!result.ok && result.problems.map((problem) => problem.message)).toEqual([
+      '`https://••••••@api.example.test:99999/` is not a valid http or https URL.',
+    ]);
+  });
+
+  it('blocks user info with an invalid % escape', async () => {
+    expect(await build('GET http://user:p%zz@api.example.test/')).toEqual({
+      ok: false,
+      problems: [
+        {
+          message:
+            'The user name or password in the URL has a % that is not followed by two hex digits.',
+          range: at(0, 4, 38),
+        },
+      ],
+    });
+  });
+
   it('joins text lines with LF', async () => {
     const request = await built('POST https://api.example.test/items', '', '{', '  "a": 1', '}');
 

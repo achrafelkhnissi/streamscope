@@ -142,7 +142,7 @@ export function registerRequestFeatures(
       void showBlocked(document, run);
       return;
     }
-    await presenter.show(run, document.uri);
+    await presenter.show(run, document.uri, () => registry.latest(key)?.id === run.id);
     lenses.refresh();
   };
 
@@ -157,18 +157,24 @@ export function registerRequestFeatures(
     }
   };
 
-  const saveResponse = async (destination?: vscode.Uri): Promise<void> => {
-    const slot = await activeSlot();
+  const responseSource = (argument: unknown): vscode.Uri | undefined =>
+    argument instanceof vscode.Uri && argument.scheme === responseScheme ? argument : undefined;
+
+  const saveResponse = async (first?: unknown, second?: unknown): Promise<void> => {
+    const source = responseSource(first);
+    const slot = source ? presenter.slotForUri(source) : await activeSlot();
+    const destination = source ? second : first;
     if (!slot?.run.head) {
       void vscode.window.showInformationMessage(noResponseMessage);
       return;
     }
     const chosen =
-      destination ??
-      (await vscode.window.showSaveDialog({
-        defaultUri: defaultSaveUri(slot),
-        saveLabel: 'Save Response',
-      }));
+      destination instanceof vscode.Uri
+        ? destination
+        : await vscode.window.showSaveDialog({
+            defaultUri: defaultSaveUri(slot),
+            saveLabel: 'Save Response',
+          });
     if (!chosen) {
       return;
     }
@@ -176,21 +182,24 @@ export function registerRequestFeatures(
     vscode.window.setStatusBarMessage(`Saved ${path.basename(chosen.fsPath)}`, 3000);
   };
 
-  const showView = (pick: (slot: ResponseSlot) => vscode.Uri) => async (): Promise<void> => {
-    const slot = await activeSlot();
-    if (!slot) {
-      void vscode.window.showInformationMessage(noResponseMessage);
-      return;
-    }
-    const fromResponse = vscode.window.activeTextEditor?.document.uri.scheme === responseScheme;
-    await vscode.commands.executeCommand(
-      'vscode.open',
-      pick(slot),
-      fromResponse
-        ? { preview: false }
-        : { viewColumn: vscode.ViewColumn.Beside, preserveFocus: true, preview: false },
-    );
-  };
+  const showView =
+    (pick: (slot: ResponseSlot) => vscode.Uri) =>
+    async (argument?: unknown): Promise<void> => {
+      const source = responseSource(argument);
+      const slot = source ? presenter.slotForUri(source) : await activeSlot();
+      if (!slot) {
+        void vscode.window.showInformationMessage(noResponseMessage);
+        return;
+      }
+      const fromResponse = vscode.window.activeTextEditor?.document.uri.scheme === responseScheme;
+      await vscode.commands.executeCommand(
+        'vscode.open',
+        pick(slot),
+        fromResponse
+          ? { preview: false }
+          : { viewColumn: vscode.ViewColumn.Beside, preserveFocus: true, preview: false },
+      );
+    };
 
   context.subscriptions.push(
     files,

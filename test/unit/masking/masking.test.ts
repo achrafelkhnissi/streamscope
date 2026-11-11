@@ -26,14 +26,43 @@ describe('masking', () => {
       ['Accept', 'application/json'],
     ]);
     expect(isSensitiveHeader('X-API-KEY')).toBe(true);
-    expect(isSensitiveHeader('X-Api-Keys')).toBe(false);
   });
 
-  it('masks a URL password and leaves other URLs unchanged', () => {
+  it('treats token, key, secret and session headers as sensitive', () => {
+    for (const name of [
+      'X-Auth-Token',
+      'Private-Token',
+      'X-Goog-Api-Key',
+      'Ocp-Apim-Subscription-Key',
+      'apikey',
+      'X-Amz-Security-Token',
+      'X-Client-Secret',
+      'X-Session-Id',
+      'X-CSRF-Token',
+    ]) {
+      expect(isSensitiveHeader(name), name).toBe(true);
+    }
+    for (const name of [
+      'Content-Type',
+      'Accept',
+      'X-Trace',
+      'Keep-Alive',
+      'X-Request-Id',
+      'Host',
+    ]) {
+      expect(isSensitiveHeader(name), name).toBe(false);
+    }
+  });
+
+  it('masks URL user info and leaves other URLs unchanged', () => {
     expect(maskUrl('https://user:synthetic@api.example.test/a?b=1')).toBe(
-      'https://user:••••••@api.example.test/a?b=1',
+      'https://••••••@api.example.test/a?b=1',
     );
-    expect(maskUrl('https://user@api.example.test/a')).toBe('https://user@api.example.test/a');
+    expect(maskUrl('https://synthetic-token@api.example.test/a')).toBe(
+      'https://••••••@api.example.test/a',
+    );
+    expect(maskUrl('https://u:p@ss@api.example.test/a')).toBe('https://••••••@api.example.test/a');
+    expect(maskUrl('https://api.example.test/a?b=c@d')).toBe('https://api.example.test/a?b=c@d');
     expect(maskUrl('https://api.example.test/a?token=x')).toBe(
       'https://api.example.test/a?token=x',
     );

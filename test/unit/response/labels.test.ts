@@ -33,6 +33,12 @@ describe('labels', () => {
     expect(plain && requestLabel(plain)).toBe('DELETE https://api.example.test/items/1');
   });
 
+  it('masks user info in labels', () => {
+    const [request] = requests('GET https://admin:synthetic@api.example.test/x');
+
+    expect(request && requestLabel(request)).toBe('GET https://••••••@api.example.test/x');
+  });
+
   it('makes labels safe for file names', () => {
     expect(fileSafeName('GET https://api.example.test/a?b="c"|d*\u0001')).toBe(
       'GET https___api.example.test_a_b=_c__d__',

@@ -173,6 +173,19 @@ describe('startRun', () => {
     expect(snapshot.sent?.url).toBe(`${server.url}/gone`);
   });
 
+  it('ends failed when the transport rejects', async () => {
+    const snapshot = await startRun(runInput(['GET https://api.example.test/items']), {
+      ...dependencies,
+      transport: { send: () => Promise.reject(new Error('synthetic transport failure')) },
+    }).done;
+
+    expect(snapshot.status).toBe('failed');
+    expect(snapshot.failure).toEqual({
+      kind: 'invalid-request',
+      message: 'The request could not be sent: synthetic transport failure.',
+    });
+  });
+
   it('cancel() ends in cancelled', async () => {
     const server = await track(
       startHttpServer((_request, response) => {

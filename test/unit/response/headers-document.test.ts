@@ -50,7 +50,7 @@ describe('renderHeadersDocument', () => {
     expect(renderHeadersDocument(run).split('\n### ').slice(2).join('\n### ')).toBe(
       [
         'Redirects',
-        'POST https://user:••••••@api.example.test/a → 307 Temporary Redirect',
+        'POST https://••••••@api.example.test/a → 307 Temporary Redirect',
         'POST https://api.example.test/b → 302 Found',
         '',
         '### Timing',

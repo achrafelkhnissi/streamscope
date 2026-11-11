@@ -338,6 +338,15 @@ describe('NodeTransport exchange', () => {
     expect(server.sockets.opened).toBe(0);
   });
 
+  it('fails with invalid-request for user info with an invalid % escape', async () => {
+    const server = await http(ok);
+
+    const { outcome } = await send({ url: server.url.replace('://', '://user:p%zz@') });
+
+    expect(outcome.kind === 'failed' && outcome.failure.kind).toBe('invalid-request');
+    expect(server.sockets.opened).toBe(0);
+  });
+
   it('fails with body-file when a file part has disappeared', async () => {
     const server = await http(ok);
 

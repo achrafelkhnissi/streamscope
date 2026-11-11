@@ -57,12 +57,15 @@ export class ResponsePresenter {
     );
   }
 
-  async show(run: RunSnapshot, documentUri: vscode.Uri): Promise<void> {
+  async show(run: RunSnapshot, documentUri: vscode.Uri, isCurrent: () => boolean): Promise<void> {
     const number = this.numbers.get(run.key) ?? this.nextNumber++;
     this.numbers.set(run.key, number);
     const base = `/${String(number)}/${fileSafeName(run.label)}`;
     const type = contentType(run);
     const encoded = await this.encode(run, type);
+    if (!isCurrent()) {
+      return;
+    }
     const slot: ResponseSlot = {
       key: run.key,
       documentUri,

@@ -20,6 +20,7 @@ export type ResolvedBodyPart =
 export interface ResolvedRequest {
   method: string;
   url: string;
+  writtenUrl: string;
   urlRange: Range;
   headers: { name: string; value: string }[];
   body: ResolvedBodyPart[];
@@ -211,6 +212,7 @@ export function resolveRequest(
   const resolved: ResolvedRequest = {
     method: request.requestLine.method,
     url: text(request.requestLine.url),
+    writtenUrl: request.requestLine.url,
     urlRange: urlRange(request),
     headers: request.headers.map((header) => ({
       name: text(header.name),

@@ -1,4 +1,5 @@
 import type { HttpRequest } from '../http-file/model';
+import { maskUrl } from '../masking/masking';
 import type { RunSnapshot } from '../runs/run';
 import type { BodyLanguage } from './format-body';
 
@@ -54,7 +55,7 @@ export function requestLabel(request: HttpRequest): string {
   return (
     request.name ??
     request.title ??
-    `${request.requestLine.method.toUpperCase()} ${request.requestLine.url}`
+    `${request.requestLine.method.toUpperCase()} ${maskUrl(request.requestLine.url)}`
   );
 }
 
