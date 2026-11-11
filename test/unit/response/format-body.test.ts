@@ -148,6 +148,16 @@ describe('formatBodyOffThread', () => {
     );
   });
 
+  it("leaves the caller's Buffer intact when it hands the bytes to the worker", async () => {
+    const bytes = Buffer.from(JSON.stringify({ text: 'x'.repeat(workerThresholdBytes) }));
+    const length = bytes.length;
+
+    await formatBodyOffThread(bytes, 'application/json', workerFile);
+
+    expect(bytes.length).toBe(length);
+    expect(bytes.subarray(0, 9).toString()).toBe('{"text":"');
+  });
+
   it('rejects when the worker cannot start', async () => {
     await expect(
       formatBodyOffThread(

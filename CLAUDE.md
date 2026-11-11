@@ -20,7 +20,15 @@ The product is **Streamscope** (`achrafelkhnissi.streamscope`, display name "Str
 | Path                      | Purpose                                                                                                    |
 | ------------------------- | ---------------------------------------------------------------------------------------------------------- |
 | `src/extension.ts`        | Activation and VS Code wiring                                                                              |
-| `src/` (planned modules)  | Pure transport, streaming, event and extraction modules that never import `vscode`                         |
+| `src/http-file/`          | `.http` parser, directives and diagnostics                                                                 |
+| `src/variables/`          | File and system variable resolution                                                                        |
+| `src/transport/`          | `node:http`/`node:https` exchange, decompression, TLS options and redirects                                |
+| `src/runs/`               | Outgoing request building, body files, durations, runs and the run registry                                |
+| `src/response/`           | Body formatting (worker above 1 MiB), labels and the Headers document                                      |
+| `src/masking/`            | Masking of secret headers and URL passwords                                                                |
+| `src/coexistence/`        | Detection of other extensions' Send CodeLens                                                               |
+| `src/vscode/`             | VS Code wiring: language features, requests (commands, CodeLens, settings), response view, log             |
+| `test/support/`           | Local HTTP, HTTPS and raw servers and a generated test certificate, shared by unit and integration tests   |
 | `test/unit/`              | Vitest tests for pure modules and the manifest                                                             |
 | `test/integration/`       | Mocha tests run by `@vscode/test-cli` inside the Extension Development Host, on VS Code stable and 1.101.0 |
 | `test/vsix/`              | Check that the packaged VSIX installs and activates in an isolated profile                                 |

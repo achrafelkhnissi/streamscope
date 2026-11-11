@@ -48,7 +48,7 @@ export function formatBodyOffThread(
         reject(new Error(`The format worker exited with code ${String(code)}.`));
       });
     });
-    const copy = bytes.slice();
+    const copy = new Uint8Array(bytes);
     worker.postMessage({ bytes: copy, contentType }, [copy.buffer]);
   });
 }
