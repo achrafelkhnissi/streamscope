@@ -36,20 +36,22 @@ The measurements come from the view benchmark kept in `test/benchmark/view/`: `n
 
 Thirty minutes at 500 events/s of 1 KiB, on an Apple M3 Pro with VS Code 1.146.0 (stable; the 1.101.0 minimum was not measured). All the numbers are in [benchmarks.md](../benchmarks.md).
 
-| Budget                             | `native-fs`                                         | `webview`                                   |
-| ---------------------------------- | --------------------------------------------------- | ------------------------------------------- |
-| Every event becomes visible        | 900,002 of 900,002                                  | 900,002 of 900,002 (after a fix, see below) |
-| Latency p95 under 100 ms           | **Fails:** p95 393 ms, p99 921 ms, max 5.9 s        | **Passes:** p95 54 ms, p99 59 ms, max 1.2 s |
-| No extension host pause over 50 ms | **Fails:** 87 pauses, the longest 670 ms            | **Fails:** 14 pauses, the longest 257 ms    |
-| Typing stays smooth                | **Fails:** p95 136 ms, worst 5.5 s                  | p95 1 ms, worst 465 ms                      |
-| Extension heap under 150 MB        | **Most likely fails:** up to 289 MB, an upper bound | **Passes:** up to 87 MB                     |
-| Renderer                           | 140% CPU on average, 3.14 GB                        | 22% CPU on average, 600 MB                  |
+| Budget                             | `native-fs`                                         | `webview`                                                  |
+| ---------------------------------- | --------------------------------------------------- | ---------------------------------------------------------- |
+| Every event becomes visible        | 900,002 of 900,002                                  | 900,002 of 900,002 (after a fix, see below)                |
+| Latency p95 under 100 ms           | **Fails:** p95 393 ms, p99 921 ms, max 5.9 s        | **Passes:** p95 54 ms, p99 59 ms, max 1.2 s                |
+| No extension host pause over 50 ms | **Fails:** 87 pauses, the longest 670 ms            | **Fails:** 14 pauses, the longest 257 ms                   |
+| Typing stays smooth                | **Fails:** p95 136 ms, worst 5.5 s                  | **Mostly passes:** p95 1 ms, worst 465 ms                  |
+| Extension heap under 150 MB        | **Most likely fails:** up to 289 MB, an upper bound | **Passes:** up to 87 MB, about 111 MB with the event index |
+| Renderer                           | 140% CPU on average, 3.14 GB                        | 22% CPU on average, 600 MB                                 |
 
-Native got worse as the run went on: in the 5-minute screening its p95 was 70 ms, after 30 minutes it was 393 ms. The webview stayed flat: p95 54 ms in both.
+Native got worse the longer it ran. Its 5-minute screening had a p95 of 70 ms, and the 30-minute run 393 ms. The screening ran on commit `3d88351`, before a change in `fd2f887` that made native's document links cheaper, so if anything the comparison understates how much native slowed down. The webview had a p95 of 54 ms in both.
 
 The first 30-minute webview run failed. Its list stopped scrolling at event 762,641. At 22 px per row, that matches Chromium's limit on layout height (2²⁴ px). Scaling scroll positions past 8 million pixels fixed it, and the rerun is the one in the table.
 
-The pause counts cover the whole extension host, not only the response view. The driver records every gap over 50 ms in the host's event loop, but not what caused it.
+The pause counts cover the whole extension host, not only the response view. The driver records every stretch of over 50 ms in which its 10 ms timer could not run, but not what caused it.
+
+The heap budget is defined as heap plus array buffers (see the M4 section of [benchmarks.md](../benchmarks.md)). The extension host reports array buffers as 0, so the event index has to be estimated: about 27 bytes per event, or 24 MB at 900,000 events. That puts the webview at about 111 MB, still under 150 MB.
 
 Screening runs, 5 minutes each at 500 events/s of 1 KiB:
 
@@ -59,13 +61,14 @@ Screening runs, 5 minutes each at 500 events/s of 1 KiB:
 | `native-content` | The window's renderer ran out of memory about 3 minutes in and crashed (V8 OOM, renderer at 2.35 GB and 210% CPU)                                                          |
 | `webview`        | Every event visible; latency p95 54 ms, p99 59 ms, max 1,063 ms (most likely the first events, waiting for the page to load); 1 long task of 105 ms; renderer CPU 34% mean |
 
-The most likely reason `native-content` crashed: when a content provider's document changes, VS Code computes minimal edits in its editor worker. In VS Code 1.101 that worker gives up above 100,000 characters and replaces the whole document. The Events window passes that size at about 1,000 lines, so every update would become a full replacement.
+The most likely reason `native-content` crashed: when a content provider's document changes, VS Code computes minimal edits in its editor worker. The worker's code in VS Code 1.101 gives up above 100,000 characters and replaces the whole document (the runs used 1.146, which was not inspected). An Events line is about 245 characters, so the window passes that size at about 400 lines, and every update after that would become a full replacement.
 
 How to read the numbers:
 
 - **Native latency is a lower bound.** Native counts an event as visible when the document change reaches the extension host, before the editor paints it. The webview counts it when the page acknowledges the frame that painted it, one message later.
 - **Typing is the extension host round trip** of an edit, not the renderer's input-to-paint time.
-- **Heap figures are upper bounds.** They are sampled without forcing garbage collection. Electron reports array buffers as 0 in the extension host, so resident size is the figure that includes the event index.
+- **Heap figures are upper bounds.** They are sampled without forcing garbage collection. Electron reports array buffers as 0 in the extension host. Resident size would include the event index, but on macOS it can be lower than the heap because the system compresses memory: native's heap peaked at 289 MB and its resident size at 263 MB.
+- **The renderer figure is the sum** of every renderer process: the workbench window plus any webview frames.
 
 ## Walkthrough
 
@@ -129,14 +132,24 @@ What the webview gives up is mostly what VS Code provides free to documents: key
 
 ## Consequences for M6
 
-- **Surface:** one webview panel per response, laid out after the mockup, with the section 13 safeguards the prototype used:
-  - a nonce-only CSP;
-  - `localResourceRoots` limited to the bundle;
-  - response content only through `textContent`;
+- **Surface:** one webview panel per response, laid out after the mockup, with the section 13 safeguards the prototype used, written out in full:
+  - the policy `default-src 'none'; script-src 'nonce-N'; style-src 'nonce-N'; img-src ${cspSource}; font-src ${cspSource}; form-action 'none'; base-uri 'none'`, with a fresh random nonce for each render and no `unsafe-inline` or `unsafe-eval`;
+  - `enableForms: false`, `enableCommandUris` left off, and `localResourceRoots` set to the bundle's folder only (left unset, it would include the workspace);
+  - response content only through `textContent`, never `innerHTML`. Trusted Types (`require-trusted-types-for 'script'`) would make that rule enforced, if VS Code's webview bootstrap allows it;
+  - bodies shown as text; any rendered HTML preview goes in an iframe with `sandbox=""` and its own policy;
   - VS Code theme variables.
+- **Masking:** section 15 masking happens on the extension side before anything is posted. Secret header values, `{{$secret}}` values and `secret` captures never reach the webview. Webview state saved with `setState` holds only interface state (tab, selected index, scroll), never rows, headers or values.
+- **Messages from the webview are untrusted input:**
+  - each one is checked against a schema: known `type` and view, whole-number indexes from 1 to the event count, capped window sizes;
+  - events are read by index only, never by offsets or paths taken from a message;
+  - the webview never supplies a URL, command id or file path.
+
+  For click-to-capture, the webview sends only an event index and JSON path segments. The extension builds the `# @capture` expression, checks it against the capture grammar, rejects control characters, asks for the name in a native input box validated as an identifier, and inserts the line with a `WorkspaceEdit` on the producing request only. The prototype's message handling is not reused as it is.
+
 - **Updates:**
-  - at most one message per update batch (50 ms);
+  - at most one message per update batch (50 ms), capped in bytes as well as rows;
   - only the newest rows while following the tail, at most 500 per message;
+  - event detail capped in size, with large events offered as a document instead;
   - Reply and Raw as deltas, sent only while their tab is visible;
   - older rows read from the spill file when the user scrolls back.
 - **The event list:**
@@ -151,8 +164,13 @@ What the webview gives up is mostly what VS Code provides free to documents: key
   - restoring the selected tab and scroll position when a hidden panel is shown again.
 - **Raw colouring** needs its own tokenizer in the webview, since the built-in `jsonl` grammar only colours documents. The design's "Raw uses VS Code's built-in `jsonl` colouring" therefore changes with this decision.
 - **Benchmark and budgets:**
-  - When `STREAMSCOPE_BENCHMARK=1`, the response view registers `streamscope.benchmark.stream` and `streamscope.benchmark.walkthrough` from `src/benchmark/contract.ts`, so `npm run bench -- view` measures it.
+  - The response view registers `streamscope.benchmark.stream` and `streamscope.benchmark.walkthrough` from `src/benchmark/contract.ts` only when `STREAMSCOPE_BENCHMARK=1` and the extension runs in development or test mode (`context.extensionMode` is not `Production`). That way `npm run bench -- view` can measure it, but a Marketplace install never registers them.
+  - The two commands are never contributed in the manifest, and accept only `http://127.0.0.1` URLs.
+  - A surface records a latency for every visible event, reading the server's `sentAt` when the event arrives. The runner fails a run in which a visible event has no latency, the stream ends early, or the event count differs from what the server sent.
   - M6 meets the section 3 budgets in that benchmark, which includes finding the cause of the extension host pauses over 50 ms.
+- **Not measured by the spike:**
+  - memory at 1,000 events/s for 30 minutes, which is how section 3 says to check the memory budget (the spike ran at 500 events/s);
+  - a native Events document appended to through `WorkspaceEdit` on an untitled document, instead of being re-served whole. Both native variants resent the whole text, so this third native approach was not tried.
 - **Not decided here:**
   - whether non-streaming responses keep M2's Body and Headers documents or move into the panel;
   - whether event detail can also open as a document, to get folding and find in large events.

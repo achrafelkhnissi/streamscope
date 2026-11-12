@@ -28,10 +28,10 @@ npm run bench -- serve
 
 - **`view`** starts VS Code stable from `@vscode/test-electron` in a throwaway profile, with Streamscope and every `--extension` folder loaded as development extensions. The driver (`test/benchmark/view/driver.ts`) runs in the extension host. It runs the command `streamscope.benchmark.stream` with the synthetic stream's URL and the surface name. The command opens that response surface beside an editor and resolves when every event is visible. Meanwhile the driver measures:
   - **Latency:** the time from the server stamping an event to the surface showing it. A document surface counts an event when the document change reaches the extension host. A webview counts it when the page acknowledges the frame that painted it. A run fails if any event never becomes visible.
-  - **Long tasks:** gaps over 50 ms between ticks of a 10 ms timer in the extension host.
-  - **Typing:** the round trip of inserting a character into an editor every 100 ms.
+  - **Long tasks:** stretches of over 50 ms in which a 10 ms timer in the extension host could not run, that is, gaps of over 60 ms between its ticks.
+  - **Typing:** the round trip of inserting a character into an editor every 100 ms. A tick that comes while an edit is still outstanding is skipped, so a long stall counts as one sample.
   - **Extension host:** CPU time, and heap and resident size sampled every second without forced garbage collection, so they are upper bounds. Electron reports array buffers as 0 there, so the resident size is the figure that includes the event index.
-  - **Other processes:** CPU and resident size of the renderer, GPU and main processes, read with `ps` every 5 s over the VS Code process tree.
+  - **Other processes:** CPU and resident size of the renderer, GPU and main processes, read with `ps` every 5 s over the VS Code process tree. "Renderer" is the sum of every renderer process: the workbench window plus any webview frames.
 - **`--walkthrough`** streams 20 events/s for 2 minutes and runs `streamscope.benchmark.walkthrough`. The surface takes the screenshots listed in `src/benchmark/contract.ts` through the runner's control server, which saves them under `out/benchmark/screenshots/`.
 - **`serve`** prints the URL of the synthetic stream server and keeps it running, for trying a surface by hand.
 
@@ -39,9 +39,12 @@ Things to know:
 
 - The view benchmark runs on macOS and Linux. On Linux, `ps` reports CPU time in whole seconds.
 - It opens a VS Code window that must stay visible while it runs. Chromium's background throttling is turned off, but a minimised window still distorts the numbers.
-- VS Code is started with `--remote-debugging-port` on 127.0.0.1 so the runner can take screenshots. The port lives only as long as the throwaway profile, which holds nothing but synthetic data.
+- A stream run fails when the surface returns nothing, the stream does not complete, the event count differs from what the server sends, any event never becomes visible, or a visible event has no latency. The synthetic server stamps every event, including `RUN_STARTED` and `RUN_FINISHED`, with `sentAt`. A surface must record a latency for every visible event, reading `sentAt` when the event arrives.
+- VS Code gets only a short list of environment variables (`PATH`, `HOME`, locale, temporary folders and display), not the whole shell environment. It keeps the Chromium sandbox on macOS.
+- For a walkthrough only, VS Code is started with `--remote-debugging-port=0` so the runner can take screenshots. The runner reads the port VS Code reports and talks only to the workbench on 127.0.0.1 at that port. While a walkthrough runs, any local process can connect to that port and drive the window, so don't run walkthroughs on a shared machine or in CI. The runner's control server takes requests only with a random per-run token.
+- Ctrl+C stops VS Code and removes the throwaway profile.
 - Results and the VS Code log go to `out/benchmark/view-<surface>-<time>.json` and `.log`.
-- A surface must register the two `streamscope.benchmark.*` commands. The M5 prototypes did, from a development-only extension that has since been deleted. M6's response view will register them when `STREAMSCOPE_BENCHMARK=1`. Until then, `view` reports that no surface registered the command.
+- A surface must register the two `streamscope.benchmark.*` commands. The M5 prototypes did, from a development-only extension that has since been deleted. M6's response view will register them only in development and test mode and when `STREAMSCOPE_BENCHMARK=1`. Until then, `view` reports that no surface registered the command.
 
 ## 2026-11-12: M4 streaming core
 
@@ -115,7 +118,7 @@ Raw results:
 
 ## 2026-11-12: M5 response view spike
 
-Prototypes from commits `fd2f887` and `379b0d6` on branch `m5-response-view-spike`, measured with `npm run bench -- view … --extension spike`. Apple M3 Pro, 18 GB, macOS 27.2.1, Node 24.18.0, VS Code 1.146.0. Events are AG-UI NDJSON `TEXT_MESSAGE_CONTENT` of 1,024 bytes at 500 events/s. [decisions/response-surface.md](decisions/response-surface.md) describes the prototypes and what the numbers mean for the choice.
+Prototypes on branch `m5-response-view-spike`, measured with `npm run bench -- view … --extension spike`: the 5-minute screening on commit `3d88351`, and the 30-minute runs on `fd2f887` (native) and `379b0d6` (webview). Between `3d88351` and `fd2f887`, native's document links became cheaper. These runs came before the runner checked event counts and latencies. They have the expected event count and every event visible. The 30-minute runs have 900,000 latencies for 900,002 visible events, because `RUN_STARTED` and `RUN_FINISHED` did not carry `sentAt` yet. Apple M3 Pro, 18 GB, macOS 27.2.1, Node 24.18.0, VS Code 1.146.0. Events are AG-UI NDJSON `TEXT_MESSAGE_CONTENT` of 1,024 bytes at 500 events/s. [decisions/response-surface.md](decisions/response-surface.md) describes the prototypes and what the numbers mean for the choice.
 
 ### 30 minutes
 
@@ -124,7 +127,7 @@ Prototypes from commits `fd2f887` and `379b0d6` on branch `m5-response-view-spik
 | Prototype commit                        | `fd2f887`                        | `379b0d6`                        |                  |
 | Events visible                          | 900,002 of 900,002               | 900,002 of 900,002               | all              |
 | Latency p50 / p95 / p99 / max           | 119 / 393 / 921 / 5,949 ms       | 32 / 54 / 59 / 1,169 ms          | p95 under 100 ms |
-| Extension host pauses over 50 ms        | 87, longest 670 ms, 8.3 s in all | 14, longest 257 ms, 1.6 s in all | none             |
+| Extension host blocked over 50 ms       | 87, longest 670 ms, 8.3 s in all | 14, longest 257 ms, 1.6 s in all | none             |
 | Typing round trip p50 / p95 / p99 / max | 20 / 136 / 257 / 5,501 ms        | 0 / 1 / 2 / 465 ms               | smooth           |
 | Extension host CPU                      | 18.3%                            | 5.4%                             |                  |
 | Extension host heap, start → max        | 46 → 289 MB                      | 46 → 87 MB                       | under 150 MB     |
