@@ -116,18 +116,26 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       provideDocumentLinks: (document) => {
         const links: vscode.DocumentLink[] = [];
         for (let line = 0; line < document.lineCount; line += 1) {
-          const match = /^\[(\d+)\]/.exec(document.lineAt(line).text);
-          if (match?.[0] !== undefined) {
-            const argument = encodeURIComponent(JSON.stringify([Number(match[1])]));
-            const link = new vscode.DocumentLink(
-              new vscode.Range(line, 0, line, match[0].length),
-              vscode.Uri.parse(`command:streamscope.spike.showDetail?${argument}`),
-            );
+          const text = document.lineAt(line).text;
+          if (text.startsWith('[')) {
+            const link = new vscode.DocumentLink(new vscode.Range(line, 0, line, 8));
             link.tooltip = 'Show this event';
             links.push(link);
           }
         }
         return links;
+      },
+      resolveDocumentLink: (link, token) => {
+        const document = vscode.window.activeTextEditor?.document;
+        const index =
+          document === undefined || token.isCancellationRequested
+            ? undefined
+            : /^\[(\d+)\]/.exec(document.lineAt(link.range.start.line).text)?.[1];
+        if (index !== undefined) {
+          const argument = encodeURIComponent(JSON.stringify([Number(index)]));
+          link.target = vscode.Uri.parse(`command:streamscope.spike.showDetail?${argument}`);
+        }
+        return link;
       },
     }),
     vscode.languages.registerCodeActionsProvider(
