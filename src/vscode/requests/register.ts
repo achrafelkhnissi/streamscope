@@ -373,7 +373,13 @@ export function registerRequestFeatures(
 
   const stopRequest = async (uri?: unknown, line?: unknown): Promise<void> => {
     const key = await responseKey(uri, line);
-    if (key === undefined || !registry.cancel(key)) {
+    if (key === undefined) {
+      void vscode.window.showInformationMessage('This request is not running.');
+      return;
+    }
+    const shown = uri === undefined && key === panels.active() ? panels.state(key) : undefined;
+    const showsEarlierRun = shown?.readOnly === true && shown.run !== registry.latest(key)?.id;
+    if (showsEarlierRun || !registry.cancel(key)) {
       void vscode.window.showInformationMessage('This request is not running.');
     }
   };

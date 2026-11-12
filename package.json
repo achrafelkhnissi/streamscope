@@ -216,7 +216,7 @@
         },
         {
           "command": "streamscope.stopRequest",
-          "when": "activeWebviewPanelId == 'streamscope.response'",
+          "when": "activeWebviewPanelId == 'streamscope.response' && !streamscope.responseReadOnly",
           "group": "navigation@1"
         },
         {

@@ -21,7 +21,9 @@ export interface ResponseState {
   format: string | undefined;
   body: PanelBody['kind'];
   visible: boolean;
+  active: boolean;
   readOnly: boolean;
+  readOnlyContext: boolean;
   released: boolean;
   title: string | undefined;
   bodyText: string | undefined;
@@ -50,6 +52,7 @@ interface Entry {
 export const responseViewType = 'streamscope.response';
 
 const lastViewKey = 'streamscope.view.last';
+const readOnlyContextKey = 'streamscope.responseReadOnly';
 const rememberedViews: readonly PanelView[] = ['events', 'reply', 'raw'];
 const tickMs = 1000;
 const columns: readonly vscode.ViewColumn[] = [
@@ -83,6 +86,7 @@ function isRunning(run: RunHandle): boolean {
 export class ResponsePanels implements vscode.Disposable {
   private readonly entries = new Map<string, Entry>();
   private lastView: PanelView | undefined;
+  private readOnlyContext = false;
 
   constructor(private readonly options: ResponsePanelsOptions) {}
 
@@ -124,6 +128,7 @@ export class ResponsePanels implements vscode.Disposable {
     if (options.reveal) {
       this.revealEntry(entry, true);
     }
+    this.updateContext();
   }
 
   reveal(key: string, preserveFocus = false): boolean {
@@ -173,7 +178,9 @@ export class ResponsePanels implements vscode.Disposable {
       format: format === undefined ? undefined : formatLabel(format),
       body: entry.feed.body.kind,
       visible: entry.panel?.visible ?? false,
+      active: entry.panel?.active ?? false,
       readOnly: entry.readOnly,
+      readOnlyContext: this.readOnlyContext,
       released: snapshot.released,
       title: entry.panel?.title,
       bodyText: bodyText(entry.feed.body),
@@ -292,6 +299,7 @@ export class ResponsePanels implements vscode.Disposable {
         if (entry.panel === panel && !panel.visible) {
           this.hide(entry);
         }
+        this.updateContext();
       }),
       panel.onDidDispose(() => {
         if (entry.panel === panel) {
@@ -386,6 +394,17 @@ export class ResponsePanels implements vscode.Disposable {
     this.hide(entry);
     if (!isRunning(entry.run)) {
       this.drop(entry);
+    }
+    this.updateContext();
+  }
+
+  private updateContext(): void {
+    const readOnly = [...this.entries.values()].some(
+      (entry) => entry.panel?.active === true && entry.readOnly,
+    );
+    if (readOnly !== this.readOnlyContext) {
+      this.readOnlyContext = readOnly;
+      void vscode.commands.executeCommand('setContext', readOnlyContextKey, readOnly);
     }
   }
 

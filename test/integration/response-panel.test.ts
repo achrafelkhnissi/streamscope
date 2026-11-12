@@ -19,7 +19,9 @@ interface ResponseState {
   format: string | undefined;
   body: string;
   visible: boolean;
+  active: boolean;
   readOnly: boolean;
+  readOnlyContext: boolean;
   released: boolean;
   title: string | undefined;
   bodyText: string | undefined;
@@ -888,6 +890,61 @@ describe('the response panel', () => {
 
         assert.equal(readFileSync(target.fsPath, 'utf8'), JSON.stringify(json));
       });
+    });
+
+    it('does not cancel the newer run when Stop comes from the panel of an older one', async function () {
+      this.timeout(30_000);
+      let served = 0;
+      const server = await startHttpServer((_request, response) => {
+        served += 1;
+        response.writeHead(200, { 'Content-Type': 'application/x-ndjson' });
+        response.write(`${JSON.stringify({ type: 'RUN_STARTED' })}\n`);
+        if (served === 1) {
+          response.end(`${JSON.stringify({ type: 'RUN_FINISHED' })}\n`);
+          return;
+        }
+        const timer = setInterval(() => {
+          response.write(`${JSON.stringify({ type: 'PART' })}\n`);
+        }, 20);
+        response.on('close', () => {
+          clearInterval(timer);
+        });
+      });
+      servers.push(server);
+      const editor = await open('history-stop.http', [`GET ${server.url}/stream`]);
+      const uri = editor.document.uri;
+
+      await send();
+      const earlier = await waitForState(
+        (seen) => seen.status === 'completed' && seen.rendered === seen.events,
+        'the earlier run did not complete',
+      );
+      start();
+      const newer = await waitForState(
+        (seen) => seen.run !== earlier.run && seen.status === 'receiving' && seen.events >= 3,
+        'the newer run did not start streaming',
+      );
+
+      await showHistory(earlier.run);
+      const reopened = await waitForState(
+        (seen) => seen.run === earlier.run && seen.active && seen.readOnlyContext,
+        'the earlier run was not reopened in an active read-only panel',
+      );
+      await vscode.commands.executeCommand('streamscope.stopRequest');
+      await new Promise((resolve) => setTimeout(resolve, 300));
+
+      assert.equal(reopened.readOnly, true);
+      assert.equal(await runStatus(newer.run), 'receiving');
+      await vscode.commands.executeCommand('streamscope.showResponse', uri, 0);
+      await waitForState(
+        (seen) => seen.run === newer.run && !seen.readOnly && !seen.readOnlyContext,
+        'the newer run did not come back to the panel',
+      );
+      await vscode.commands.executeCommand('streamscope.stopRequest', uri, 0);
+      await until(
+        async () => (await runStatus(newer.run)) === 'cancelled',
+        'Stop with the request did not cancel the newer run',
+      );
     });
 
     it('keeps a run that is still running while older runs are dropped', async function () {

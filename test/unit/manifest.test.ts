@@ -295,7 +295,10 @@ describe('extension manifest', () => {
         'resourceScheme == streamscope-response && resourceFilename =~ /\\.headers\\.http$/',
       ],
       ['streamscope.saveResponse', 'resourceScheme == streamscope-response'],
-      ['streamscope.stopRequest', "activeWebviewPanelId == 'streamscope.response'"],
+      [
+        'streamscope.stopRequest',
+        "activeWebviewPanelId == 'streamscope.response' && !streamscope.responseReadOnly",
+      ],
       ['streamscope.saveResponse', "activeWebviewPanelId == 'streamscope.response'"],
       ['streamscope.showResponseBody', "activeWebviewPanelId == 'streamscope.response'"],
     ]);
