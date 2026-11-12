@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { StreamEvent } from '../../../src/events/model';
 import { SpillArea, type SpillFile } from '../../../src/events/spill';
 import { EventStore, type EventStoreOptions } from '../../../src/events/store';
-import { defaultStreamLimits, maxLabels } from '../../../src/streaming/limits';
+import { defaultStreamLimits, maxIndexedEvents, maxLabels } from '../../../src/streaming/limits';
 import { parseEventBytes } from '../../../src/streaming/parser';
 
 const encoder = new TextEncoder();
@@ -32,6 +32,7 @@ function store(overrides: Partial<EventStoreOptions> = {}): EventStore {
   return new EventStore({
     memoryEvents: 10,
     memoryBytes: 1024,
+    maxIndexedEvents,
     spill: undefined,
     reparse: (bytes) =>
       parseEventBytes(bytes, 'ndjson', {
@@ -217,5 +218,45 @@ describe('EventStore', () => {
     expect(() => {
       events.append(event(1));
     }).toThrow();
+  });
+
+  it('allocates a small index for a short stream', () => {
+    const before = process.memoryUsage().arrayBuffers;
+    const stores = Array.from({ length: 50 }, () => {
+      const events = store();
+      for (let index = 1; index <= 3; index += 1) {
+        events.append(event(index));
+      }
+      return events;
+    });
+    const used = process.memoryUsage().arrayBuffers - before;
+
+    expect(stores.every((events) => events.summary(3)?.label === 't-3')).toBe(true);
+    expect(used).toBeLessThan(5 * 1024 * 1024);
+  });
+
+  it('keeps summaries across the growth of the first index block', () => {
+    const events = store({ memoryEvents: 2 });
+    for (let index = 1; index <= 5000; index += 1) {
+      events.append(event(index));
+    }
+
+    expect(events.summary(1)?.label).toBe('t-1');
+    expect(events.summary(1025)?.offset).toBe(1024 * 6);
+    expect(events.summary(5000)?.time).toBe(50_000);
+  });
+
+  it('drops the oldest index blocks beyond maxIndexedEvents', async () => {
+    const events = store({ memoryEvents: 4, maxIndexedEvents: 65_536 });
+    for (let index = 1; index <= 140_000; index += 1) {
+      events.append(event(index));
+    }
+
+    expect(events.count).toBe(140_000);
+    expect(events.summary(1)).toBeUndefined();
+    expect(events.summary(65_536)).toBeUndefined();
+    expect(events.summary(65_537)?.offset).toBe(65_536 * 6);
+    expect(events.summary(140_000)?.time).toBe(1_400_000);
+    expect(await events.read(1)).toBeUndefined();
   });
 });

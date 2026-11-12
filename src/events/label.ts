@@ -19,10 +19,21 @@ function typeName(value: JsonValue, typeFields: readonly string[]): string | und
   return undefined;
 }
 
+function cut(label: string): string {
+  if (label.length <= maxLabelLength) {
+    return label;
+  }
+  const end = /[\uD800-\uDBFF]/.test(label.charAt(maxLabelLength - 1))
+    ? maxLabelLength - 1
+    : maxLabelLength;
+  return Buffer.from(label.slice(0, end), 'utf16le').toString('utf16le');
+}
+
 export function eventLabel(
   value: JsonValue,
   sse: SseFields | undefined,
   typeFields: readonly string[],
 ): string | undefined {
-  return (typeName(value, typeFields) ?? sse?.event)?.slice(0, maxLabelLength);
+  const label = typeName(value, typeFields) ?? sse?.event;
+  return label === undefined ? undefined : cut(label);
 }

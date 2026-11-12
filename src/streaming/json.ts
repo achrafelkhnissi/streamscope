@@ -1,7 +1,7 @@
 import type { JsonValue } from '../events/model';
 
 const longDigitRun = /\d{16}/;
-const integerSource = /^-?\d+$/;
+const integerSource = /^-?\d{1,1000}$/;
 
 function keepLargeIntegers(_key: string, value: unknown, context?: { source?: string }): unknown {
   const source = context?.source;

@@ -13,6 +13,7 @@ import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SpillArea } from '../../../src/events/spill';
+import { retainedHeap } from '../../support/memory';
 import { defaultSpillLimits, type SpillLimits } from '../../../src/streaming/limits';
 
 const encoder = new TextEncoder();
@@ -185,5 +186,68 @@ describe('SpillArea and SpillFile', () => {
     expect(existsSync(second.path)).toBe(false);
     expect(existsSync(area.directory)).toBe(false);
     expect(fileHandles()).toBe(baseline);
+  });
+
+  it('coalesces small appends instead of queueing one write each', async () => {
+    const area = await SpillArea.open(root);
+    const file = await area.create();
+    const count = 200_000;
+    const { bytes } = retainedHeap(() => {
+      for (let index = 0; index < count; index += 1) {
+        file.append(Uint8Array.of(0x61 + (index % 26)));
+      }
+      return file;
+    });
+    await file.finish();
+
+    expect(bytes).toBeLessThan(8 * 1024 * 1024);
+    expect(file.savedBytes).toBe(count);
+    expect(text(await file.read(26, 26))).toBe('abcdefghijklmnopqrstuvwxyz');
+    expect(statSync(file.path).size).toBe(count);
+    await area.dispose();
+  });
+
+  it('reads staged bytes without waiting for a later append', async () => {
+    const area = await SpillArea.open(root);
+    const file = await area.create();
+    file.append(encoder.encode('sta'));
+    file.append(encoder.encode('ged'));
+
+    expect(text(await file.read(0, 6))).toBe('staged');
+    await area.dispose();
+  });
+
+  it('signals drain when a backpressured file is evicted or deleted', async () => {
+    const area = await SpillArea.open(root, limits({ writeBufferBytes: 4, maxTotalSize: 12 }));
+    const evicted = await area.create();
+    const deleted = await area.create();
+    const newest = await area.create();
+    const drains: string[] = [];
+    evicted.onDrain(() => drains.push('evicted'));
+    deleted.onDrain(() => drains.push('deleted'));
+
+    expect(evicted.append(encoder.encode('01234567'))).toBe(false);
+    expect(deleted.append(encoder.encode('abcd'))).toBe(false);
+    newest.append(encoder.encode('wxyz'));
+    await deleted.delete();
+
+    expect(evicted.evicted).toBe(true);
+    expect(drains).toContain('evicted');
+    expect(drains).toContain('deleted');
+    await area.dispose();
+  });
+
+  it('deletes and disposes cleanly after the file vanished', async () => {
+    const area = await SpillArea.open(root);
+    const file = await area.create();
+    file.append(encoder.encode('synthetic'));
+    await file.finish();
+    rmSync(file.path);
+
+    await expect(file.read(0, 4)).rejects.toThrow();
+    await file.delete();
+    await area.dispose();
+
+    expect(existsSync(area.directory)).toBe(false);
   });
 });

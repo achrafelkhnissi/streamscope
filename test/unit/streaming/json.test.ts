@@ -100,4 +100,15 @@ describe('parseJson', () => {
       value: { type: 'RUN_STARTED', threadId: 'thread-1' },
     });
   });
+
+  it('keeps very long integer literals as numbers', () => {
+    const result = parseJson(`{"id":${'9'.repeat(2000)}}`);
+
+    expect(result.ok).toBe(true);
+    expect(result.ok && typeof (result.value as { id: unknown }).id).toBe('number');
+    expect(parseJson(`{"id":${'9'.repeat(1000)}}`)).toMatchObject({
+      ok: true,
+      value: { id: BigInt('9'.repeat(1000)) },
+    });
+  });
 });

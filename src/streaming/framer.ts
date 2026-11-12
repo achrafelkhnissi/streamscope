@@ -23,6 +23,7 @@ export type FramedLine =
     };
 
 const lf = 0x0a;
+const maxPieces = 16;
 const cr = 0x0d;
 export const byteOrderMark = [0xef, 0xbb, 0xbf];
 const lineDecoder = new TextDecoder('utf-8', { ignoreBOM: true });
@@ -39,6 +40,20 @@ function join(parts: readonly Uint8Array[], total: number): Uint8Array {
     at += part.length;
   }
   return joined;
+}
+
+export function firstBytes(pieces: readonly Uint8Array[], count: number): Uint8Array {
+  const first = new Uint8Array(count);
+  let at = 0;
+  for (const piece of pieces) {
+    if (at >= count) {
+      break;
+    }
+    const taken = piece.subarray(0, count - at);
+    first.set(taken, at);
+    at += taken.length;
+  }
+  return first.subarray(0, at);
 }
 
 export function isMarkPrefix(bytes: Uint8Array): boolean {
@@ -58,6 +73,7 @@ export class LineFramer {
   private nextLf = -2;
   private nextCr = -2;
   private parts: Uint8Array[] = [];
+  private gathered: Uint8Array | undefined;
   private partBytes = 0;
   private preview: Uint8Array | undefined;
   private pendingCr = false;
@@ -68,6 +84,10 @@ export class LineFramer {
 
   constructor(private readonly maxLineBytes: number) {
     this.previewLimit = Math.min(previewBytes, maxLineBytes);
+  }
+
+  get lineOffset(): number {
+    return this.lineStart;
   }
 
   get pendingBytes(): number {
@@ -166,8 +186,7 @@ export class LineFramer {
     this.head = undefined;
     this.queue.length = 0;
     this.queuedBytes = 0;
-    this.parts = [];
-    this.partBytes = 0;
+    this.clearLine();
     this.preview = undefined;
     this.pendingCr = false;
     return total === 0 ? new Uint8Array(0) : join(pieces, total);
@@ -181,7 +200,7 @@ export class LineFramer {
     if (this.preview !== undefined) {
       pieces.push(this.preview);
     }
-    pieces.push(...this.parts);
+    pieces.push(...this.lineBytes());
     if (this.pendingCr) {
       pieces.push(Uint8Array.of(cr));
     }
@@ -232,13 +251,39 @@ export class LineFramer {
     if (bytes.length === 0 || this.preview !== undefined) {
       return;
     }
-    this.parts.push(bytes);
-    this.partBytes += bytes.length;
-    if (this.partBytes > this.maxLineBytes) {
-      this.preview = join(this.parts, this.partBytes).slice(0, this.previewLimit);
-      this.parts = [];
-      this.partBytes = 0;
+    const needed = this.partBytes + bytes.length;
+    if (needed > this.maxLineBytes) {
+      this.preview = firstBytes([...this.lineBytes(), bytes], this.previewLimit);
+      this.clearLine();
+      return;
     }
+    if (this.gathered === undefined && this.parts.length < maxPieces) {
+      this.parts.push(bytes);
+      this.partBytes = needed;
+      return;
+    }
+    if (this.gathered === undefined || needed > this.gathered.length) {
+      const grown = new Uint8Array(Math.min(this.maxLineBytes, Math.max(needed * 2, 4096)));
+      let at = 0;
+      for (const piece of this.lineBytes()) {
+        grown.set(piece, at);
+        at += piece.length;
+      }
+      this.gathered = grown;
+      this.parts = [];
+    }
+    this.gathered.set(bytes, this.partBytes);
+    this.partBytes = needed;
+  }
+
+  private lineBytes(): Uint8Array[] {
+    return this.gathered === undefined ? this.parts : [this.gathered.subarray(0, this.partBytes)];
+  }
+
+  private clearLine(): void {
+    this.parts = [];
+    this.gathered = undefined;
+    this.partBytes = 0;
   }
 
   private finish(terminator: LineTerminator): FramedLine {
@@ -252,9 +297,8 @@ export class LineFramer {
       this.preview = undefined;
       return { kind: 'oversize', preview, terminator, offset, length, number };
     }
-    const bytes = join(this.parts, this.partBytes);
-    this.parts = [];
-    this.partBytes = 0;
+    const bytes = join(this.lineBytes(), this.partBytes);
+    this.clearLine();
     const text = lineDecoder.decode(bytes);
     const invalidUtf8 = text.includes('�') && !isUtf8(bytes);
     return { kind: 'line', text, terminator, offset, length, number, invalidUtf8 };

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { eventLabel } from '../../../src/events/label';
 import type { SseFields } from '../../../src/events/model';
+import { retainedHeap } from '../../support/memory';
 
 const typeFields = ['type', 'event', 'object'] as const;
 
@@ -83,5 +84,24 @@ describe('eventLabel', () => {
     expect(eventLabel({ type: BigInt('7'.repeat(150)) }, undefined, typeFields)).toBe(
       '7'.repeat(100),
     );
+  });
+
+  it('never cuts a label inside a surrogate pair', () => {
+    expect(eventLabel({ type: `${'a'.repeat(99)}🚀` }, undefined, typeFields)).toBe('a'.repeat(99));
+  });
+
+  it('keeps a flat copy of a cut label instead of the whole value', () => {
+    const { value, bytes } = retainedHeap(() =>
+      Array.from({ length: 32 }, (_, index) =>
+        eventLabel(
+          { type: `${String(index)}${'x'.repeat(4 * 1024 * 1024)}` },
+          undefined,
+          typeFields,
+        ),
+      ),
+    );
+
+    expect((value as string[]).every((label) => label.length === 100)).toBe(true);
+    expect(bytes).toBeLessThan(16 * 1024 * 1024);
   });
 });

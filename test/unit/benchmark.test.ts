@@ -33,6 +33,9 @@ describe('benchmark harness', () => {
     expect(result.events).toBeGreaterThanOrEqual(150);
     expect(result.maxHeapBytes).toBeGreaterThan(0);
     expect(result.maxRssBytes).toBeGreaterThan(0);
+    expect(result.maxArrayBuffersBytes).toBeGreaterThan(0);
+    expect(result.maxMemoryBytes).toBeGreaterThanOrEqual(result.maxHeapBytes);
+    expect(result.maxMemoryBytes).toBeGreaterThan(result.maxArrayBuffersBytes);
     expect(Number.isFinite(result.lagP95Ms)).toBe(true);
     expect(result.lagMaxMs).toBeGreaterThanOrEqual(result.lagP95Ms);
     expect(result.spillBytes).toBeGreaterThan(0);

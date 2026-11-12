@@ -1,5 +1,5 @@
 import type { FormatDecision, StreamDirective } from '../streaming/detect';
-import { defaultStreamLimits, type StreamLimits } from '../streaming/limits';
+import { defaultStreamLimits, maxIndexedEvents, type StreamLimits } from '../streaming/limits';
 import { parseEventBytes, StreamParser, type StreamWarning } from '../streaming/parser';
 import { UpdateBatcher } from './batcher';
 import { ReplyAssembler } from './reply';
@@ -30,6 +30,7 @@ export class StreamSession {
     this.store = new EventStore({
       memoryEvents: limits.memoryEvents,
       memoryBytes: limits.memoryBytes,
+      maxIndexedEvents,
       spill: options.spill,
       reparse: (bytes) => {
         const format = this.decision?.format;
@@ -112,6 +113,9 @@ export class StreamSession {
 
   dispose(): void {
     this.batcher.dispose();
+    if (this.close()) {
+      this.parser.stop();
+    }
   }
 
   private close(): boolean {

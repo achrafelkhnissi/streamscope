@@ -18,6 +18,7 @@ export const sniffBytes = 64 * 1024;
 export const previewBytes = 1024;
 export const maxLabelLength = 100;
 export const maxLabels = 4096;
+export const maxIndexedEvents = 2_097_152;
 export const maxReplyLength = 1_048_576;
 
 export interface SpillLimits {

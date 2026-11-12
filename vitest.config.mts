@@ -4,6 +4,7 @@ export default defineConfig({
   test: {
     include: ['test/unit/**/*.test.ts'],
     environment: 'node',
+    execArgv: ['--expose-gc'],
     coverage: {
       provider: 'v8',
       include: ['src/**/*.ts'],

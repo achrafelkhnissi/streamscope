@@ -15,6 +15,7 @@ export interface EventSummary {
 export interface EventStoreOptions {
   memoryEvents: number;
   memoryBytes: number;
+  maxIndexedEvents: number;
   spill: SpillFile | undefined;
   reparse: (bytes: Uint8Array) => Omit<StreamEvent, 'index' | 'time'> | undefined;
 }
@@ -29,22 +30,35 @@ interface IndexBlock {
 }
 
 const blockSize = 65_536;
+const firstBlockSize = 1024;
 const kinds: readonly EventKind[] = ['json', 'text', 'malformed', 'oversize', 'comment'];
 const kindCodes: ReadonlyMap<EventKind, number> = new Map(kinds.map((kind, code) => [kind, code]));
 
-function createBlock(): IndexBlock {
+function createBlock(size: number): IndexBlock {
   return {
-    time: new Float64Array(blockSize),
-    offset: new Float64Array(blockSize),
-    length: new Uint32Array(blockSize),
-    line: new Uint32Array(blockSize),
-    kind: new Uint8Array(blockSize),
-    label: new Uint16Array(blockSize),
+    time: new Float64Array(size),
+    offset: new Float64Array(size),
+    length: new Uint32Array(size),
+    line: new Uint32Array(size),
+    kind: new Uint8Array(size),
+    label: new Uint16Array(size),
   };
 }
 
+function grownBlock(block: IndexBlock): IndexBlock {
+  const grown = createBlock(Math.min(blockSize, block.time.length * 2));
+  grown.time.set(block.time);
+  grown.offset.set(block.offset);
+  grown.length.set(block.length);
+  grown.line.set(block.line);
+  grown.kind.set(block.kind);
+  grown.label.set(block.label);
+  return grown;
+}
+
 export class EventStore {
-  private readonly blocks: IndexBlock[] = [];
+  private readonly blocks: (IndexBlock | undefined)[] = [];
+  private droppedBlocks = 0;
   private total = 0;
   private readonly ring: (StreamEvent | undefined)[];
   private oldest = 1;
@@ -127,18 +141,25 @@ export class EventStore {
 
   private record(event: StreamEvent): void {
     const blockIndex = Math.floor((event.index - 1) / blockSize);
+    const at = (event.index - 1) % blockSize;
     let block = this.blocks[blockIndex];
     if (block === undefined) {
-      block = createBlock();
+      block = createBlock(blockIndex === 0 ? firstBlockSize : blockSize);
       this.blocks.push(block);
+    } else if (at >= block.time.length) {
+      block = grownBlock(block);
+      this.blocks[blockIndex] = block;
     }
-    const at = (event.index - 1) % blockSize;
     block.time[at] = event.time;
     block.offset[at] = event.offset;
     block.length[at] = event.length;
     block.line[at] = event.line;
     block.kind[at] = kindCodes.get(event.kind) ?? 0;
     block.label[at] = this.labelId(event.label);
+    while ((this.droppedBlocks + 1) * blockSize <= this.total - this.options.maxIndexedEvents) {
+      this.blocks[this.droppedBlocks] = undefined;
+      this.droppedBlocks += 1;
+    }
   }
 
   private labelId(label: string | undefined): number {

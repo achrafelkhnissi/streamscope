@@ -16,6 +16,8 @@ export interface SoakResult {
   maxHeapBytes: number;
   maxExternalBytes: number;
   maxRssBytes: number;
+  maxArrayBuffersBytes: number;
+  maxMemoryBytes: number;
   lagP95Ms: number;
   lagMaxMs: number;
   spillBytes: number;
@@ -67,7 +69,7 @@ export async function runSoak(options: {
   const area = await SpillArea.open(root);
   const spill = await area.create();
   const histogram = new Uint32Array(histogramLimitMs + 1);
-  const memory = { heap: 0, external: 0, rss: 0 };
+  const memory = { heap: 0, external: 0, rss: 0, arrayBuffers: 0, total: 0 };
   let lagMax = 0;
   let measured = 0;
   let session: StreamSession | undefined;
@@ -77,6 +79,8 @@ export async function runSoak(options: {
     memory.heap = Math.max(memory.heap, usage.heapUsed);
     memory.external = Math.max(memory.external, usage.external);
     memory.rss = Math.max(memory.rss, usage.rss);
+    memory.arrayBuffers = Math.max(memory.arrayBuffers, usage.arrayBuffers);
+    memory.total = Math.max(memory.total, usage.heapUsed + usage.arrayBuffers);
   };
   const measure = (): void => {
     if (session === undefined) {
@@ -143,6 +147,8 @@ export async function runSoak(options: {
     maxHeapBytes: memory.heap,
     maxExternalBytes: memory.external,
     maxRssBytes: memory.rss,
+    maxArrayBuffersBytes: memory.arrayBuffers,
+    maxMemoryBytes: memory.total,
     lagP95Ms: percentile(histogram, 0.95),
     lagMaxMs: lagMax,
     spillBytes,

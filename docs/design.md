@@ -242,9 +242,10 @@ Rules:
 
 - The socket is read at full speed. The UI never slows it down. The only backpressure is the spill-file write; if the disk cannot keep up, the socket pauses.
 - The framer splits bytes on LF, CRLF and lone CR, carrying a pending CR across chunk boundaries. Each line records its exact byte offset and length in the decompressed stream. A leading BOM belongs to no line.
-- Each complete line is then decoded as UTF-8. CR and LF never occur inside a multi-byte sequence, so a character split across chunks is rebuilt as the line accumulates. Invalid bytes become U+FFFD and one warning per stream. Bodies that are not parsed into events (text, single JSON, raw) go through one `TextDecoder` in streaming mode, flushed at end of stream.
-- The framer holds at most `maxEventSize` bytes of one line, and an undecided body at most 64 KiB plus one chunk.
-- Captures and checks evaluate on every event synchronously and cheaply; UI updates are batched: the first event is shown immediately, then at most every 50 ms, and immediately on end, error or cancel.
+- Each complete line is then decoded as UTF-8. CR and LF never occur inside a multi-byte sequence, so a character split across chunks is rebuilt as the line accumulates. Invalid bytes become U+FFFD and one warning per stream, carrying the byte offset of the first invalid byte. Bodies that are not parsed into events (text, single JSON, raw) go through one `TextDecoder` in streaming mode, flushed at end of stream.
+- The framer holds at most `maxEventSize` bytes of one line, and an undecided body at most 64 KiB plus one chunk. While the format is still being detected, lines up to 64 KiB are accepted whatever `maxEventSize` says, so a small limit never truncates a sniffed body.
+- Small chunks are gathered: a line arriving in many pieces is copied into one growing buffer, and the spill file stages writes smaller than 64 KiB.
+- Captures and checks evaluate on every event synchronously and cheaply; UI updates are batched: the first update goes out as soon as the current chunk has been parsed (in a microtask, never inside a parser callback), then at most every 50 ms, and immediately on end, error or cancel.
 - The format detector runs once, but may upgrade single JSON to NDJSON (section 8).
 
 ## 8. NDJSON and SSE parsing
@@ -279,7 +280,7 @@ How detection behaves in practice (M4):
 
 Follows the WHATWG event stream interpretation:
 
-- A leading BOM is removed. Lines starting with `:` are comments (shown in Raw only).
+- A leading BOM is removed. Lines starting with `:` are comments: they become `comment` events, which the Events view hides and Raw shows.
 - `field: value` with one leading space removed; `data` lines join with `\n`; `event`, `id` (ignored if it contains NULL) and `retry` (digits only) are recorded.
 - A blank line dispatches the event; an event without data is not dispatched. An incomplete final event is reported as discarded.
 - If `data` parses as JSON, the event value is that JSON; otherwise it is text. The OpenAI-style `[DONE]` sentinel is shown as an end marker, not as malformed.
@@ -309,7 +310,7 @@ Text bodies are appended as they arrive. A single JSON body is pretty-printed wh
 ### Retention
 
 - For a run shown in an open view, the newest 10,000 events (`streamscope.stream.memoryEvents`) are kept in memory with parsed values, within at most 16 MiB of their raw bytes. Older events, and every event of runs that are only in history, keep only index, time, label and offsets; their bodies are re-read from the spill file on demand.
-- That index uses typed-array blocks, about 27 bytes per event: roughly 49 MB for the 1.8 million events of a 30-minute stream at 1,000 events/s. The heap budget therefore holds for about 90 minutes at that rate; spilling the index itself to disk is left for M11 if longer streams need it. Up to 4,096 distinct labels are kept; later new labels are read back from the spill file.
+- That index uses typed-array blocks, about 27 bytes per event: roughly 49 MB for the 1.8 million events of a 30-minute stream at 1,000 events/s. The index keeps the newest 2,097,152 events (about 57 MB) and drops older summaries, so the budget holds however long the stream runs. Its first block starts at 1,024 entries and grows, so a short stream costs kilobytes, not a full block. Up to 4,096 distinct labels are kept; later new labels are read back from the spill file.
 - The spill file lives in the extension's global storage with owner-only permissions, is capped at 512 MiB per response (`streamscope.stream.maxSpillSize`) and 2 GiB across history (`streamscope.stream.maxTotalSpillSize`, oldest runs lose raw data first) **(builder's call)**, and is deleted when its run leaves history or VS Code exits. Each extension host process uses its own directory; at start, directories of processes that have exited are removed, so one window never deletes another window's files. When a cap is reached, or a write fails, the stream continues, raw data stops being saved, and the view says so.
 
 ### Reply assembly

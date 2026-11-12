@@ -98,9 +98,11 @@ describe('StreamSession', () => {
     state.session.dispose();
   });
 
-  it('updates once at end even inside the interval', () => {
+  it('updates once at end even inside the interval', async () => {
     const state = harness({ contentType: 'application/x-ndjson' });
     state.session.write(encoder.encode('{"type":"A"}\n'));
+    expect(state.updates).toBe(0);
+    await Promise.resolve();
     expect(state.updates).toBe(1);
 
     vi.advanceTimersByTime(10);
@@ -124,9 +126,10 @@ describe('StreamSession', () => {
     state.session.dispose();
   });
 
-  it('ignores writes and emits nothing after stop', () => {
+  it('ignores writes and emits nothing after stop', async () => {
     const state = harness({ contentType: 'application/x-ndjson' });
     state.session.write(encoder.encode('{"type":"A"}\n{"type":"B"'));
+    await Promise.resolve();
     vi.advanceTimersByTime(10);
     state.session.write(encoder.encode('}\n'));
 
@@ -200,6 +203,7 @@ describe('StreamSession', () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
     const state = harness({ contentType: 'application/x-ndjson', spill });
     state.session.write(encoder.encode('{"type":"A"}\n'));
+    await Promise.resolve();
     vi.advanceTimersByTime(5);
     state.session.write(encoder.encode('{"type":"B"}\n'));
     expect(vi.getTimerCount()).toBe(1);
@@ -212,5 +216,22 @@ describe('StreamSession', () => {
     expect((await state.session.store.read(1))?.label).toBe('A');
     await area.dispose();
     expect(fileHandles()).toBe(baseline);
+  });
+
+  it('releases the spill file, ignores writes and stays silent after dispose', async () => {
+    vi.useRealTimers();
+    const area = await SpillArea.open(root);
+    const spill = await area.create();
+    const state = harness({ contentType: 'application/x-ndjson', spill });
+    state.session.write(encoder.encode('{"type":"A"}\n'));
+    state.session.dispose();
+    await Promise.resolve();
+
+    expect(state.session.write(encoder.encode('{"type":"B"}\n'))).toBe(true);
+    expect(spill.append(encoder.encode('{"type":"C"}\n'))).toBe(true);
+    expect(spill.savedBytes).toBe(13);
+    expect(state.session.store.count).toBe(1);
+    expect(state.updates).toBe(0);
+    await area.dispose();
   });
 });

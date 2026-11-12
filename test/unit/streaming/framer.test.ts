@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { everySplit } from '../../support/chunks';
 import { LineFramer, type FramedLine } from '../../../src/streaming/framer';
 import { previewBytes } from '../../../src/streaming/limits';
+import { retainedHeap } from '../../support/memory';
 
 type Terminator = FramedLine['terminator'];
 type OversizeLine = Extract<FramedLine, { kind: 'oversize' }>;
@@ -551,5 +552,24 @@ describe('LineFramer', () => {
       expect(frame(chunks), splitLabel(chunks)).toEqual(expected);
       expect(frameBuffered(chunks), `${splitLabel(chunks)} buffered`).toEqual(expected);
     }
+  });
+
+  it('keeps a line that arrives one byte at a time in compact memory', () => {
+    const size = 1024 * 1024;
+    const { value, bytes } = retainedHeap(() => {
+      const framer = new LineFramer(4 * size);
+      for (let index = 0; index < size; index += 1) {
+        framer.push(Uint8Array.of(0x61));
+        framer.next();
+      }
+      return framer;
+    });
+    const framer = value as LineFramer;
+    framer.push(encode('\n'));
+    const line = framer.next();
+
+    expect(bytes).toBeLessThan(8 * size);
+    expect(line?.kind === 'line' && line.text.length).toBe(size);
+    expect(line?.length).toBe(size + 1);
   });
 });

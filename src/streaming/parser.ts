@@ -34,14 +34,15 @@ export interface StreamParserOptions {
 
 type Mode =
   | { kind: 'sniff'; kept: FramedLine[]; keptBytes: number }
-  | { kind: 'held'; line: FramedLine }
+  | { kind: 'held'; line: FramedLine; time: number }
   | { kind: 'ndjson' }
   | { kind: 'sse'; interpreter: SseInterpreter }
   | {
       kind: 'text';
       decoder: InstanceType<typeof TextDecoder>;
       head: Uint8Array | undefined;
-      offset: number;
+      base: number;
+      decodedBytes: number;
     }
   | { kind: 'done' };
 
@@ -84,7 +85,6 @@ export class StreamParser {
     private readonly options: StreamParserOptions,
     private readonly sink: StreamSink,
   ) {
-    this.framer = new LineFramer(options.maxEventSize);
     this.contentType = mediaType(options.contentType);
     const directive = options.directive === 'auto' ? undefined : options.directive;
     const known = classifyContentType(options.contentType);
@@ -93,6 +93,11 @@ export class StreamParser {
     } else if (known !== 'sniff') {
       this.initial = { format: known, reason: 'content-type', contentType: this.contentType };
     }
+    this.framer = new LineFramer(
+      this.initial === undefined
+        ? Math.max(options.maxEventSize, sniffBytes)
+        : options.maxEventSize,
+    );
     this.mode =
       this.initial === undefined
         ? { kind: 'sniff', kept: [], keptBytes: 0 }
@@ -170,7 +175,7 @@ export class StreamParser {
       case 'ndjson':
         return { kind: 'ndjson' };
       default:
-        return { kind: 'text', decoder: textDecoder(), head, offset: 0 };
+        return { kind: 'text', decoder: textDecoder(), head, base: 0, decodedBytes: 0 };
     }
   }
 
@@ -186,7 +191,9 @@ export class StreamParser {
 
   private handle(line: FramedLine): void {
     if (line.kind === 'line' && line.invalidUtf8) {
-      this.warnUtf8(line.offset);
+      this.warnUtf8(
+        line.offset + Buffer.byteLength(line.text.slice(0, line.text.indexOf('\uFFFD'))),
+      );
     }
     const mode = this.mode;
     switch (mode.kind) {
@@ -208,7 +215,7 @@ export class StreamParser {
         }
         this.decide({ format: 'ndjson', reason: 'detected', contentType: this.contentType });
         this.mode = { kind: 'ndjson' };
-        this.interpret(mode.line);
+        this.interpret(mode.line, mode.time);
         this.interpret(line);
         return;
       case 'ndjson':
@@ -241,7 +248,7 @@ export class StreamParser {
     for (const keptLine of kept) {
       this.sink.text(lineText(keptLine));
     }
-    this.mode = { kind: 'held', line };
+    this.mode = { kind: 'held', line, time: this.options.now() };
   }
 
   private startSse(kept: readonly FramedLine[]): void {
@@ -279,14 +286,20 @@ export class StreamParser {
     for (const keptLine of kept) {
       this.sink.text(lineText(keptLine));
     }
-    this.mode = { kind: 'text', decoder: textDecoder(), head: undefined, offset: 0 };
+    this.mode = {
+      kind: 'text',
+      decoder: textDecoder(),
+      head: undefined,
+      base: this.framer.lineOffset,
+      decodedBytes: 0,
+    };
   }
 
   private decide(decision: FormatDecision): void {
     this.sink.format(decision);
   }
 
-  private interpret(line: FramedLine): void {
+  private interpret(line: FramedLine, time?: number): void {
     const mode = this.mode;
     const parsed =
       mode.kind === 'sse'
@@ -295,16 +308,16 @@ export class StreamParser {
           ? ndjsonEvent(line)
           : undefined;
     if (parsed !== undefined) {
-      this.emit(parsed);
+      this.emit(parsed, time ?? this.options.now());
     }
   }
 
-  private emit(parsed: ParsedEvent): void {
+  private emit(parsed: ParsedEvent, time: number): void {
     this.index += 1;
     this.sink.event({
       ...parsed,
       index: this.index,
-      time: this.options.now(),
+      time,
       label: eventLabel(parsed.value, parsed.sse, this.options.typeFields),
     });
   }
@@ -321,16 +334,19 @@ export class StreamParser {
         return;
       }
       mode.head = undefined;
-      bytes =
-        head.length >= byteOrderMark.length && isMarkPrefix(head.subarray(0, byteOrderMark.length))
-          ? head.subarray(byteOrderMark.length)
-          : head;
+      const marked =
+        head.length >= byteOrderMark.length && isMarkPrefix(head.subarray(0, byteOrderMark.length));
+      bytes = marked ? head.subarray(byteOrderMark.length) : head;
+      mode.base += marked ? byteOrderMark.length : 0;
     }
     const text = mode.decoder.decode(bytes, { stream: !last });
-    if (text.includes('�')) {
-      this.warnUtf8(mode.offset);
+    if (!this.warnedUtf8) {
+      const replaced = text.indexOf('\uFFFD');
+      if (replaced !== -1) {
+        this.warnUtf8(mode.base + mode.decodedBytes + Buffer.byteLength(text.slice(0, replaced)));
+      }
+      mode.decodedBytes += Buffer.byteLength(text);
     }
-    mode.offset += bytes.length;
     if (text !== '') {
       this.sink.text(text);
     }

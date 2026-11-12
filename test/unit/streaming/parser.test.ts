@@ -1081,21 +1081,21 @@ describe('StreamParser warnings', () => {
     const fixture = fixtureBytes('invalid-utf8.ndjson');
     const calls = parse(concat(fixture, fixture), { contentType: 'application/x-ndjson' });
 
-    expect(warningsOf(calls)).toEqual([{ kind: 'invalid-utf8', offset: 0 }]);
+    expect(warningsOf(calls)).toEqual([{ kind: 'invalid-utf8', offset: 22 }]);
     expect(eventsOf(calls)).toMatchObject([
       { index: 1, kind: 'json', offset: 0 },
       { index: 2, kind: 'json', offset: fixture.length },
     ]);
   });
 
-  it('reports invalid UTF-8 at the offset of the first offending line', () => {
+  it('reports invalid UTF-8 at the offset of the first invalid byte', () => {
     const fixture = fixtureBytes('invalid-utf8.ndjson');
     const bytes = concat(encode('{"type":"A"}\n'), fixture, fixture);
     const options = { contentType: 'application/x-ndjson' };
 
-    expect(warningsOf(parse(bytes, options))).toEqual([{ kind: 'invalid-utf8', offset: 13 }]);
+    expect(warningsOf(parse(bytes, options))).toEqual([{ kind: 'invalid-utf8', offset: 35 }]);
     expect(warningsOf(parseChunks(byteByByte(bytes), options))).toEqual([
-      { kind: 'invalid-utf8', offset: 13 },
+      { kind: 'invalid-utf8', offset: 35 },
     ]);
   });
 
@@ -1110,7 +1110,7 @@ describe('StreamParser warnings', () => {
     const calls = parse(bytes, { contentType: 'text/event-stream' });
 
     expect(warningsOf(calls)).toEqual([
-      { kind: 'invalid-utf8', offset: encode('data: ok\n\n').length },
+      { kind: 'invalid-utf8', offset: encode('data: ok\n\ndata: ').length },
     ]);
     expect(eventsOf(calls)).toHaveLength(3);
   });
@@ -1381,5 +1381,66 @@ describe('parseEventBytes', () => {
     expect(parseEventBytes(encode('\n  \n'), 'ndjson', options)).toBeUndefined();
     expect(parseEventBytes(new Uint8Array(0), 'sse', options)).toBeUndefined();
     expect(parseEventBytes(encode('data: {"type":"A"}\n'), 'sse', options)).toBeUndefined();
+  });
+});
+
+describe('StreamParser review fixes', () => {
+  it('stamps the first line of an upgraded body with its own arrival time', () => {
+    let clock = 100;
+    const { parser, calls } = harness({ contentType: 'application/json', now: () => clock });
+    parser.push(encode('{"type":"RUN_STARTED"}\n'));
+    clock = 5100;
+    parser.push(encode('{"type":"RUN_FINISHED"}\n'));
+
+    expect(eventsOf(calls).map((event) => [event.label, event.time])).toEqual([
+      ['RUN_STARTED', 100],
+      ['RUN_FINISHED', 5100],
+    ]);
+  });
+
+  it('sniffs a body whole even when maxEventSize is below sniffBytes', () => {
+    const input = `{"a":"${'x'.repeat(4096)}"}`;
+    const { parser, calls } = harness({ contentType: 'application/json', maxEventSize: 1024 });
+    for (let start = 0; start < input.length; start += 100) {
+      parser.push(encode(input.slice(start, start + 100)));
+    }
+    parser.end();
+
+    expect(formatsOf(calls).map((decision) => decision.format)).toEqual(['json']);
+    expect(textOf(calls)).toBe(input);
+  });
+
+  it('reports the exact offset of invalid UTF-8 in a text body', () => {
+    const bytes = concat(encode('héllo wörld '), Uint8Array.of(0xc3, 0x28), encode(' more\n'));
+    for (const contentType of ['text/plain', 'text/html']) {
+      for (const size of [1, 3, bytes.length]) {
+        const { parser, calls } = harness({ contentType });
+        for (let start = 0; start < bytes.length; start += size) {
+          parser.push(bytes.subarray(start, start + size));
+        }
+        parser.end();
+
+        expect(warningsOf(calls), `${contentType} ${String(size)}`).toEqual([
+          { kind: 'invalid-utf8', offset: 14 },
+        ]);
+      }
+    }
+  });
+
+  it('reports the exact offset of invalid UTF-8 after a sniffed first line', () => {
+    const bytes = concat(
+      encode('first line\nsecond '),
+      Uint8Array.of(0xc3, 0x28),
+      encode(' line\n'),
+    );
+    for (const size of [1, 2, 5, bytes.length]) {
+      const { parser, calls } = harness({ contentType: 'text/plain' });
+      for (let start = 0; start < bytes.length; start += size) {
+        parser.push(bytes.subarray(start, start + size));
+      }
+      parser.end();
+
+      expect(warningsOf(calls), String(size)).toEqual([{ kind: 'invalid-utf8', offset: 18 }]);
+    }
   });
 });
