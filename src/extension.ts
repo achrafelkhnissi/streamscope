@@ -2,6 +2,8 @@ import * as vscode from 'vscode';
 import { offerToHideOtherSendLenses } from './vscode/coexistence';
 import { EnvironmentStore } from './vscode/environments/environment-store';
 import { registerEnvironmentPicker } from './vscode/environments/picker';
+import { registerSecretCommands } from './vscode/secrets/commands';
+import { SecretStore, workspaceIdentity } from './vscode/secrets/secret-store';
 import { registerLanguageFeatures } from './vscode/language/register';
 import { ParseCache } from './vscode/language/parse-cache';
 import { registerRequestFeatures } from './vscode/requests/register';
@@ -18,6 +20,8 @@ export function activate(context: vscode.ExtensionContext): void {
   const environments = new EnvironmentStore(context, log);
   context.subscriptions.push(environments);
   registerEnvironmentPicker(context, environments);
+  const secrets = new SecretStore(context.secrets, context.workspaceState, workspaceIdentity());
+  registerSecretCommands(context, secrets);
   registerLanguageFeatures(context, cache);
   registerRequestFeatures(context, log, cache, environments);
   void offerToHideOtherSendLenses(context);

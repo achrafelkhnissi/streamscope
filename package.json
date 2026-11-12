@@ -89,6 +89,24 @@
         "icon": "$(server-environment)"
       },
       {
+        "command": "streamscope.setSecret",
+        "title": "Set Secret",
+        "category": "Streamscope",
+        "icon": "$(key)"
+      },
+      {
+        "command": "streamscope.clearSecret",
+        "title": "Clear Secret",
+        "category": "Streamscope",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "streamscope.listSecrets",
+        "title": "List Secrets",
+        "category": "Streamscope",
+        "icon": "$(list-unordered)"
+      },
+      {
         "command": "streamscope.showLog",
         "title": "Show Log",
         "category": "Streamscope"

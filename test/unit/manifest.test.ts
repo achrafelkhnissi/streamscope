@@ -103,6 +103,9 @@ describe('extension manifest', () => {
       'streamscope.showResponseHeaders',
       'streamscope.showResponseBody',
       'streamscope.selectEnvironment',
+      'streamscope.setSecret',
+      'streamscope.clearSecret',
+      'streamscope.listSecrets',
       'streamscope.showLog',
     ]);
   });
