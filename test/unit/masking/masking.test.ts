@@ -67,5 +67,20 @@ describe('masking', () => {
       'https://api.example.test/a?token=x',
     );
     expect(maskUrl('not a url')).toBe('not a url');
+    expect(maskUrl('//user:synthetic@files.example.test/a')).toBe('//••••••@files.example.test/a');
+  });
+
+  it('masks URL user info inside other header values', () => {
+    expect(
+      maskHeaders([
+        ['Location', 'https://user:synthetic@files.example.test/a'],
+        ['Link', '<https://user:synthetic@files.example.test/b>; rel="next"'],
+        ['X-Trace', 'plain'],
+      ]),
+    ).toEqual([
+      ['Location', 'https://••••••@files.example.test/a'],
+      ['Link', '<https://••••••@files.example.test/b>; rel="next"'],
+      ['X-Trace', 'plain'],
+    ]);
   });
 });

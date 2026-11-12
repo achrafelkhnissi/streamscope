@@ -86,7 +86,7 @@ describe('sending requests', () => {
   });
 
   after(() => {
-    rmSync(folder, { recursive: true, force: true });
+    rmSync(folder, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   });
 
   it('sends the request under the cursor and shows the pretty body', async () => {

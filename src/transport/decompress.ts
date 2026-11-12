@@ -5,23 +5,61 @@ const maxCodings = 5;
 const knownCodings: ReadonlySet<string> = new Set(['gzip', 'x-gzip', 'deflate', 'br', 'zstd']);
 const zlibOptions: zlib.ZlibOptions = {
   flush: zlib.constants.Z_SYNC_FLUSH,
-  finishFlush: zlib.constants.Z_SYNC_FLUSH,
+  finishFlush: zlib.constants.Z_FINISH,
 };
 const brotliOptions: zlib.BrotliOptions = {
   flush: zlib.constants.BROTLI_OPERATION_FLUSH,
-  finishFlush: zlib.constants.BROTLI_OPERATION_FLUSH,
+  finishFlush: zlib.constants.BROTLI_OPERATION_FINISH,
 };
 
 function isZlibWrapped(firstByte: number | undefined): boolean {
   return firstByte === undefined || (firstByte & 0x0f) === 0x08;
 }
 
-function stage(coding: string, firstByte: number | undefined): Transform {
+class Inflate extends Transform {
+  private inner: Transform | undefined;
+
+  override _transform(chunk: Buffer, _encoding: BufferEncoding, callback: TransformCallback): void {
+    this.inner ??= this.start(chunk[0]);
+    this.inner.write(chunk, () => {
+      callback();
+    });
+  }
+
+  override _flush(callback: TransformCallback): void {
+    if (!this.inner) {
+      callback();
+      return;
+    }
+    this.inner.once('end', () => {
+      callback();
+    });
+    this.inner.end();
+  }
+
+  override _destroy(error: Error | null, callback: (error?: Error | null) => void): void {
+    this.inner?.destroy();
+    callback(error);
+  }
+
+  private start(firstByte: number | undefined): Transform {
+    const inner = isZlibWrapped(firstByte)
+      ? zlib.createInflate(zlibOptions)
+      : zlib.createInflateRaw(zlibOptions);
+    inner.on('data', (data: Buffer) => {
+      this.push(data);
+    });
+    inner.on('error', (error) => {
+      this.destroy(error);
+    });
+    return inner;
+  }
+}
+
+function stage(coding: string): Transform {
   switch (coding) {
     case 'deflate':
-      return isZlibWrapped(firstByte)
-        ? zlib.createInflate(zlibOptions)
-        : zlib.createInflateRaw(zlibOptions);
+      return new Inflate();
     case 'br':
       return zlib.createBrotliDecompress(brotliOptions);
     case 'zstd':
@@ -39,7 +77,7 @@ class Decoder extends Transform {
   }
 
   override _transform(chunk: Buffer, _encoding: BufferEncoding, callback: TransformCallback): void {
-    const first = this.stages[0] ?? this.start(chunk);
+    const first = this.stages[0] ?? this.start();
     first.write(chunk, () => {
       callback();
     });
@@ -65,10 +103,8 @@ class Decoder extends Transform {
     callback(error);
   }
 
-  private start(chunk: Buffer): Transform {
-    this.stages = this.codings.map((coding, index) =>
-      stage(coding, index === 0 ? chunk[0] : undefined),
-    );
+  private start(): Transform {
+    this.stages = this.codings.map(stage);
     this.stages.forEach((inner, index) => {
       inner.on('error', (error) => {
         this.destroy(error);

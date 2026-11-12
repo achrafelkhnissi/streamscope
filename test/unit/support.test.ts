@@ -2,7 +2,7 @@ import { X509Certificate } from 'node:crypto';
 import * as http from 'node:http';
 import * as tls from 'node:tls';
 import { describe, expect, it } from 'vitest';
-import { createSelfSignedCertificate } from '../support/certificate';
+import { createSelfSignedCertificate, derInteger } from '../support/certificate';
 import { startHttpServer } from '../support/servers';
 
 function post(url: string, body: string): Promise<string> {
@@ -29,6 +29,13 @@ describe('test support', () => {
     expect(certificate.ca).toBe(true);
     expect(certificate.verify(certificate.publicKey)).toBe(true);
     expect(() => tls.createSecureContext({ cert, key })).not.toThrow();
+  });
+
+  it('encodes DER integers without redundant leading zeros', () => {
+    expect([...derInteger(Buffer.from([0x00, 0x05]))]).toEqual([0x02, 0x01, 0x05]);
+    expect([...derInteger(Buffer.from([0x00, 0x00, 0x85]))]).toEqual([0x02, 0x02, 0x00, 0x85]);
+    expect([...derInteger(Buffer.from([0x85]))]).toEqual([0x02, 0x02, 0x00, 0x85]);
+    expect([...derInteger(Buffer.from([0x00, 0x00]))]).toEqual([0x02, 0x01, 0x00]);
   });
 
   it('records requests and socket lifecycle', async () => {

@@ -18,21 +18,34 @@ function inline(bytes: Uint8Array, contentType: string | undefined): EncodedBody
   };
 }
 
+const abortedMessage = 'Formatting the response body was aborted.';
+
 export function formatBodyOffThread(
   bytes: Uint8Array,
   contentType: string | undefined,
   workerFile: string,
+  signal?: AbortSignal,
 ): Promise<EncodedBody> {
   if (bytes.length <= workerThresholdBytes) {
     return Promise.resolve(inline(bytes, contentType));
   }
+  if (signal?.aborted) {
+    return Promise.reject(new Error(abortedMessage));
+  }
   return new Promise((resolve, reject) => {
     const worker = new Worker(workerFile);
     const finish = (settle: () => void): void => {
+      signal?.removeEventListener('abort', onAbort);
       worker.removeAllListeners();
       void worker.terminate();
       settle();
     };
+    const onAbort = (): void => {
+      finish(() => {
+        reject(new Error(abortedMessage));
+      });
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
     worker.once('message', (encoded: EncodedBody) => {
       finish(() => {
         resolve(encoded);

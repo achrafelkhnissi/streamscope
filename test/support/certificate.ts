@@ -32,9 +32,14 @@ const octets = (bytes: Buffer): Buffer => tlv(0x04, bytes);
 const bits = (bytes: Buffer): Buffer => tlv(0x03, Buffer.from([0]), bytes);
 const boolean = (value: boolean): Buffer => tlv(0x01, Buffer.from([value ? 0xff : 0]));
 
-function integer(bytes: Buffer): Buffer {
-  const first = bytes[0] ?? 0;
-  return tlv(0x02, first & 0x80 ? Buffer.concat([Buffer.from([0]), bytes]) : bytes);
+export function derInteger(bytes: Buffer): Buffer {
+  let start = 0;
+  while (start < bytes.length - 1 && bytes[start] === 0) {
+    start += 1;
+  }
+  const minimal = bytes.subarray(start);
+  const first = minimal[0] ?? 0;
+  return tlv(0x02, first & 0x80 ? Buffer.concat([Buffer.from([0]), minimal]) : minimal);
 }
 
 function oid(dotted: string): Buffer {
@@ -80,8 +85,8 @@ export function createSelfSignedCertificate(hosts: readonly string[]): {
   const now = Date.now();
   const day = 24 * 60 * 60 * 1000;
   const tbs = sequence(
-    explicit(0, integer(Buffer.from([2]))),
-    integer(randomBytes(8)),
+    explicit(0, derInteger(Buffer.from([2]))),
+    derInteger(randomBytes(8)),
     algorithm,
     subject,
     sequence(utcTime(new Date(now - day)), utcTime(new Date(now + day))),

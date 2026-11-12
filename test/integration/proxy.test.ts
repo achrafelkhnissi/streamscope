@@ -110,7 +110,7 @@ describe('proxies', () => {
   });
 
   after(() => {
-    rmSync(folder, { recursive: true, force: true });
+    rmSync(folder, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   });
 
   it('routes http requests through http.proxy', async () => {

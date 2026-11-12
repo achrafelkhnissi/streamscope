@@ -17,7 +17,7 @@ const sensitiveWords: ReadonlySet<string> = new Set([
   'cookie',
   'signature',
 ]);
-const userInfoPattern = /^([a-z][a-z\d+.-]*:\/\/)[^/?#]*@/i;
+const userInfoPattern = /((?:\b[a-z][a-z\d+.-]*:)?\/\/)[^\s/?#<>"'`]*@/gi;
 
 export function isSensitiveHeader(name: string): boolean {
   return name
@@ -27,7 +27,10 @@ export function isSensitiveHeader(name: string): boolean {
 }
 
 export function maskHeaders(headers: Headers): [string, string][] {
-  return headers.map(([name, value]) => [name, isSensitiveHeader(name) ? maskedValue : value]);
+  return headers.map(([name, value]) => [
+    name,
+    isSensitiveHeader(name) ? maskedValue : maskUrl(value),
+  ]);
 }
 
 export function maskUrl(url: string): string {

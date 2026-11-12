@@ -33,7 +33,7 @@ describe('large responses', () => {
   after(async () => {
     await vscode.commands.executeCommand('workbench.action.closeAllEditors');
     await server?.close();
-    rmSync(folder, { recursive: true, force: true });
+    rmSync(folder, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   });
 
   it('opens a 50 MB JSON body without blocking the extension host', async function () {

@@ -40,6 +40,7 @@ export function preferredView(slot: ResponseSlot): vscode.Uri {
 export class ResponsePresenter {
   private readonly slots = new Map<string, ResponseSlot>();
   private readonly numbers = new Map<string, number>();
+  private readonly formatting = new Map<string, AbortController>();
   private nextNumber = 1;
 
   constructor(
@@ -62,8 +63,12 @@ export class ResponsePresenter {
     this.numbers.set(run.key, number);
     const base = `/${String(number)}/${fileSafeName(run.label)}`;
     const type = contentType(run);
-    const encoded = await this.encode(run, type);
-    if (!isCurrent()) {
+    this.formatting.get(run.key)?.abort();
+    const formatting = new AbortController();
+    this.formatting.set(run.key, formatting);
+    const stale = (): boolean => formatting.signal.aborted || !isCurrent();
+    const encoded = await this.encode(run, type, formatting.signal);
+    if (stale()) {
       return;
     }
     const slot: ResponseSlot = {
@@ -81,9 +86,13 @@ export class ResponsePresenter {
     for (const uri of [previous?.bodyUri, previous?.headersUri]) {
       if (uri && !sameUri(uri, slot.bodyUri) && !sameUri(uri, slot.headersUri)) {
         await closeTabs(uri);
+        if (stale()) {
+          return;
+        }
         this.files.remove(uri);
       }
     }
+    this.formatting.delete(run.key);
     this.files.write(slot.headersUri, new TextEncoder().encode(renderHeadersDocument(run)));
     this.files.write(slot.bodyUri, encoded.content);
     this.slots.set(run.key, slot);
@@ -94,12 +103,16 @@ export class ResponsePresenter {
     });
   }
 
-  private async encode(run: RunSnapshot, type: string | undefined): Promise<EncodedBody> {
+  private async encode(
+    run: RunSnapshot,
+    type: string | undefined,
+    signal: AbortSignal,
+  ): Promise<EncodedBody> {
     if (!run.head) {
       return { languageId: 'plaintext', binary: false, content: new Uint8Array() };
     }
     try {
-      return await formatBodyOffThread(run.body, type, this.workerFile);
+      return await formatBodyOffThread(run.body, type, this.workerFile, signal);
     } catch {
       return { languageId: 'plaintext', binary: false, content: run.body };
     }

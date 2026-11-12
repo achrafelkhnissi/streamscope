@@ -23,13 +23,13 @@ export function redirectTarget(
   } catch {
     return {
       ok: false,
-      message: `The server redirected to \`${location}\`, which is not a valid URL.`,
+      message: `The server redirected to \`${maskUrl(location)}\`, which is not a valid URL.`,
     };
   }
   if (url.protocol !== 'http:' && url.protocol !== 'https:') {
     return {
       ok: false,
-      message: `The server redirected to \`${location}\`, which is not an http or https URL.`,
+      message: `The server redirected to \`${maskUrl(location)}\`, which is not an http or https URL.`,
     };
   }
   const rewrite = rewritingStatuses.has(status);

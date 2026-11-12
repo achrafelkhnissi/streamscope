@@ -130,6 +130,34 @@ describe('response decompression', () => {
     expect(outcome.kind === 'failed' && outcome.failure.message).toContain('at most 5');
   });
 
+  it('decodes raw deflate inside a chain of codings', async () => {
+    const compressed = zlib.gzipSync(zlib.deflateRawSync(Buffer.from(original)));
+    const server = await serving(200, 'deflate, gzip', compressed);
+
+    const { outcome, sink } = await send({ url: server.url });
+
+    expect(outcome.kind).toBe('completed');
+    expect(sink.body()).toBe(original);
+  });
+
+  it('fails with decompression for a truncated gzip body', async () => {
+    const compressed = zlib.gzipSync(Buffer.from(original));
+    const server = await serving(200, 'gzip', compressed.subarray(0, compressed.length - 12));
+
+    const { outcome } = await send({ url: server.url });
+
+    expect(outcome.kind === 'failed' && outcome.failure.kind).toBe('decompression');
+  });
+
+  it('fails with decompression for a truncated brotli body', async () => {
+    const compressed = zlib.brotliCompressSync(Buffer.from(original));
+    const server = await serving(200, 'br', compressed.subarray(0, compressed.length - 4));
+
+    const { outcome } = await send({ url: server.url });
+
+    expect(outcome.kind === 'failed' && outcome.failure.kind).toBe('decompression');
+  });
+
   it('fails with decompression for a corrupt gzip body', async () => {
     const server = await serving(200, 'gzip', Buffer.from('this is not gzip at all'));
 

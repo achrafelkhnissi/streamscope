@@ -144,6 +144,18 @@ describe('redirectTarget', () => {
   it('rejects locations that are not URLs', () => {
     expect(redirectTarget(request(), 302, 'http://[bad').ok).toBe(false);
   });
+
+  it('masks user info in rejected locations', () => {
+    for (const location of [
+      'ftp://user:synthetic@files.example.test/a',
+      'http://user:synthetic@[bad',
+    ]) {
+      const result = redirectTarget(request(), 302, location);
+
+      expect(!result.ok && result.message).toContain('••••••@');
+      expect(!result.ok && result.message).not.toContain('synthetic');
+    }
+  });
 });
 
 const servers: LocalServer[] = [];

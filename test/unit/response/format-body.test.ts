@@ -158,6 +158,35 @@ describe('formatBodyOffThread', () => {
     expect(bytes.subarray(0, 9).toString()).toBe('{"text":"');
   });
 
+  it('stops the worker when the formatting is no longer wanted', async () => {
+    const bytes = Buffer.from(JSON.stringify({ text: 'x'.repeat(workerThresholdBytes * 4) }));
+    const controller = new AbortController();
+
+    const formatting = formatBodyOffThread(
+      bytes,
+      'application/json',
+      workerFile,
+      controller.signal,
+    );
+    controller.abort();
+
+    await expect(formatting).rejects.toThrow('aborted');
+  });
+
+  it('does not start a worker for formatting that is already unwanted', async () => {
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(
+      formatBodyOffThread(
+        new Uint8Array(workerThresholdBytes + 1),
+        'text/plain',
+        '/nonexistent.js',
+        controller.signal,
+      ),
+    ).rejects.toThrow('aborted');
+  });
+
   it('rejects when the worker cannot start', async () => {
     await expect(
       formatBodyOffThread(
