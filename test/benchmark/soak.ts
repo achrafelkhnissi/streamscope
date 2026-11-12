@@ -87,6 +87,7 @@ export async function runSoak(options: {
     },
     onData: (chunk) => {
       session?.write(chunk);
+      return undefined;
     },
   };
   const url = new URL(

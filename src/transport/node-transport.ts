@@ -402,7 +402,16 @@ function exchange(context: ExchangeContext): Promise<ExchangeResult> {
       sink.onHead(head, sent);
       const deliver = (chunk: Buffer): void => {
         counters.decodedBytes += chunk.length;
-        sink.onData(chunk);
+        const pending = sink.onData(chunk);
+        if (pending === undefined) {
+          return;
+        }
+        const output = decoder ?? incoming;
+        output.pause();
+        const resume = (): void => {
+          output.resume();
+        };
+        pending.then(resume, resume);
       };
       const contentEncoding = head.headers
         .filter(([name]) => name.toLowerCase() === 'content-encoding')

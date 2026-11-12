@@ -16,7 +16,9 @@ export interface CollectingSink extends ResponseSink {
   body(): string;
 }
 
-export function collector(onData?: (chunk: Uint8Array) => void): CollectingSink {
+export function collector(
+  onData?: (chunk: Uint8Array) => Promise<void> | undefined,
+): CollectingSink {
   const sink: CollectingSink = {
     head: undefined,
     sent: undefined,
@@ -31,7 +33,7 @@ export function collector(onData?: (chunk: Uint8Array) => void): CollectingSink 
     },
     onData(chunk) {
       sink.chunks.push(chunk);
-      onData?.(chunk);
+      return onData?.(chunk);
     },
     body: () => Buffer.concat(sink.chunks).toString(),
   };

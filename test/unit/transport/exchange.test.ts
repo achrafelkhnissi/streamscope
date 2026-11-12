@@ -1,9 +1,10 @@
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
+import { constants, createGzip, gzipSync } from 'node:zlib';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { startHttpServer, startRawServer, type LocalServer } from '../../support/servers';
-import { bytes, collector, headerPairs, send, waitFor } from './harness';
+import { bytes, collector, headerPairs, send, waitFor, type CollectingSink } from './harness';
 
 const servers: LocalServer[] = [];
 let folder = '';
@@ -374,5 +375,135 @@ describe('NodeTransport exchange', () => {
 
     expect(outcome.kind === 'failed' && outcome.failure.kind).toBe('body-file');
     await waitFor(() => server.sockets.closed === server.sockets.opened);
+  });
+});
+
+const pieceSize = 16 * 1024;
+const pieceCount = 16;
+
+function pieces(): Buffer[] {
+  return Array.from({ length: pieceCount }, (_, index) => Buffer.alloc(pieceSize, index));
+}
+
+function holdingFirstChunk(): { sink: CollectingSink; release: () => void } {
+  let release: () => void = () => undefined;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const sink = collector(() => (sink.chunks.length === 1 ? gate : undefined));
+  return {
+    sink,
+    release: () => {
+      release();
+    },
+  };
+}
+
+function idle(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+describe('NodeTransport sink backpressure', () => {
+  it('pauses reading while the sink waits', async () => {
+    const server = await http((_request, response) => {
+      response.writeHead(200);
+      for (const piece of pieces()) {
+        response.write(piece);
+      }
+      response.end();
+    });
+    const { sink, release } = holdingFirstChunk();
+
+    const sending = send({ url: server.url }, {}, sink);
+    await idle(200);
+    expect(sink.chunks).toHaveLength(1);
+    release();
+    const { outcome } = await sending;
+
+    expect(outcome.kind).toBe('completed');
+    expect(Buffer.concat(sink.chunks).equals(Buffer.concat(pieces()))).toBe(true);
+    expect(outcome.decodedBytes).toBe(pieceSize * pieceCount);
+  });
+
+  it('pauses a compressed response while the sink waits', async () => {
+    const server = await http((_request, response) => {
+      response.writeHead(200, { 'Content-Encoding': 'gzip' });
+      const gzip = createGzip({ flush: constants.Z_SYNC_FLUSH });
+      gzip.pipe(response);
+      for (const piece of pieces()) {
+        gzip.write(piece);
+      }
+      gzip.end();
+    });
+    const { sink, release } = holdingFirstChunk();
+
+    const sending = send({ url: server.url }, {}, sink);
+    await idle(200);
+    expect(sink.chunks).toHaveLength(1);
+    release();
+    const { outcome } = await sending;
+
+    expect(outcome.kind).toBe('completed');
+    expect(Buffer.concat(sink.chunks).equals(Buffer.concat(pieces()))).toBe(true);
+  });
+
+  it('holds back decoded chunks the decoder had already buffered', async () => {
+    const decoded = Buffer.alloc(pieceSize * pieceCount, 'a');
+    const server = await http((_request, response) => {
+      response.writeHead(200, { 'Content-Encoding': 'gzip' });
+      response.end(gzipSync(decoded));
+    });
+    const { sink, release } = holdingFirstChunk();
+
+    const sending = send({ url: server.url }, {}, sink);
+    await idle(200);
+    expect(sink.chunks).toHaveLength(1);
+    release();
+    const { outcome } = await sending;
+
+    expect(outcome.kind).toBe('completed');
+    expect(sink.chunks.length).toBeGreaterThan(1);
+    expect(Buffer.concat(sink.chunks).equals(decoded)).toBe(true);
+  });
+
+  it('resumes when the sink rejects', async () => {
+    const server = await http((_request, response) => {
+      response.writeHead(200);
+      for (const piece of pieces()) {
+        response.write(piece);
+      }
+      response.end();
+    });
+    const sink = collector(() =>
+      sink.chunks.length === 1 ? Promise.reject(new Error('disk full')) : undefined,
+    );
+
+    const { outcome } = await send({ url: server.url }, {}, sink);
+
+    expect(outcome.kind).toBe('completed');
+    expect(outcome.decodedBytes).toBe(pieceSize * pieceCount);
+  });
+
+  it('cancels a response while the sink waits', async () => {
+    const server = await http((_request, response) => {
+      response.writeHead(200);
+      for (const piece of pieces()) {
+        response.write(piece);
+      }
+    });
+    const { sink } = holdingFirstChunk();
+    const controller = new AbortController();
+
+    const sending = send({ url: server.url }, {}, sink, controller.signal);
+    await waitFor(() => sink.chunks.length >= 1);
+    await idle(100);
+    expect(sink.chunks).toHaveLength(1);
+    const abortedAt = performance.now();
+    controller.abort();
+    const { outcome } = await sending;
+
+    expect(outcome.kind).toBe('cancelled');
+    expect(performance.now() - abortedAt).toBeLessThan(1000);
+    await waitFor(() => server.sockets.opened === 1 && server.sockets.closed === 1);
   });
 });

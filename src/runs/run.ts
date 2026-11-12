@@ -153,7 +153,7 @@ export function startRun(
     },
     onData: (chunk) => {
       if (tooLarge) {
-        return;
+        return undefined;
       }
       const room = settings.maxBodyBytes - received;
       if (chunk.length > room) {
@@ -161,10 +161,11 @@ export function startRun(
         received += room;
         tooLarge = true;
         controller.abort();
-        return;
+        return undefined;
       }
       chunks.push(chunk);
       received += chunk.length;
+      return undefined;
     },
   };
 
