@@ -13,6 +13,7 @@ The product is **Streamscope** (`achrafelkhnissi.streamscope`, display name "Str
 
 - Work runs in approved phases: research (done), project setup (done), product planning and technical design (approved 2026-11-11), then the implementation milestones in `docs/roadmap.md`. Do not build product functionality before the user approves the design, and ask before starting a new phase or milestone.
 - The design is `docs/design.md`, the milestone plan `docs/roadmap.md`, the release process `docs/publishing.md`, and the approved response view mockup `docs/mockups/response-view.html`. They win over anything older in this file.
+- Unscheduled work waits in `docs/backlog.md`. Nothing there is approved; an item joins the roadmap only when the user approves it.
 - Settled decisions: VS Code `^1.101.0` with forks best effort; desktop only; native VS Code UI first, with a planned spike deciding whether a webview is needed; REST Client syntax compatibility (core syntax, request references, system variables, `rest-client.environmentVariables`, JetBrains env files); language id `http` with our own grammar scope; in-memory history for the MVP; captured values wait up to 30 s and never auto-run producers; Marketplace and Open VSX via OIDC trusted publishing.
 
 ## Layout
@@ -48,8 +49,21 @@ The product is **Streamscope** (`achrafelkhnissi.streamscope`, display name "Str
 - Keep five layers apart: HTTP transport, stream framing and parsing, event processing, variable extraction, rendering. Only rendering and command wiring may import `vscode`, so the rest stays unit-testable in Vitest.
 - Transport uses `node:http` and `node:https`, which VS Code patches with the user's proxy and system certificates. The extension host's global `fetch` drops custom dispatchers (TLS options, client certificates, timeouts), so do not use it, and do not bundle another HTTP client.
 - Parse streams incrementally with hand-written, size-limited framers. Never trust `Content-Type` alone and never add headers the user did not write (some servers reject `Accept: text/event-stream`).
-- Read the socket at full speed into bounded buffers and batch UI updates; a slow view must never throttle the connection.
+- Read the socket at full speed into bounded buffers and batch UI updates; a slow view must never throttle the connection. Only bounded byte sinks, such as the decompressor and the spill-file write, may pause the socket.
 - Everything long-running accepts a `CancellationToken` or `AbortSignal` and releases its resources on every exit path.
+
+## Performance
+
+Time and space complexity rank with correctness and security in every change. Design section 3 sets the budgets and sections 7, 9 and 17 the streaming rules; the rules below apply to all code.
+
+- Design for the largest inputs the product accepts, not typical ones: streams of millions of events running for hours, 50 MB bodies, `.http` files with hundreds of requests, several runs at once.
+- Per-event cost must not grow with the stream. On each chunk, line or event, do no work proportional to what arrived earlier (rescans, re-sorts, re-parses, re-renders, copies); keep incremental state. Amortized growth, such as doubling a buffer, is fine.
+- Compute each result once per input: parse a document once per version and share it (`src/vscode/language/parse-cache.ts`), and use a `Map` or `Set` for repeated lookups instead of searching an array.
+- Every long-lived buffer, cache, queue, map and history has a bound (bytes, entries or the lifetime of its owner) and an eviction rule, and a unit test pins it, as `test/unit/events/store.test.ts` does. Memory must not grow with how long a stream runs.
+- Never hold a whole body in memory when it can be streamed, sliced or spilled. Prefer `subarray` views to copies, decode bytes to text once, and keep nothing reachable from long-lived objects (registries, caches, closures) after its run or document is gone.
+- Optimize hot paths (`src/transport`, `src/streaming`, `src/events`, captures, checks, response rendering) and keep cold paths (activation, commands, settings) plain. Never trade correctness, the layer boundaries or readability for gains no workload would notice, and report a performance problem outside the task instead of rewriting it.
+- Back every performance claim with a measurement: a test that pins a bound, a benchmark run or a `node --cpu-prof` / `--heap-prof` profile. Without one, say it is not measured.
+- A hot-path change states its time and space cost in terms of input size in its PR description, for example "O(1) per event, memory bounded by `memoryEvents`".
 
 ## Commands
 
@@ -98,6 +112,7 @@ The product is **Streamscope** (`achrafelkhnissi.streamscope`, display name "Str
 - Also run `npm run test:integration` when activation, commands, contributions or other `vscode`-facing code change, `npm run test:restricted` when Workspace Trust behaviour, variable sources or the manifest's `capabilities` change, and `npm run verify:vsix` when packaging, `files` or activation change.
 - `@vscode/test-electron` always passes `--disable-workspace-trust`, so `npm run test:integration` runs trusted; only `npm run test:restricted` exercises restricted mode.
 - Streaming code needs tests that split input at every byte boundary; the `stream-parser-test-author` agent writes them.
+- Run `npm run bench -- throughput` before and after changing `src/streaming` or `src/events`, and `npm run bench -- soak` when transport, buffering or retention change, and report both numbers. Milestone runs go in `docs/benchmarks.md`.
 
 ## Hooks
 
