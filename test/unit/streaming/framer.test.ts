@@ -486,6 +486,22 @@ describe('LineFramer', () => {
     expect(consumed.takeRemaining()).toHaveLength(0);
   });
 
+  it('peeks at the unconsumed bytes without consuming them', () => {
+    const framer = new LineFramer(1024);
+    framer.push(encode('a\nbc'));
+    framer.push(encode('de'));
+
+    expect(framer.next()).toEqual(expectedLine('a', '\n', 0, 2, 1));
+    expect(framer.next()).toBeUndefined();
+    expect(decode(framer.peek(3))).toBe('bcd');
+    expect(decode(framer.peek(10))).toBe('bcde');
+    expect(framer.pendingBytes).toBe(4);
+
+    framer.push(encode('f\n'));
+    expect(decode(framer.peek(10))).toBe('bcdef\n');
+    expect(framer.next()).toEqual(expectedLine('bcdef', '\n', 2, 6, 2));
+  });
+
   it('reports the bytes it holds', () => {
     const framer = new LineFramer(1024);
     expect(framer.pendingBytes).toBe(0);

@@ -24,7 +24,7 @@ export type FramedLine =
 
 const lf = 0x0a;
 const cr = 0x0d;
-const byteOrderMark = [0xef, 0xbb, 0xbf];
+export const byteOrderMark = [0xef, 0xbb, 0xbf];
 const lineDecoder = new TextDecoder('utf-8', { ignoreBOM: true });
 
 function join(parts: readonly Uint8Array[], total: number): Uint8Array {
@@ -41,7 +41,7 @@ function join(parts: readonly Uint8Array[], total: number): Uint8Array {
   return joined;
 }
 
-function isMarkPrefix(bytes: Uint8Array): boolean {
+export function isMarkPrefix(bytes: Uint8Array): boolean {
   return bytes.every((byte, index) => byte === byteOrderMark[index]);
 }
 
@@ -153,7 +153,27 @@ export class LineFramer {
     return undefined;
   }
 
+  peek(count: number): Uint8Array {
+    const pieces = this.unconsumed();
+    const total = pieces.reduce((sum, piece) => sum + piece.length, 0);
+    return total === 0 ? new Uint8Array(0) : join(pieces, total).slice(0, count);
+  }
+
   takeRemaining(): Uint8Array {
+    const pieces = this.unconsumed();
+    const total = pieces.reduce((sum, piece) => sum + piece.length, 0);
+    this.stopped = true;
+    this.head = undefined;
+    this.queue.length = 0;
+    this.queuedBytes = 0;
+    this.parts = [];
+    this.partBytes = 0;
+    this.preview = undefined;
+    this.pendingCr = false;
+    return total === 0 ? new Uint8Array(0) : join(pieces, total);
+  }
+
+  private unconsumed(): Uint8Array[] {
     const pieces: Uint8Array[] = [];
     if (this.head !== undefined && this.head.length > 0) {
       pieces.push(this.head);
@@ -169,16 +189,7 @@ export class LineFramer {
     if (first !== undefined) {
       pieces.push(first.subarray(this.position), ...rest);
     }
-    const total = pieces.reduce((sum, piece) => sum + piece.length, 0);
-    this.stopped = true;
-    this.head = undefined;
-    this.queue.length = 0;
-    this.queuedBytes = 0;
-    this.parts = [];
-    this.partBytes = 0;
-    this.preview = undefined;
-    this.pendingCr = false;
-    return total === 0 ? new Uint8Array(0) : join(pieces, total);
+    return pieces;
   }
 
   private enqueue(chunk: Uint8Array): void {
