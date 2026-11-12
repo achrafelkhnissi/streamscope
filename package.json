@@ -218,6 +218,55 @@
           "scope": "resource",
           "markdownDescription": "A PEM file of extra certificate authorities to trust, added to the default and system ones. An absolute path, or a path relative to the workspace folder."
         },
+        "streamscope.stream.maxEventSize": {
+          "type": "string",
+          "default": "16MiB",
+          "pattern": "^\\d+(KiB|MiB|GiB)$",
+          "patternErrorMessage": "Use a size such as 512KiB, 16MiB or 2GiB.",
+          "markdownDescription": "The largest single event to read. A larger event becomes an oversize event with a preview and the stream goes on. A size such as `512KiB`, `16MiB` or `2GiB`."
+        },
+        "streamscope.stream.memoryEvents": {
+          "type": "integer",
+          "default": 10000,
+          "minimum": 100,
+          "markdownDescription": "How many of the newest events of a streaming response stay in memory with their parsed values. Older events are read back from disk when you open them. At least 100."
+        },
+        "streamscope.stream.maxSpillSize": {
+          "type": "string",
+          "default": "512MiB",
+          "pattern": "^\\d+(KiB|MiB|GiB)$",
+          "patternErrorMessage": "Use a size such as 512KiB, 16MiB or 2GiB.",
+          "markdownDescription": "The most raw data kept on disk for one streaming response. Past it the stream goes on, but its raw data is no longer saved. A size such as `512KiB`, `16MiB` or `2GiB`. A change applies after you reload the window."
+        },
+        "streamscope.stream.maxTotalSpillSize": {
+          "type": "string",
+          "default": "2GiB",
+          "pattern": "^\\d+(KiB|MiB|GiB)$",
+          "patternErrorMessage": "Use a size such as 512KiB, 16MiB or 2GiB.",
+          "markdownDescription": "The most raw data kept on disk across all runs in the history. When it is reached, the oldest runs lose their raw data first. A size such as `512KiB`, `16MiB` or `2GiB`. A change applies after you reload the window."
+        },
+        "streamscope.stream.typeFields": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "type",
+            "event",
+            "object"
+          ],
+          "markdownDescription": "The JSON fields whose value labels an event, tried in order. With `type`, an event `{\"type\": \"RUN_STARTED\"}` is labelled `RUN_STARTED`. An SSE event name is used when none of them is present."
+        },
+        "streamscope.view.default": {
+          "type": "string",
+          "default": "events",
+          "enum": [
+            "events",
+            "reply",
+            "raw"
+          ],
+          "markdownDescription": "The view a streaming response opens on until you pick another one, which Streamscope then remembers. `reply` is available only when the reply of the stream is recognised."
+        },
         "streamscope.codeLens.enabled": {
           "type": "boolean",
           "default": true,

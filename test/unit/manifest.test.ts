@@ -21,7 +21,20 @@ interface Manifest {
     languages: unknown[];
     grammars: unknown[];
     keybindings: unknown[];
-    configuration: { properties: Record<string, { default: unknown; type: string }> };
+    configuration: {
+      properties: Record<
+        string,
+        {
+          default: unknown;
+          type: string;
+          pattern?: string;
+          minimum?: number;
+          enum?: string[];
+          items?: { type: string };
+          markdownDescription?: string;
+        }
+      >;
+    };
     menus: Record<string, { command: string; when?: string }[]>;
   };
 }
@@ -129,7 +142,9 @@ describe('extension manifest', () => {
 
     expect(
       Object.fromEntries(
-        Object.entries(properties).map(([name, property]) => [name, property.default]),
+        Object.entries(properties)
+          .filter(([name]) => !/^streamscope\.(stream|view)\./.test(name))
+          .map(([name, property]) => [name, property.default]),
       ),
     ).toEqual({
       'streamscope.request.connectTimeout': '30s',
@@ -139,6 +154,71 @@ describe('extension manifest', () => {
       'streamscope.request.caFile': '',
       'streamscope.codeLens.enabled': true,
     });
+  });
+
+  it('contributes stream and view settings with their defaults', () => {
+    const properties = manifest.contributes.configuration.properties;
+    const names = [
+      'streamscope.stream.maxEventSize',
+      'streamscope.stream.memoryEvents',
+      'streamscope.stream.maxSpillSize',
+      'streamscope.stream.maxTotalSpillSize',
+      'streamscope.stream.typeFields',
+      'streamscope.view.default',
+    ];
+
+    expect(
+      Object.keys(properties).filter((name) => /^streamscope\.(stream|view)\./.test(name)),
+    ).toEqual(names);
+    expect(Object.fromEntries(names.map((name) => [name, properties[name]?.default]))).toEqual({
+      'streamscope.stream.maxEventSize': '16MiB',
+      'streamscope.stream.memoryEvents': 10_000,
+      'streamscope.stream.maxSpillSize': '512MiB',
+      'streamscope.stream.maxTotalSpillSize': '2GiB',
+      'streamscope.stream.typeFields': ['type', 'event', 'object'],
+      'streamscope.view.default': 'events',
+    });
+
+    for (const name of [
+      'streamscope.stream.maxEventSize',
+      'streamscope.stream.maxSpillSize',
+      'streamscope.stream.maxTotalSpillSize',
+    ]) {
+      const property = properties[name];
+      expect(property?.type).toBe('string');
+      expect(property?.pattern).toBe('^\\d+(KiB|MiB|GiB)$');
+      const pattern = new RegExp(property?.pattern ?? '');
+      expect(pattern.test('512KiB')).toBe(true);
+      expect(pattern.test('16MiB')).toBe(true);
+      expect(pattern.test('2GiB')).toBe(true);
+      expect(pattern.test('16 MiB')).toBe(false);
+      expect(pattern.test('16mb')).toBe(false);
+    }
+
+    expect(properties['streamscope.stream.memoryEvents']).toMatchObject({
+      type: 'integer',
+      minimum: 100,
+    });
+    expect(properties['streamscope.stream.typeFields']).toMatchObject({
+      type: 'array',
+      items: { type: 'string' },
+    });
+    expect(properties['streamscope.view.default']).toMatchObject({
+      type: 'string',
+      enum: ['events', 'reply', 'raw'],
+    });
+    for (const name of names) {
+      expect(properties[name]?.markdownDescription?.trim()).toBeTruthy();
+    }
+  });
+
+  it('says that the spill size settings apply after a reload', () => {
+    const properties = manifest.contributes.configuration.properties;
+
+    expect(properties['streamscope.stream.maxSpillSize']?.markdownDescription).toMatch(/reload/i);
+    expect(properties['streamscope.stream.maxTotalSpillSize']?.markdownDescription).toMatch(
+      /reload/i,
+    );
   });
 
   it('only offers response commands where they apply', () => {
