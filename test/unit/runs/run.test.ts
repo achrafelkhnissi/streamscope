@@ -519,6 +519,77 @@ describe('startRun streaming', () => {
     expect(snapshot.stream?.store.count).toBe(22);
   });
 
+  it('streams without a spill area', async () => {
+    const server = await track(startStreamServer());
+    const statuses: RunStatus[] = [];
+    const run = startRun(
+      {
+        ...runInput([`GET ${server.url}/stream?rate=100&seconds=0.2&size=256`]),
+        spill: undefined,
+      },
+      dependencies,
+    );
+    run.onUpdate(() => statuses.push(run.snapshot().status));
+
+    const snapshot = await run.done;
+
+    expect(snapshot.status).toBe('completed');
+    expect(statuses.at(-1)).toBe('completed');
+    expect(snapshot.stream?.format?.format).toBe('ndjson');
+    expect(snapshot.stream?.store.count).toBe(22);
+    expect(snapshot.stream?.store.inMemory(1)?.label).toBe('RUN_STARTED');
+    expect(snapshot.stream?.store.inMemory(22)?.label).toBe('RUN_FINISHED');
+    await expect(run.release()).resolves.toBeUndefined();
+  });
+
+  it('reaches its terminal state when the spill file cannot be removed', async () => {
+    const server = await startHttpServer((_request, response) => response.end());
+    await server.close();
+    const area = spillArea();
+    const create = area.create.bind(area);
+    vi.spyOn(area, 'create').mockImplementation(async () => {
+      const file = await create();
+      const remove = file.delete.bind(file);
+      vi.spyOn(file, 'delete').mockImplementation(async () => {
+        await remove();
+        throw new Error('synthetic EBUSY');
+      });
+      return file;
+    });
+
+    const run = startRun(runInput([`GET ${server.url}/gone`]), dependencies);
+    const snapshot = await run.done;
+
+    expect(snapshot.status).toBe('failed');
+    expect(snapshot.failure?.kind).toBe('refused');
+    expect(run.snapshot().status).toBe('failed');
+    await expect(run.release()).resolves.toBeUndefined();
+  });
+
+  it('releases a streaming run when the spill file cannot be removed', async () => {
+    const server = await track(startStreamServer());
+    const area = spillArea();
+    const create = area.create.bind(area);
+    vi.spyOn(area, 'create').mockImplementation(async () => {
+      const file = await create();
+      const remove = file.delete.bind(file);
+      vi.spyOn(file, 'delete').mockImplementation(async () => {
+        await remove();
+        throw new Error('synthetic EBUSY');
+      });
+      return file;
+    });
+    const run = startRun(
+      runInput([`GET ${server.url}/stream?rate=50&seconds=30&size=256`]),
+      dependencies,
+    );
+    await waitFor(() => (run.snapshot().stream?.store.count ?? 0) >= 2, 3000);
+
+    await expect(run.release()).resolves.toBeUndefined();
+
+    expect((await run.done).status).toBe('cancelled');
+  });
+
   it('keeps a bounded raw tail of a long stream', async () => {
     const server = await track(startStreamServer());
 

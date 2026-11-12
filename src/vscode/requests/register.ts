@@ -51,15 +51,23 @@ function defaultSaveUri(slot: ResponseSlot): vscode.Uri | undefined {
   return folder ? vscode.Uri.joinPath(folder, name) : undefined;
 }
 
-function openSpillArea(context: vscode.ExtensionContext): Promise<SpillArea> {
+async function openSpillArea(context: vscode.ExtensionContext): Promise<SpillArea | undefined> {
   const limits = readSpillLimits();
   if (!limits.ok) {
     void vscode.window.showErrorMessage(limits.message);
   }
-  return SpillArea.open(
-    path.join(context.globalStorageUri.fsPath, 'spill'),
-    limits.ok ? limits.limits : defaultSpillLimits,
-  );
+  try {
+    return await SpillArea.open(
+      path.join(context.globalStorageUri.fsPath, 'spill'),
+      limits.ok ? limits.limits : defaultSpillLimits,
+    );
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    void vscode.window.showErrorMessage(
+      `Streamscope cannot save raw stream data: ${reason}. Responses still stream, but saving a stream and reading older events are unavailable.`,
+    );
+    return undefined;
+  }
 }
 
 async function showBlocked(document: vscode.TextDocument, run: RunSnapshot): Promise<void> {
@@ -254,7 +262,7 @@ export function registerRequestFeatures(
     },
     {
       dispose: () => {
-        void spill.then((area) => area.dispose());
+        void spill.then((area) => area?.dispose());
       },
     },
     vscode.workspace.registerFileSystemProvider(responseScheme, files, {

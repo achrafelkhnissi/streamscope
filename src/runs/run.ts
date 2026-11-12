@@ -71,7 +71,7 @@ export interface RunInput {
   variables: Omit<VariableSources, 'system' | 'restricted'>;
   restricted: boolean;
   confirmSend: (() => Promise<boolean>) | undefined;
-  spill: SpillArea;
+  spill: SpillArea | undefined;
   limits: StreamLimits;
 }
 
@@ -138,12 +138,16 @@ function drained(session: StreamSession): Promise<void> {
   });
 }
 
-async function createSpillFile(area: SpillArea): Promise<SpillFile | undefined> {
+async function createSpillFile(area: SpillArea | undefined): Promise<SpillFile | undefined> {
   try {
-    return await area.create();
+    return await area?.create();
   } catch {
     return undefined;
   }
+}
+
+async function deleteSpillFile(file: SpillFile | undefined): Promise<void> {
+  await file?.delete().catch(() => undefined);
 }
 
 export function requestKey(documentUri: string, request: HttpRequest, index: number): string {
@@ -212,7 +216,7 @@ export function startRun(
   };
   const closeStream = async (completed: boolean): Promise<void> => {
     if (session === undefined) {
-      await spillFile?.delete();
+      await deleteSpillFile(spillFile);
       return;
     }
     if (completed) {
@@ -389,7 +393,7 @@ export function startRun(
     release: async () => {
       cancel();
       session?.dispose();
-      await spillFile?.delete();
+      await deleteSpillFile(spillFile);
     },
   };
 }
