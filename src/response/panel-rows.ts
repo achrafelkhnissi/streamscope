@@ -4,6 +4,8 @@ import { maxLabelLength } from '../streaming/limits';
 import type { PanelRow } from './panel-protocol';
 
 const previewLength = 200;
+const scanFactor = 8;
+const minimumScan = 256;
 const lineBreak = /[\n\r\u0085\u2028\u2029]/;
 const hiddenCharacter =
   /[\u0000-\u0008\u000a-\u001f\u007f-\u009f\u061c\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]/;
@@ -15,9 +17,15 @@ function isList(node: readonly JsonValue[] | JsonObject): node is readonly JsonV
 }
 
 export function displayText(text: string, maxLength: number): string {
+  const scanLimit = Math.max(maxLength * scanFactor, minimumScan);
+  let scanned = 0;
   let shown = '';
   let afterBreak = false;
   for (const character of text) {
+    scanned += character.length;
+    if (scanned > scanLimit) {
+      break;
+    }
     const isBreak = lineBreak.test(character);
     if (isBreak && afterBreak) {
       continue;

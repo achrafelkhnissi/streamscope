@@ -130,6 +130,39 @@ describe('displayText', () => {
     expect(displayText('short', 100)).toBe('short');
     expect(displayText('', 100)).toBe('');
   });
+
+  it('looks at no more than eight times the maximum length of the input, and at least 256 characters', () => {
+    const bound = 200 * 8;
+    const bidi = String.fromCharCode(0x202e);
+
+    expect(displayText('\u0000'.repeat(bound) + 'abc', 200)).toBe('');
+    expect(displayText('\u0000'.repeat(bound + 1) + 'abc', 200)).toBe('');
+    expect(displayText('\u0000'.repeat(bound - 1) + 'abc', 200)).toBe('a');
+    expect(displayText(bidi.repeat(bound) + 'abc', 200)).toBe('');
+    expect(displayText(bidi.repeat(bound - 2) + 'abc', 200)).toBe('ab');
+    expect(displayText('x'.repeat(bound) + 'abc', 200)).toBe('x'.repeat(200));
+    expect(displayText('\u0000'.repeat(256) + 'abc', 3)).toBe('');
+    expect(displayText('\u0000'.repeat(255) + 'abc', 3)).toBe('a');
+    expect(displayText('\u0000'.repeat(50) + 'abc', 3)).toBe('abc');
+    expect(displayText('abc', 0)).toBe('');
+  });
+
+  it('looks at no more than that of a run of line breaks', () => {
+    const bound = 200 * 8;
+
+    expect(displayText('\n'.repeat(bound + 1) + 'abc', 200)).toBe(' ');
+    expect(displayText('\r\n'.repeat(bound) + 'abc', 200)).toBe(' ');
+    expect(displayText('\n'.repeat(bound - 1) + 'abc', 200)).toBe(' a');
+    expect(displayText('a\n'.repeat(bound), 200)).toBe('a '.repeat(100));
+  });
+
+  it('never splits a surrogate pair at the bound', () => {
+    const bound = 200 * 8;
+
+    expect(displayText('\u0000'.repeat(bound - 2) + '😀', 200)).toBe('😀');
+    expect(displayText('\u0000'.repeat(bound - 1) + '😀', 200)).toBe('');
+    expect(displayText('\u0000'.repeat(bound) + '😀', 200)).toBe('');
+  });
 });
 
 describe('panelRow', () => {
@@ -241,6 +274,14 @@ describe('panelRow', () => {
       'line one line two line three',
     );
     expect(previewOf('data\u2028more', { kind: 'comment' })).toBe('data more');
+  });
+
+  it('leaves the preview of a hostile event empty without reading all of it', () => {
+    const nulls = '\u0000'.repeat(1_000_000);
+
+    expect(previewOf(nulls + 'abc', { kind: 'text' })).toBe('');
+    expect(previewOf('\n'.repeat(1_000_000) + 'abc', { kind: 'malformed' })).toBe(' ');
+    expect(previewOf(nulls + 'abc', { kind: 'comment' })).toBe('');
   });
 
   it('strips control and bidi characters from the preview', () => {
