@@ -137,6 +137,12 @@ export class ReplyAssembler {
     return joined;
   }
 
+  release(): string {
+    const joined = this.text();
+    this.parts.length = 0;
+    return joined;
+  }
+
   since(offset: number): string {
     const count = Math.max(0, this.length - offset);
     let wanted = count;

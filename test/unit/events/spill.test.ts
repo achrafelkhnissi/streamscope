@@ -605,3 +605,117 @@ describe('SpillArea and SpillFile', () => {
     });
   });
 });
+
+describe('the side file of a SpillFile', () => {
+  let root: string;
+
+  beforeEach(() => {
+    root = mkdtempSync(path.join(tmpdir(), 'streamscope-side-'));
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('keeps bytes beside the spill file and reads them back', async () => {
+    const area = await SpillArea.open(root);
+    const file = await area.create();
+    file.append(encoder.encode('raw'));
+    await file.finish();
+
+    expect(await file.writeSide(encoder.encode('synthetic reply'))).toBe(true);
+
+    expect(text(await file.readSide())).toBe('synthetic reply');
+    expect(readdirSync(area.directory).sort()).toEqual([
+      path.basename(file.path),
+      `${path.basename(file.path)}.side`,
+    ]);
+    expect(area.totalSize).toBe(3);
+    await area.dispose();
+  });
+
+  it('has nothing to read before anything was written', async () => {
+    const area = await SpillArea.open(root);
+    const file = await area.create();
+
+    expect(await file.readSide()).toBeUndefined();
+    await area.dispose();
+  });
+
+  it('removes the side file together with the spill file when it is deleted', async () => {
+    const area = await SpillArea.open(root);
+    const file = await area.create();
+    file.append(encoder.encode('raw'));
+    await file.finish();
+    await file.writeSide(encoder.encode('reply'));
+
+    await file.delete();
+
+    expect(readdirSync(area.directory)).toEqual([]);
+    expect(await file.readSide()).toBeUndefined();
+    await area.dispose();
+  });
+
+  it('removes the side file when the spill file is evicted', async () => {
+    const area = await SpillArea.open(root, limits({ maxTotalSize: 10 }));
+    const first = await area.create();
+    first.append(encoder.encode('12345678'));
+    await first.finish();
+    await first.writeSide(encoder.encode('reply'));
+    const second = await area.create();
+
+    second.append(encoder.encode('abcdefgh'));
+    await second.finish();
+    await first.delete();
+
+    expect(first.evicted).toBe(true);
+    expect(await first.readSide()).toBeUndefined();
+    expect(readdirSync(area.directory)).toEqual([path.basename(second.path)]);
+    await area.dispose();
+  });
+
+  it('writes nothing once the spill file is gone', async () => {
+    const area = await SpillArea.open(root);
+    const file = await area.create();
+    await file.delete();
+
+    expect(await file.writeSide(encoder.encode('reply'))).toBe(false);
+
+    expect(readdirSync(area.directory)).toEqual([]);
+    await area.dispose();
+  });
+
+  it('leaves no side file when the spill file is deleted while it is being written', async () => {
+    const area = await SpillArea.open(root);
+    const file = await area.create();
+    file.append(encoder.encode('raw'));
+    await file.finish();
+
+    const writing = file.writeSide(encoder.encode('reply'));
+    await file.delete();
+
+    expect(await writing).toBe(false);
+    expect(readdirSync(area.directory)).toEqual([]);
+    await area.dispose();
+  });
+
+  it('reports a side file that cannot be written', async () => {
+    const area = await SpillArea.open(root);
+    const file = await area.create();
+    rmSync(area.directory, { recursive: true, force: true });
+
+    expect(await file.writeSide(encoder.encode('reply'))).toBe(false);
+    expect(await file.readSide()).toBeUndefined();
+    await area.dispose();
+  });
+
+  it('removes every side file with the area', async () => {
+    const area = await SpillArea.open(root);
+    const file = await area.create();
+    await file.writeSide(encoder.encode('reply'));
+
+    await area.dispose();
+
+    expect(existsSync(area.directory)).toBe(false);
+  });
+});

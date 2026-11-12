@@ -78,6 +78,8 @@ describe('panelStatus', () => {
       reply: false,
       replyCut: false,
       released: false,
+      rawGone: false,
+      replyGone: false,
     });
   });
 
@@ -92,6 +94,8 @@ describe('panelStatus', () => {
       reply: false,
       replyCut: false,
       released: false,
+      rawGone: false,
+      replyGone: false,
     });
   });
 
@@ -180,6 +184,21 @@ describe('panelStatus', () => {
 
     expect(status.reply).toBe(true);
     expect(status.replyCut).toBe(true);
+  });
+
+  it('says when the Raw tail or the Reply of a finished run can no longer be read', () => {
+    expect(panelStatus(snapshot({ rawSource: 'spill', replySource: 'spill' }))).toMatchObject({
+      rawGone: false,
+      replyGone: false,
+    });
+    expect(panelStatus(snapshot({ rawSource: 'gone' }))).toMatchObject({
+      rawGone: true,
+      replyGone: false,
+    });
+    expect(panelStatus(snapshot({ replySource: 'gone' }))).toMatchObject({
+      rawGone: false,
+      replyGone: true,
+    });
   });
 
   it('says when the run has left history', () => {

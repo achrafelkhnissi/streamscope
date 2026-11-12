@@ -16,6 +16,8 @@ export interface ResponseState {
   status: RunStatus;
   events: number;
   rendered: number;
+  rawChars: number;
+  replyChars: number;
   format: string | undefined;
   body: PanelBody['kind'];
   visible: boolean;
@@ -80,6 +82,7 @@ function isRunning(run: RunHandle): boolean {
 
 export class ResponsePanels implements vscode.Disposable {
   private readonly entries = new Map<string, Entry>();
+  private lastView: PanelView | undefined;
 
   constructor(private readonly options: ResponsePanelsOptions) {}
 
@@ -165,6 +168,8 @@ export class ResponsePanels implements vscode.Disposable {
       status: snapshot.status,
       events: snapshot.stream?.store.count ?? 0,
       rendered: entry.feed.rendered,
+      rawChars: entry.feed.rawChars,
+      replyChars: entry.feed.replyChars,
       format: format === undefined ? undefined : formatLabel(format),
       body: entry.feed.body.kind,
       visible: entry.panel?.visible ?? false,
@@ -242,12 +247,13 @@ export class ResponsePanels implements vscode.Disposable {
   }
 
   private streamView(): PanelView {
-    const saved = this.options.state.get<string>(lastViewKey);
+    const saved = this.lastView ?? this.options.state.get<string>(lastViewKey);
     return rememberedViews.find((view) => view === saved) ?? readDefaultView();
   }
 
   private remember(entry: Entry, view: PanelView): void {
     if (entry.feed.stream && rememberedViews.includes(view)) {
+      this.lastView = view;
       void this.options.state.update(lastViewKey, view);
     }
   }

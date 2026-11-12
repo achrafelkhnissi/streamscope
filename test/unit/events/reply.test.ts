@@ -172,4 +172,31 @@ describe('ReplyAssembler', () => {
     expect(assembler.text()).toBe('Héll');
     expect(assembler.truncated).toBe(true);
   });
+
+  it('hands over its text on release and keeps what it recognised', () => {
+    const fixtureBytes = fixture('ag-ui.ndjson');
+    const assembler = assemble(fixtureBytes.bytes, fixtureBytes.contentType);
+    const text = assembler.text();
+    expect(text.length).toBeGreaterThan(0);
+    const { adapter, size } = assembler;
+
+    expect(assembler.release()).toBe(text);
+
+    expect(assembler.text()).toBe('');
+    expect(assembler.since(0)).toBe('');
+    expect(assembler.adapter).toBe(adapter);
+    expect(assembler.size).toBe(size);
+    expect(assembler.truncated).toBe(false);
+  });
+
+  it('keeps saying the reply was cut after a release', () => {
+    const fixtureBytes = fixture('ag-ui.ndjson');
+    const assembler = assemble(fixtureBytes.bytes, fixtureBytes.contentType, new ReplyAssembler(5));
+    expect(assembler.truncated).toBe(true);
+
+    expect(assembler.release()).toHaveLength(5);
+
+    expect(assembler.truncated).toBe(true);
+    expect(assembler.size).toBe(5);
+  });
 });

@@ -13,6 +13,8 @@ function status(overrides: Partial<PanelStatus> = {}): PanelStatus {
     reply: false,
     replyCut: false,
     released: false,
+    rawGone: false,
+    replyGone: false,
     ...overrides,
   };
 }

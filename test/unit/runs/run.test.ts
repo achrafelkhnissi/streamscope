@@ -11,6 +11,7 @@ import type { Transport } from '../../../src/transport/model';
 import { createSelfSignedCertificate } from '../../support/certificate';
 import { startHttpServer, startHttpsServer, type LocalServer } from '../../support/servers';
 import { startStreamServer } from '../../support/stream-server';
+import { collect } from '../../support/memory';
 import { waitFor } from '../transport/harness';
 import { dependencies, runInput, useSpillArea } from './support';
 
@@ -926,6 +927,215 @@ describe('compact and the body', () => {
     expect(run.snapshot().bodyKept).toBe(false);
     expect(run.snapshot().bodyLength).toBe(0);
     expect(run.snapshot().body.length).toBe(0);
+    await run.release();
+  });
+});
+
+describe('compact and the raw tail and the reply', () => {
+  const stream = (server: LocalServer, query = 'rate=100&seconds=0.3&size=256'): string =>
+    `GET ${server.url}/stream?${query}`;
+
+  it('drops the raw tail and the reply of a finished run and keeps what they said', async () => {
+    const server = await track(startStreamServer());
+    const run = startRun(runInput([stream(server)]), dependencies);
+    const finished = await run.done;
+    const reply = finished.stream?.reply;
+    const rawTotal = finished.raw.total;
+    const replySize = reply?.size ?? 0;
+    expect(finished.raw.text.length).toBeGreaterThan(0);
+    expect(reply?.text().length).toBeGreaterThan(0);
+    expect(finished.rawSource).toBe('memory');
+    expect(finished.replySource).toBe('memory');
+
+    run.compact();
+    const compacted = run.snapshot();
+
+    expect(compacted.raw.text).toBe('');
+    expect(compacted.raw.total).toBe(rawTotal);
+    expect(reply?.text()).toBe('');
+    expect(reply?.size).toBe(replySize);
+    expect(reply?.adapter).toBe('ag-ui');
+    expect(compacted.rawSource).toBe('spill');
+    expect(compacted.replySource).toBe('spill');
+    expect(compacted.status).toBe('completed');
+    await run.release();
+  });
+
+  it('reads the raw tail and the reply back as they were', async () => {
+    const server = await track(startStreamServer());
+    const run = startRun(runInput([stream(server)]), dependencies);
+    const finished = await run.done;
+    const liveRaw = finished.raw.text;
+    const liveReply = finished.stream?.reply.text() ?? '';
+    expect(liveReply.length).toBeGreaterThan(0);
+
+    run.compact();
+
+    expect(await run.readRaw()).toBe(liveRaw);
+    expect(await run.readReply()).toBe(liveReply);
+    await run.release();
+  });
+
+  it('reads them from memory while they are held', async () => {
+    const server = await track(startStreamServer());
+    const run = startRun(runInput([stream(server)]), dependencies);
+    const finished = await run.done;
+
+    expect(await run.readRaw()).toBe(finished.raw.text);
+    expect(await run.readReply()).toBe(finished.stream?.reply.text());
+    await run.release();
+  });
+
+  it('keeps the reply in a side file of the spill file until the run is released', async () => {
+    const server = await track(startStreamServer());
+    const area = spillArea();
+    const run = startRun(runInput([stream(server)]), dependencies);
+    await run.done;
+    expect(readdirSync(area.directory)).toHaveLength(1);
+
+    run.compact();
+    await run.readReply();
+
+    const names = readdirSync(area.directory).sort();
+    expect(names).toHaveLength(2);
+    expect(names[1]).toBe(`${names[0] ?? ''}.side`);
+    await run.release();
+    expect(readdirSync(area.directory)).toEqual([]);
+  });
+
+  it('frees the memory of the raw tail and the reply', async () => {
+    const server = await track(startStreamServer());
+    const run = startRun(runInput([stream(server, 'rate=80&seconds=1&size=65536')]), dependencies);
+    const finished = await run.done;
+    finished.stream?.store.release();
+    expect(finished.raw.text.length).toBeGreaterThan(1_000_000);
+    expect(finished.stream?.reply.size).toBe(1_048_576);
+    collect();
+    const before = process.memoryUsage().heapUsed;
+
+    run.compact();
+    await run.readReply();
+    collect();
+    const freed = before - process.memoryUsage().heapUsed;
+
+    expect(freed).toBeGreaterThan(1_500_000);
+    await run.release();
+  });
+
+  it('does not drop them while the run is still streaming', async () => {
+    const server = await track(startStreamServer());
+    const run = startRun(runInput([stream(server, 'rate=50&seconds=30&size=256')]), dependencies);
+    await waitFor(() => (run.snapshot().stream?.reply.size ?? 0) > 0, 3000);
+
+    run.compact();
+
+    expect(run.snapshot().raw.text.length).toBeGreaterThan(0);
+    expect(run.snapshot().stream?.reply.size).toBeGreaterThan(0);
+    expect(run.snapshot().rawSource).toBe('memory');
+    expect(run.snapshot().replySource).toBe('memory');
+    expect((run.snapshot().stream?.reply.text() ?? '').length).toBeGreaterThan(0);
+    await run.release();
+  });
+
+  it('drops the raw tail of a response that is a body too', async () => {
+    const body = JSON.stringify({ items: Array.from({ length: 50 }, (_unused, id) => ({ id })) });
+    const server = await track(
+      startHttpServer((_request, response) => {
+        response.writeHead(200, { 'Content-Type': 'application/json' });
+        response.end(body);
+      }),
+    );
+    const run = startRun(runInput([`GET ${server.url}`]), dependencies);
+    await run.done;
+
+    run.compact();
+
+    expect(run.snapshot().raw.text).toBe('');
+    expect(run.snapshot().rawSource).toBe('spill');
+    expect(run.snapshot().replySource).toBe('memory');
+    expect(await run.readRaw()).toBe(body);
+    expect(await run.readReply()).toBe('');
+    expect(readdirSync(spillArea().directory)).toHaveLength(1);
+    await run.release();
+  });
+
+  it('says they are gone when the run has no spill file', async () => {
+    const server = await track(startStreamServer());
+    const run = startRun({ ...runInput([stream(server)]), spill: undefined }, dependencies);
+    await run.done;
+
+    run.compact();
+
+    expect(run.snapshot().raw.text).toBe('');
+    expect(run.snapshot().rawSource).toBe('gone');
+    expect(run.snapshot().replySource).toBe('gone');
+    expect(await run.readRaw()).toBeUndefined();
+    expect(await run.readReply()).toBeUndefined();
+    expect(run.snapshot().stream?.reply.adapter).toBe('ag-ui');
+  });
+
+  it('says they are gone once the spill file was evicted or the run released', async () => {
+    const server = await track(startStreamServer());
+    const area = spillArea();
+    const files: SpillFile[] = [];
+    const create = area.create.bind(area);
+    vi.spyOn(area, 'create').mockImplementation(async () => {
+      const file = await create();
+      files.push(file);
+      return file;
+    });
+    const evicted = startRun(runInput([stream(server)]), dependencies);
+    await evicted.done;
+    evicted.compact();
+    await evicted.readReply();
+    files[0]?.evict();
+    const released = startRun(runInput([stream(server)]), dependencies);
+    await released.done;
+    released.compact();
+
+    await released.release();
+
+    for (const run of [evicted, released]) {
+      expect(run.snapshot().rawSource).toBe('gone');
+      expect(run.snapshot().replySource).toBe('gone');
+      expect(await run.readRaw()).toBeUndefined();
+      expect(await run.readReply()).toBeUndefined();
+    }
+  });
+
+  it('says the reply is gone when its side file could not be written', async () => {
+    const server = await track(startStreamServer());
+    const area = spillArea();
+    const create = area.create.bind(area);
+    vi.spyOn(area, 'create').mockImplementation(async () => {
+      const file = await create();
+      vi.spyOn(file, 'writeSide').mockResolvedValue(false);
+      return file;
+    });
+    const run = startRun(runInput([stream(server)]), dependencies);
+    await run.done;
+
+    run.compact();
+
+    expect(await run.readReply()).toBeUndefined();
+    expect(run.snapshot().replySource).toBe('gone');
+    expect(run.snapshot().rawSource).toBe('spill');
+    await run.release();
+  });
+
+  it('compacting twice changes nothing more', async () => {
+    const server = await track(startStreamServer());
+    const run = startRun(runInput([stream(server)]), dependencies);
+    const finished = await run.done;
+    const liveRaw = finished.raw.text;
+    const liveReply = finished.stream?.reply.text() ?? '';
+
+    run.compact();
+    run.compact();
+
+    expect(await run.readReply()).toBe(liveReply);
+    expect(await run.readRaw()).toBe(liveRaw);
+    expect(readdirSync(spillArea().directory)).toHaveLength(2);
     await run.release();
   });
 });

@@ -1,7 +1,16 @@
 import { randomBytes } from 'node:crypto';
 import { once } from 'node:events';
 import { createWriteStream, type WriteStream } from 'node:fs';
-import { mkdir, open, readdir, rename, rm, type FileHandle } from 'node:fs/promises';
+import {
+  mkdir,
+  open,
+  readdir,
+  readFile,
+  rename,
+  rm,
+  writeFile,
+  type FileHandle,
+} from 'node:fs/promises';
 import * as path from 'node:path';
 import { defaultSpillLimits, type SpillLimits } from '../streaming/limits';
 
@@ -141,6 +150,10 @@ export class SpillFile {
     return this.saved;
   }
 
+  get sidePath(): string {
+    return `${this.path}.side`;
+  }
+
   get capped(): boolean {
     return this.isCapped;
   }
@@ -227,6 +240,33 @@ export class SpillFile {
     }
   }
 
+  async writeSide(bytes: Uint8Array): Promise<boolean> {
+    if (this.isGone()) {
+      return false;
+    }
+    try {
+      await writeFile(this.sidePath, bytes, { mode: 0o600 });
+    } catch {
+      return false;
+    }
+    if (this.isGone()) {
+      await rm(this.sidePath, { force: true }).catch(() => undefined);
+      return false;
+    }
+    return true;
+  }
+
+  async readSide(): Promise<Uint8Array | undefined> {
+    if (this.removed) {
+      return undefined;
+    }
+    try {
+      return await readFile(this.sidePath);
+    } catch {
+      return undefined;
+    }
+  }
+
   async finish(): Promise<void> {
     if (this.finishing || this.removed) {
       return;
@@ -294,6 +334,7 @@ export class SpillFile {
       () => undefined,
     );
     await rm(this.path, { force: true });
+    await rm(this.sidePath, { force: true });
   }
 
   private async readInto(buffer: Uint8Array, offset: number): Promise<boolean> {
@@ -320,6 +361,10 @@ export class SpillFile {
     }
     const { bytesRead } = await handle.read(buffer, 0, buffer.length, offset);
     return bytesRead === buffer.length;
+  }
+
+  private isGone(): boolean {
+    return this.removed;
   }
 
   private holds(end: number): boolean {

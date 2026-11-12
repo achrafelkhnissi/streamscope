@@ -167,6 +167,10 @@ describe('panelHtml', () => {
     expect(html()).toContain('<pre id="reply"></pre><p id="reply-note" hidden></p>');
   });
 
+  it('has a hidden note at the end of the Raw tab for raw data that is no longer available', () => {
+    expect(html()).toContain('<pre id="raw"></pre><p id="raw-note" hidden></p>');
+  });
+
   it('has a hidden note between the status bar and the tabs for a run that left history', () => {
     const page = html();
 

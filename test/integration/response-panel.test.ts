@@ -14,6 +14,8 @@ interface ResponseState {
   status: string;
   events: number;
   rendered: number;
+  rawChars: number;
+  replyChars: number;
   format: string | undefined;
   body: string;
   visible: boolean;
@@ -698,6 +700,59 @@ describe('the response panel', () => {
 
       assert.equal(latest.readOnly, false);
       assert.equal(panelTabs().length, 1);
+    });
+
+    it('reads the Raw tail and the Reply of a stream back after its memory was released', async function () {
+      this.timeout(30_000);
+      const server = await streamServer();
+      const editor = await open('history-raw-reply.http', [
+        `GET ${server.url}/stream?rate=100&seconds=0.3&size=256`,
+      ]);
+      const selectView = async (view: string): Promise<void> => {
+        await vscode.window.showTextDocument(editor.document, vscode.ViewColumn.One);
+        await vscode.commands.executeCommand('streamscope.showResponseView', view);
+      };
+      await send();
+      const live = await waitForState(
+        (seen) => seen.status === 'completed' && seen.rendered === seen.events,
+        'the stream did not complete',
+      );
+      await selectView('raw');
+      const raw = await waitForState(
+        (seen) => seen.view === 'raw' && seen.rawChars > 0,
+        'the Raw view was not drawn',
+      );
+      await selectView('reply');
+      const reply = await waitForState(
+        (seen) => seen.view === 'reply' && seen.replyChars > 0,
+        'the Reply view was not drawn',
+      );
+      await until(() => panelTabs().length === 1, 'the panel has no tab');
+      await vscode.window.tabGroups.close(panelTabs());
+      await until(
+        async () => (await responseState(live.key)) === undefined,
+        'the panel did not close',
+      );
+      await until(
+        async () => (await newestEventInMemory(live.run)) === false,
+        'the run was not compacted',
+      );
+
+      await showHistory(live.run);
+      await selectView('raw');
+      const rawAgain = await waitForState(
+        (seen) => seen.run === live.run && seen.view === 'raw' && seen.rawChars > 0,
+        'the Raw tail was not read back',
+      );
+      await selectView('reply');
+      const replyAgain = await waitForState(
+        (seen) => seen.run === live.run && seen.view === 'reply' && seen.replyChars > 0,
+        'the Reply was not read back',
+      );
+
+      assert.equal(rawAgain.readOnly, true);
+      assert.equal(rawAgain.rawChars, raw.rawChars);
+      assert.equal(replyAgain.replyChars, reply.replyChars);
     });
 
     it('keeps a stream compacted once it ends with its panel closed', async function () {

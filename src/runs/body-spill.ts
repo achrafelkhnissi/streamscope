@@ -1,6 +1,6 @@
 import type { SpillFile } from '../events/spill';
 
-export type BodySource = 'memory' | 'spill' | 'gone';
+export type DataSource = 'memory' | 'spill' | 'gone';
 
 const chunkBytes = 1_048_576;
 
@@ -13,7 +13,7 @@ export function bodySourceOf(
   file: SpillFile | undefined,
   released: boolean,
   bodyLength: number,
-): BodySource {
+): DataSource {
   if (!dropped || bodyLength === 0) {
     return 'memory';
   }

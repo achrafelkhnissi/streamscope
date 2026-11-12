@@ -4,6 +4,7 @@ import { maxReplyLength } from '../../../src/streaming/limits';
 import {
   bodyNote,
   historyNote,
+  rawNote,
   replyNote,
   stateAnnouncement,
   stateLabels,
@@ -21,6 +22,8 @@ function status(overrides: Partial<PanelStatus> = {}): PanelStatus {
     reply: false,
     replyCut: false,
     released: false,
+    rawGone: false,
+    replyGone: false,
     ...overrides,
   };
 }
@@ -121,6 +124,14 @@ describe('historyNote', () => {
   });
 });
 
+describe('rawNote', () => {
+  it('says when the raw data is no longer available, and nothing while it is', () => {
+    expect(rawNote(status({ rawGone: true }))).toBe('This raw data is no longer available.');
+    expect(rawNote(status({ rawGone: false }))).toBe('');
+    expect(rawNote(undefined)).toBe('');
+  });
+});
+
 describe('replyNote', () => {
   it('says where the reply was cut off, and nothing while it is whole', () => {
     expect(replyNote(status({ reply: true, replyCut: true }))).toBe(
@@ -128,6 +139,15 @@ describe('replyNote', () => {
     );
     expect(replyNote(status({ reply: true }))).toBe('');
     expect(replyNote(undefined)).toBe('');
+  });
+
+  it('says the reply is no longer available, before it says it was cut off', () => {
+    expect(replyNote(status({ reply: true, replyGone: true }))).toBe(
+      'This reply is no longer available.',
+    );
+    expect(replyNote(status({ reply: true, replyGone: true, replyCut: true }))).toBe(
+      'This reply is no longer available.',
+    );
   });
 
   it('names the limit the reply assembler stops at', () => {

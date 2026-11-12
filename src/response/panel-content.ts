@@ -84,6 +84,8 @@ export function panelStatus(run: RunSnapshot): PanelStatus {
     reply: stream?.reply.adapter !== undefined,
     replyCut: stream?.reply.truncated ?? false,
     released: run.released,
+    rawGone: run.rawSource === 'gone',
+    replyGone: run.replySource === 'gone',
   };
 }
 

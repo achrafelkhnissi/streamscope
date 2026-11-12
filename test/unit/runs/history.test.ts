@@ -20,6 +20,8 @@ function fakeRun(id: number): FakeRun {
     release: vi.fn(() => Promise.resolve()),
     compact: () => undefined,
     readBody: () => Promise.resolve(undefined),
+    readRaw: () => Promise.resolve(undefined),
+    readReply: () => Promise.resolve(undefined),
   };
 }
 

@@ -100,7 +100,22 @@ export interface PanelFeedOptions {
   post(message: ToPanel): void;
 }
 
-export type FeedRun = Pick<RunHandle, 'id' | 'snapshot'>;
+export type FeedRun = Pick<RunHandle, 'id' | 'snapshot' | 'readRaw' | 'readReply'>;
+
+interface StoredText {
+  loading: boolean;
+  sent: boolean;
+  text: string | undefined;
+}
+
+type StoredKind = 'raw' | 'reply';
+
+function freshStored(): Record<StoredKind, StoredText> {
+  return {
+    raw: { loading: false, sent: false, text: undefined },
+    reply: { loading: false, sent: false, text: undefined },
+  };
+}
 
 function contentTypeOf(run: RunSnapshot): string | undefined {
   return run.head?.headers.find(([name]) => name.toLowerCase() === 'content-type')?.[1];
@@ -132,6 +147,8 @@ export class PanelFeed {
   private bodyChanged = false;
   private expanding: number | undefined;
   private readonly rows = new RowCache(rowCacheSize);
+  private stored = freshStored();
+  private lost: Record<StoredKind, boolean> = { raw: false, reply: false };
 
   constructor(
     readonly run: FeedRun,
@@ -155,6 +172,14 @@ export class PanelFeed {
     return this.bodyState;
   }
 
+  get rawChars(): number {
+    return this.rawSent ?? 0;
+  }
+
+  get replyChars(): number {
+    return this.replySent ?? 0;
+  }
+
   get count(): number {
     return this.run.snapshot().stream?.store.count ?? 0;
   }
@@ -172,8 +197,10 @@ export class PanelFeed {
     this.sentTo = 0;
     this.replySent = undefined;
     this.rawSent = undefined;
+    this.stored = freshStored();
+    this.lost = { raw: false, reply: false };
     const snapshot = this.run.snapshot();
-    const status = panelStatus(snapshot);
+    const status = this.statusOf(snapshot);
     this.shown = this.viewFor(snapshot, status);
     this.lastState = snapshot.status;
     this.headers = renderHeadersDocument(snapshot);
@@ -205,7 +232,7 @@ export class PanelFeed {
       return;
     }
     const snapshot = this.run.snapshot();
-    const status = panelStatus(snapshot);
+    const status = this.statusOf(snapshot);
     const next = this.viewFor(snapshot, status);
     const switched = next !== this.shown;
     this.shown = next;
@@ -324,6 +351,56 @@ export class PanelFeed {
     });
   }
 
+  private statusOf(snapshot: RunSnapshot): PanelStatus {
+    const status = panelStatus(snapshot);
+    return {
+      ...status,
+      rawGone: status.rawGone || this.lost.raw,
+      replyGone: status.replyGone || this.lost.reply,
+    };
+  }
+
+  private storedDelta(kind: StoredKind, snapshot: RunSnapshot): TextDelta | undefined {
+    const stored = this.stored[kind];
+    const source = kind === 'raw' ? snapshot.rawSource : snapshot.replySource;
+    if (stored.sent || source === 'gone') {
+      return undefined;
+    }
+    if (stored.text === undefined) {
+      if (!stored.loading) {
+        void this.load(kind);
+      }
+      return undefined;
+    }
+    const capped = capTail(stored.text, partBytes);
+    stored.text = undefined;
+    stored.sent = true;
+    if (kind === 'raw') {
+      this.rawSent = snapshot.raw.total;
+    } else {
+      this.replySent = snapshot.stream?.reply.size;
+    }
+    return { reset: true, text: capped.text };
+  }
+
+  private async load(kind: StoredKind): Promise<void> {
+    const stored = this.stored[kind];
+    const generation = this.generation;
+    stored.loading = true;
+    const text = await (kind === 'raw' ? this.run.readRaw() : this.run.readReply());
+    if (generation !== this.generation) {
+      return;
+    }
+    stored.loading = false;
+    if (text === undefined) {
+      this.lost[kind] = true;
+      stored.sent = true;
+    } else {
+      stored.text = text;
+    }
+    this.refresh();
+  }
+
   private viewFor(snapshot: RunSnapshot, status: PanelStatus): PanelView {
     if (!this.picked && this.requested === 'body' && isEventStream(snapshot)) {
       this.requested = this.options.streamView;
@@ -413,6 +490,9 @@ export class PanelFeed {
   }
 
   private replyDelta(snapshot: RunSnapshot): TextDelta | undefined {
+    if (snapshot.replySource !== 'memory') {
+      return this.storedDelta('reply', snapshot);
+    }
     const reply = snapshot.stream?.reply;
     if (reply === undefined || reply.size === this.replySent) {
       return undefined;
@@ -425,6 +505,9 @@ export class PanelFeed {
   }
 
   private rawDelta(snapshot: RunSnapshot): TextDelta | undefined {
+    if (snapshot.rawSource !== 'memory') {
+      return this.storedDelta('raw', snapshot);
+    }
     const raw = snapshot.raw;
     if (raw.total === this.rawSent) {
       return undefined;

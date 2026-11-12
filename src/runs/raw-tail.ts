@@ -38,6 +38,11 @@ export class RawTail {
     return this.trims > 0;
   }
 
+  release(): void {
+    this.pieces = [];
+    this.held = 0;
+  }
+
   since(offset: number): string | undefined {
     const start = this.appended - this.held;
     if (offset < start) {

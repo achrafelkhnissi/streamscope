@@ -21,7 +21,8 @@ import type { SystemContext } from '../variables/system';
 import type { BodyFileContext } from './body-files';
 import { buildOutgoingRequest, type BuildResult } from './build-request';
 import { parseDuration } from './duration';
-import { bodySourceOf, readBodyFromSpill, type BodySource } from './body-spill';
+import { bodySourceOf, readBodyFromSpill, type DataSource } from './body-spill';
+import { readRawTail } from './raw-read';
 import { RawTail } from './raw-tail';
 
 export type RunStatus = 'sending' | 'receiving' | 'completed' | 'failed' | 'cancelled' | 'blocked';
@@ -50,10 +51,12 @@ export interface RunSnapshot {
   body: Uint8Array;
   bodyKept: boolean;
   bodyLength: number;
-  bodySource: BodySource;
+  bodySource: DataSource;
   stream: StreamSession | undefined;
   raw: RawTail;
   rawData: RawData;
+  rawSource: DataSource;
+  replySource: DataSource;
   released: boolean;
   failure: RunFailure | undefined;
   problems: readonly ResolutionProblem[];
@@ -98,12 +101,20 @@ export interface RunHandle {
   onUpdate(listener: () => void): () => void;
   compact(): void;
   readBody(maxBytes: number): Promise<Uint8Array | undefined>;
+  readRaw(): Promise<string | undefined>;
+  readReply(): Promise<string | undefined>;
   release(): Promise<void>;
 }
 
 type RunState = Omit<
   RunSnapshot,
-  'elapsedMs' | 'receivedBytes' | 'rawData' | 'released' | 'bodySource'
+  | 'elapsedMs'
+  | 'receivedBytes'
+  | 'rawData'
+  | 'rawSource'
+  | 'replySource'
+  | 'released'
+  | 'bodySource'
 >;
 
 const timeoutMessage = 'Expected a duration such as 500ms, 30s or 5m.';
@@ -116,6 +127,8 @@ const streamDirectives: ReadonlySet<string> = new Set<StreamDirective>([
   'raw',
   'auto',
 ]);
+const encoder = new TextEncoder();
+const decoder = new TextDecoder();
 let nextRunId = 1;
 
 function lastDirective(request: HttpRequest, kind: DirectiveKind): Directive | undefined {
@@ -201,6 +214,10 @@ export function startRun(
   let tooLarge = false;
   let released = false;
   let bodyDropped = false;
+  let rawDropped = false;
+  let replyDropped = false;
+  let replyStored: boolean | undefined;
+  let replyWrite: Promise<boolean> = Promise.resolve(false);
   let endedAt: number | undefined;
   let session: StreamSession | undefined;
   let spillFile: SpillFile | undefined;
@@ -226,11 +243,28 @@ export function startRun(
     sensitiveValues: [],
   };
 
+  const rawSource = (): DataSource => {
+    if (!rawDropped) {
+      return 'memory';
+    }
+    const kept = rawDataOf(spillFile, released);
+    return kept === 'saved' || kept === 'stopped' ? 'spill' : 'gone';
+  };
+  const replySource = (): DataSource => {
+    if (!replyDropped) {
+      return 'memory';
+    }
+    const kept =
+      !released && spillFile !== undefined && !spillFile.evicted && replyStored !== false;
+    return kept ? 'spill' : 'gone';
+  };
   const snapshot = (): RunSnapshot => ({
     ...state,
     elapsedMs: (endedAt ?? dependencies.clock()) - state.startedAt,
     receivedBytes: arrived,
     rawData: rawDataOf(spillFile, released),
+    rawSource: rawSource(),
+    replySource: replySource(),
     released,
     bodySource: bodySourceOf(bodyDropped, spillFile, released, state.bodyLength),
   });
@@ -431,15 +465,44 @@ export function startRun(
     },
     compact: () => {
       session?.store.release();
-      if (endedAt !== undefined && state.bodyKept && state.body.length > 0) {
+      if (endedAt === undefined) {
+        return;
+      }
+      if (state.bodyKept && state.body.length > 0) {
         state.body = new Uint8Array();
         bodyDropped = true;
+      }
+      if (!rawDropped && raw.total > 0) {
+        raw.release();
+        rawDropped = true;
+      }
+      const reply = session?.reply;
+      if (!replyDropped && reply !== undefined && reply.size > 0) {
+        const text = reply.release();
+        replyDropped = true;
+        replyWrite = (spillFile?.writeSide(encoder.encode(text)) ?? Promise.resolve(false)).then(
+          (stored) => {
+            replyStored = stored;
+            return stored;
+          },
+        );
       }
     },
     readBody: (maxBytes) =>
       bodyDropped
         ? readBodyFromSpill(spillFile, state.bodyLength, maxBytes)
         : Promise.resolve(state.body.subarray(0, maxBytes)),
+    readRaw: () => (rawDropped ? readRawTail(spillFile, released) : Promise.resolve(raw.text)),
+    readReply: async () => {
+      if (!replyDropped) {
+        return session?.reply.text() ?? '';
+      }
+      if (!(await replyWrite)) {
+        return undefined;
+      }
+      const bytes = await spillFile?.readSide();
+      return bytes === undefined ? undefined : decoder.decode(bytes);
+    },
     release: async () => {
       released = true;
       cancel();

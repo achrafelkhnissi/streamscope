@@ -118,4 +118,31 @@ describe('RawTail', () => {
     expect(tail.since(mark)).toBe('🙂x');
     expect(tail.total).toBe(3);
   });
+
+  it('frees the text it holds on release and keeps counting what was appended', () => {
+    const tail = new RawTail(64);
+    tail.push(encoder.encode('first line\n'));
+    tail.push(encoder.encode('second line\n'));
+    const total = tail.total;
+
+    tail.release();
+
+    expect(tail.text).toBe('');
+    expect(tail.total).toBe(total);
+    expect(tail.since(0)).toBeUndefined();
+    expect(tail.since(total)).toBe('');
+  });
+
+  it('holds new text again after a release', () => {
+    const tail = new RawTail(64);
+    tail.push(encoder.encode('first\n'));
+    tail.release();
+
+    tail.push(encoder.encode('next\n'));
+
+    expect(tail.text).toBe('next\n');
+    expect(tail.total).toBe(11);
+    expect(tail.since(6)).toBe('next\n');
+    expect(tail.since(0)).toBeUndefined();
+  });
 });

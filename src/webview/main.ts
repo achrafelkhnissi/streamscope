@@ -15,6 +15,7 @@ import { canOpen, canSave, effectiveView, visibleViews } from './panel-state';
 import {
   bodyNote,
   historyNote,
+  rawNote,
   replyNote,
   stateAnnouncement,
   stateLabels,
@@ -87,6 +88,7 @@ const replyText = element('reply', HTMLPreElement);
 const replyCutText = element('reply-note', HTMLParagraphElement);
 const rawPanel = element('panel-raw', HTMLElement);
 const rawText = element('raw', HTMLPreElement);
+const rawGoneText = element('raw-note', HTMLParagraphElement);
 const headersText = element('headers', HTMLPreElement);
 const noteText = element('body-note', HTMLParagraphElement);
 const bodyText = element('body', HTMLPreElement);
@@ -246,6 +248,9 @@ function showStatus(status: PanelStatus): void {
   const cut = replyNote(status);
   replyCutText.textContent = cut;
   replyCutText.hidden = cut === '';
+  const rawGone = rawNote(status);
+  rawGoneText.textContent = rawGone;
+  rawGoneText.hidden = rawGone === '';
   showTabs();
   const text = stateAnnouncement(announcedState, status);
   announcedState = status.state;

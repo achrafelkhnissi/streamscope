@@ -39,6 +39,8 @@ export function snapshot(overrides: Partial<RunSnapshot> = {}): RunSnapshot {
     bodySource: 'memory',
     stream: undefined,
     raw: new RawTail(1024),
+    rawSource: 'memory',
+    replySource: 'memory',
     rawData: 'saved',
     released: false,
     failure: undefined,

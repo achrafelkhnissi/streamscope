@@ -31,6 +31,8 @@ afterEach(async () => {
 type Update = Extract<ToPanel, { type: 'update' }>;
 
 interface Harness {
+  readRaw: ReturnType<typeof vi.fn<() => Promise<string | undefined>>>;
+  readReply: ReturnType<typeof vi.fn<() => Promise<string | undefined>>>;
   posted: ToPanel[];
   feed: PanelFeed;
   write(text: string): void;
@@ -58,6 +60,8 @@ function harness(
     readOnly?: boolean;
     bodyKept?: boolean;
     spill?: SpillFile;
+    readRaw?: () => Promise<string | undefined>;
+    readReply?: () => Promise<string | undefined>;
   } = {},
 ): Harness {
   const contentType = options.contentType ?? 'application/x-ndjson';
@@ -85,8 +89,10 @@ function harness(
     },
   });
   const posted: ToPanel[] = [];
+  const readRaw = vi.fn(options.readRaw ?? (() => Promise.resolve(raw.text)));
+  const readReply = vi.fn(options.readReply ?? (() => Promise.resolve(session.reply.text())));
   const feed = new PanelFeed(
-    { id: 7, snapshot: () => current },
+    { id: 7, snapshot: () => current, readRaw, readReply },
     {
       readOnly: options.readOnly ?? false,
       streamView: options.streamView ?? 'events',
@@ -96,6 +102,8 @@ function harness(
   const updates = (): Update[] =>
     posted.filter((message): message is Update => message.type === 'update');
   return {
+    readRaw,
+    readReply,
     posted,
     feed,
     session,
@@ -264,6 +272,21 @@ describe('PanelFeed', () => {
 
     expect(page.posted.at(-2)).toMatchObject({ type: 'reset', view: 'raw' });
     expect(page.last().raw).toEqual({ reset: true, text: lines(1, 3) });
+  });
+
+  it('counts the Raw and Reply characters it sent', () => {
+    const written = `${JSON.stringify({ type: 'RUN_STARTED' })}\n${agUi('Hello')}`;
+    const page = harness();
+    page.write(written);
+    page.feed.start();
+    expect(page.feed.rawChars).toBe(0);
+    expect(page.feed.replyChars).toBe(0);
+
+    page.feed.pick('raw');
+    page.feed.select('reply');
+
+    expect(page.feed.rawChars).toBe(written.length);
+    expect(page.feed.replyChars).toBe(5);
   });
 
   it('switches to Reply on request and sends it as it grows', () => {
@@ -604,5 +627,181 @@ describe('RowCache', () => {
       cache.set(row(index));
     }
     expect(cache.size).toBe(3);
+  });
+});
+
+describe('PanelFeed for a run whose Raw and Reply were dropped from memory', () => {
+  const rawStart = `${JSON.stringify({ type: 'RUN_STARTED' })}\n`;
+  const written = `${rawStart}${agUi('Hello')}`;
+
+  function compacted(
+    options: Parameters<typeof harness>[0] = {},
+    overrides: Partial<RunSnapshot> = {},
+  ): Harness {
+    const page = harness(options);
+    page.write(written);
+    page.set({ status: 'completed', rawSource: 'spill', replySource: 'spill', ...overrides });
+    return page;
+  }
+
+  async function settle(): Promise<void> {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+
+  it('reads the Raw tail back when its tab is shown and sends it whole once', async () => {
+    const page = compacted({ readRaw: () => Promise.resolve('stored raw\n') });
+    page.feed.start();
+    expect(page.readRaw).not.toHaveBeenCalled();
+
+    page.feed.pick('raw');
+    expect(page.last().raw).toBeUndefined();
+    await settle();
+
+    expect(page.readRaw).toHaveBeenCalledTimes(1);
+    expect(page.last().raw).toEqual({ reset: true, text: 'stored raw\n' });
+    const sent = page.updates().length;
+    page.feed.refresh();
+    expect(page.last().raw).toBeUndefined();
+    expect(page.updates().length).toBe(sent + 1);
+    expect(page.readRaw).toHaveBeenCalledTimes(1);
+  });
+
+  it('counts the characters of the stored Raw it sent like live ones', async () => {
+    const page = compacted({ readRaw: () => Promise.resolve('stored raw\n') });
+    page.feed.start();
+    expect(page.feed.rawChars).toBe(0);
+
+    page.feed.pick('raw');
+    await settle();
+
+    expect(page.feed.rawChars).toBe(written.length);
+  });
+
+  it('reads the Raw tail again after the page reloads rather than keeping it', async () => {
+    const page = compacted({ readRaw: () => Promise.resolve('stored raw\n') });
+    page.feed.start();
+    page.feed.pick('raw');
+    await settle();
+
+    page.feed.pause();
+    page.feed.start();
+    await settle();
+
+    expect(page.readRaw).toHaveBeenCalledTimes(2);
+    expect(page.last().raw).toEqual({ reset: true, text: 'stored raw\n' });
+  });
+
+  it('sends only the end of a stored Raw tail that is larger than a message', async () => {
+    const big = `${'a'.repeat(700_000)}\n${'b'.repeat(100)}`;
+    const page = compacted({ readRaw: () => Promise.resolve(big) });
+    page.feed.start();
+    page.feed.pick('raw');
+    await settle();
+
+    const sent = page.last().raw;
+    expect(sent?.reset).toBe(true);
+    expect(sent?.text.length).toBeLessThanOrEqual(panelLimits.messageBytes / 2);
+    expect(big.endsWith(sent?.text ?? '?')).toBe(true);
+  });
+
+  it('does not read Raw that is gone, and says so', () => {
+    const page = compacted({}, { rawSource: 'gone' });
+    page.feed.start();
+
+    page.feed.pick('raw');
+
+    expect(page.readRaw).not.toHaveBeenCalled();
+    expect(page.last().raw).toBeUndefined();
+    expect(page.last().status.rawGone).toBe(true);
+    expect(page.last().status.replyGone).toBe(false);
+  });
+
+  it('says Raw is gone when it could not be read after all', async () => {
+    const page = compacted({ readRaw: () => Promise.resolve(undefined) });
+    page.feed.start();
+    page.feed.pick('raw');
+    expect(page.last().status.rawGone).toBe(false);
+
+    await settle();
+
+    expect(page.last().raw).toBeUndefined();
+    expect(page.last().status.rawGone).toBe(true);
+    expect(page.readRaw).toHaveBeenCalledTimes(1);
+  });
+
+  it('ignores a read that finishes after the page was reset', async () => {
+    const pending: ((text: string) => void)[] = [];
+    const page = compacted({
+      readRaw: () =>
+        new Promise<string | undefined>((resolve) => {
+          pending.push(resolve);
+        }),
+    });
+    page.feed.start();
+    page.feed.pick('raw');
+
+    page.feed.pause();
+    page.feed.start();
+    pending[0]?.('old text');
+    pending[1]?.('new text');
+    await settle();
+
+    const sent = page.updates().flatMap((update) => (update.raw === undefined ? [] : [update.raw]));
+    expect(pending).toHaveLength(2);
+    expect(sent).toEqual([{ reset: true, text: 'new text' }]);
+  });
+
+  it('reads the Reply back when its tab is shown and sends it whole once', async () => {
+    const page = compacted({ readReply: () => Promise.resolve('Hello') });
+    page.feed.start();
+    expect(page.readReply).not.toHaveBeenCalled();
+
+    page.feed.select('reply');
+    await settle();
+
+    expect(page.readReply).toHaveBeenCalledTimes(1);
+    expect(page.last().reply).toEqual({ reset: true, text: 'Hello' });
+    expect(page.feed.replyChars).toBe(5);
+    expect(page.last().status.reply).toBe(true);
+    page.feed.refresh();
+    expect(page.last().reply).toBeUndefined();
+    expect(page.readReply).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not read a Reply that is gone, and keeps the tab', () => {
+    const page = compacted({}, { replySource: 'gone' });
+    page.feed.start();
+
+    page.feed.select('reply');
+
+    expect(page.readReply).not.toHaveBeenCalled();
+    expect(page.feed.view).toBe('reply');
+    expect(page.last().status.reply).toBe(true);
+    expect(page.last().status.replyGone).toBe(true);
+  });
+
+  it('says the Reply is gone when it could not be read after all', async () => {
+    const page = compacted({ readReply: () => Promise.resolve(undefined) });
+    page.feed.start();
+
+    page.feed.select('reply');
+    await settle();
+
+    expect(page.last().reply).toBeUndefined();
+    expect(page.last().status.replyGone).toBe(true);
+  });
+
+  it('keeps the live path for a run that still holds its data', () => {
+    const page = harness();
+    page.write(`${rawStart}${agUi('Hello')}`);
+    page.set({ status: 'completed' });
+    page.feed.start();
+
+    page.feed.pick('raw');
+    page.feed.select('reply');
+
+    expect(page.readRaw).not.toHaveBeenCalled();
+    expect(page.readReply).not.toHaveBeenCalled();
+    expect(page.last().reply).toEqual({ reset: true, text: 'Hello' });
   });
 });

@@ -54,7 +54,14 @@ export function stateAnnouncement(
 }
 
 export function replyNote(status: PanelStatus | undefined): string {
+  if (status?.replyGone === true) {
+    return 'This reply is no longer available.';
+  }
   return status?.replyCut === true ? 'The reply was cut off at 1,048,576 characters.' : '';
+}
+
+export function rawNote(status: PanelStatus | undefined): string {
+  return status?.rawGone === true ? 'This raw data is no longer available.' : '';
 }
 
 export function historyNote(status: PanelStatus | undefined): string {
