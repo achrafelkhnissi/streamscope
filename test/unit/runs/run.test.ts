@@ -381,6 +381,29 @@ describe('startRun streaming', () => {
     expect(snapshot.stream?.format?.format).toBe('ndjson');
   });
 
+  it('times each event in milliseconds since the request was sent', async () => {
+    const server = await track(startStreamServer());
+    const lateClock = { ...dependencies, clock: () => 3_600_000 + performance.now() };
+
+    const snapshot = await startRun(
+      runInput([`GET ${server.url}/stream?rate=100&seconds=0.3&size=256`]),
+      lateClock,
+    ).done;
+
+    const store = snapshot.stream?.store;
+    const times = Array.from(
+      { length: store?.count ?? 0 },
+      (_, at) => store?.summary(at + 1)?.time ?? Number.NaN,
+    );
+    expect(times.length).toBeGreaterThan(10);
+    expect(times[0]).toBeGreaterThanOrEqual(0);
+    expect(times[0]).toBeLessThan(5000);
+    expect(times.at(-1)).toBeLessThan(5000);
+    for (let at = 1; at < times.length; at += 1) {
+      expect(times[at]).toBeGreaterThanOrEqual(times[at - 1] ?? Number.POSITIVE_INFINITY);
+    }
+  });
+
   it('keeps no body for an NDJSON stream labelled application/json', async () => {
     const server = await track(startStreamServer());
 

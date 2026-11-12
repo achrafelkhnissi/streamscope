@@ -4,6 +4,7 @@ import { maxLabelLength } from '../streaming/limits';
 import type { PanelRow } from './panel-protocol';
 
 const previewLength = 200;
+const lineBreak = /[\n\r\u0085\u2028\u2029]/;
 const hiddenCharacter =
   /[\u0000-\u0008\u000a-\u001f\u007f-\u009f\u061c\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]/;
 
@@ -15,14 +16,21 @@ function isList(node: readonly JsonValue[] | JsonObject): node is readonly JsonV
 
 export function displayText(text: string, maxLength: number): string {
   let shown = '';
+  let afterBreak = false;
   for (const character of text) {
-    if (hiddenCharacter.test(character)) {
+    const isBreak = lineBreak.test(character);
+    if (isBreak && afterBreak) {
       continue;
     }
-    if (shown.length + character.length > maxLength) {
+    afterBreak = isBreak;
+    if (!isBreak && hiddenCharacter.test(character)) {
+      continue;
+    }
+    const kept = isBreak ? ' ' : character;
+    if (shown.length + kept.length > maxLength) {
       break;
     }
-    shown += character;
+    shown += kept;
   }
   return shown;
 }
@@ -83,10 +91,9 @@ export function panelRow(
 ): PanelRow {
   const summary = store.summary(index);
   const time = summary?.time ?? event?.time;
-  const origin = store.summary(1)?.time ?? 0;
   return {
     index,
-    time: time === undefined ? '' : elapsed(time - origin),
+    time: time === undefined ? '' : elapsed(time),
     label: displayText(summary?.label ?? event?.label ?? '', maxLabelLength),
     preview: event === undefined ? '' : displayText(previewText(event), previewLength),
     kind: summary?.kind ?? event?.kind ?? 'text',

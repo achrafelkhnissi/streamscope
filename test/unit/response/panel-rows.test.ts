@@ -10,7 +10,7 @@ const loneSurrogate = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\
 function event(index: number, overrides: Partial<StreamEvent> = {}): StreamEvent {
   return {
     index,
-    time: 5000 + index * 10,
+    time: index * 10,
     offset: (index - 1) * 6,
     length: 6,
     line: index,
@@ -55,14 +55,12 @@ describe('displayText', () => {
 
   it('removes C0 and C1 controls except tab', () => {
     expect(displayText('a\tb', 100)).toBe('a\tb');
-    expect(displayText('a\nb\r\nc\u0000d\u001be\u007ff', 100)).toBe('abcdef');
-    expect(displayText('a\u0080b\u0085c\u009bd\u009fe', 100)).toBe('abcde');
+    expect(displayText('a\u0000b\u001bc\u007fd', 100)).toBe('abcd');
+    expect(displayText('a\u0080b\u009bc\u009fd', 100)).toBe('abcd');
   });
 
-  it('removes line separators and every bidirectional control', () => {
+  it('removes every bidirectional control', () => {
     const hidden = [
-      '\u2028',
-      '\u2029',
       '\u061c',
       '\u200e',
       '\u200f',
@@ -79,6 +77,26 @@ describe('displayText', () => {
     for (const character of hidden) {
       expect(displayText(`a${character}b`, 100)).toBe('ab');
     }
+  });
+
+  it('turns line breaks into a single space', () => {
+    expect(displayText('line one\nline two', 100)).toBe('line one line two');
+    for (const lineBreak of ['\n', '\r', '\r\n', '\u0085', '\u2028', '\u2029']) {
+      expect(displayText(`a${lineBreak}b`, 100)).toBe('a b');
+    }
+  });
+
+  it('turns a run of line breaks into one space', () => {
+    expect(displayText('a\n\n\r\n\u2028b', 100)).toBe('a b');
+    expect(displayText('a\nb\nc', 100)).toBe('a b c');
+    expect(displayText('a\n\u0000\nb', 100)).toBe('a  b');
+    expect(displayText('\na\n', 100)).toBe(' a ');
+  });
+
+  it('counts the space for a line break toward the maximum length', () => {
+    expect(displayText('ab\ncd', 4)).toBe('ab c');
+    expect(displayText('ab\ncd', 3)).toBe('ab ');
+    expect(displayText('ab\r\ncd', 2)).toBe('ab');
   });
 
   it('keeps the characters around the removed ranges', () => {
@@ -120,39 +138,40 @@ describe('panelRow', () => {
 
     expect(panelRow(storeOf(first), 1, first)).toEqual({
       index: 1,
-      time: '00:00.000',
+      time: '00:00.010',
       label: 't-1',
       preview: '{"type":"RUN_STARTED","n":1,"ok":[true,null]}',
       kind: 'json',
     });
   });
 
-  it('shows the time as minutes, seconds and milliseconds since the first event', () => {
+  it('shows the time since the request as minutes, seconds and milliseconds', () => {
     const store = storeOf(
-      event(1, { time: 5000 }),
-      event(2, { time: 5000 + 61_234 }),
-      event(3, { time: 5000 + 3_600_000 + 7 }),
+      event(1, { time: 250 }),
+      event(2, { time: 61_234 }),
+      event(3, { time: 3_600_007 }),
     );
 
-    expect(panelRow(store, 1, undefined).time).toBe('00:00.000');
+    expect(panelRow(store, 1, undefined).time).toBe('00:00.250');
     expect(panelRow(store, 2, undefined).time).toBe('01:01.234');
     expect(panelRow(store, 3, undefined).time).toBe('60:00.007');
   });
 
   it('rounds fractional milliseconds', () => {
     const store = storeOf(
-      event(1, { time: 0 }),
-      event(2, { time: 1234.6 }),
-      event(3, { time: 2345.4 }),
+      event(1, { time: 1234.6 }),
+      event(2, { time: 2345.4 }),
+      event(3, { time: 3000 }),
     );
 
-    expect(panelRow(store, 2, undefined).time).toBe('00:01.235');
-    expect(panelRow(store, 3, undefined).time).toBe('00:02.345');
+    expect(panelRow(store, 1, undefined).time).toBe('00:01.235');
+    expect(panelRow(store, 2, undefined).time).toBe('00:02.345');
+    expect(panelRow(store, 3, undefined).time).toBe('00:03.000');
   });
 
   it('takes the time, label and kind from the store summary when the event is not in memory', () => {
     const store = storeOf(
-      event(1, { time: 0 }),
+      event(1, { time: 100 }),
       event(2, { time: 2500, kind: 'text', label: 'hello', value: 'hi' }),
     );
 
@@ -215,6 +234,13 @@ describe('panelRow', () => {
     expect(previewOf('{"broken', { kind: 'malformed' })).toBe('{"broken');
     expect(previewOf(': keep-alive', { kind: 'comment' })).toBe(': keep-alive');
     expect(previewOf('big…', { kind: 'oversize' })).toBe('big…');
+  });
+
+  it('shows the lines of a multi-line text event separated by a space', () => {
+    expect(previewOf('line one\nline two\r\nline three', { kind: 'text' })).toBe(
+      'line one line two line three',
+    );
+    expect(previewOf('data\u2028more', { kind: 'comment' })).toBe('data more');
   });
 
   it('strips control and bidi characters from the preview', () => {

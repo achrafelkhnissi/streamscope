@@ -249,7 +249,7 @@ export function startRun(
         contentType: contentTypeOf(head),
         directive: streamDirective(request),
         spill: spillFile,
-        now: () => dependencies.clock(),
+        now: () => dependencies.clock() - state.startedAt,
         onUpdate: update,
         onText: () => undefined,
         limits: input.limits,
