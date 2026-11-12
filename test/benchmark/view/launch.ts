@@ -19,6 +19,23 @@ const passedVariables = [
   'DBUS_SESSION_BUS_ADDRESS',
 ];
 
+export const colorThemes = [
+  'Default Dark Modern',
+  'Default Light Modern',
+  'Default High Contrast',
+  'Default High Contrast Light',
+] as const;
+
+const profileDefaults = {
+  'workbench.startupEditor': 'none',
+  'workbench.tips.enabled': false,
+  'telemetry.telemetryLevel': 'off',
+  'update.mode': 'none',
+  'extensions.autoCheckUpdates': false,
+  'chat.disableAIFeatures': true,
+  'workbench.secondarySideBar.defaultVisibility': 'hidden',
+};
+
 export interface VscodeLaunch {
   walkthrough: boolean;
   platform: NodeJS.Platform;
@@ -27,6 +44,16 @@ export interface VscodeLaunch {
   developmentPaths: readonly string[];
   driver: string;
   workspace: string;
+}
+
+export function profileSettings(theme?: string): Record<string, string | boolean> {
+  if (theme === undefined) {
+    return { ...profileDefaults };
+  }
+  if (!colorThemes.some((accepted) => accepted === theme)) {
+    throw new Error(`Use one of ${colorThemes.join(', ')} for --theme.`);
+  }
+  return { ...profileDefaults, 'workbench.colorTheme': theme };
 }
 
 export function checkSurfaceName(name: string): string | undefined {

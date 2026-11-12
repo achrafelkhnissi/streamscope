@@ -23,6 +23,7 @@ import { captureScreenshot } from './devtools';
 import {
   checkSurfaceName,
   devToolsPort,
+  profileSettings,
   screenshotName,
   vscodeArguments,
   vscodeEnvironment,
@@ -41,6 +42,7 @@ export interface ViewBenchmarkOptions {
   seconds: number;
   eventBytes: number;
   walkthrough: boolean;
+  theme?: string;
   extensions: readonly string[];
 }
 
@@ -48,16 +50,6 @@ const walkthroughStream = { rate: 20, seconds: 120, eventBytes: 256 };
 const walkthroughTimeoutSeconds = 300;
 const extraSeconds = 180;
 const sampleMs = 5000;
-
-const settings = {
-  'workbench.startupEditor': 'none',
-  'workbench.tips.enabled': false,
-  'telemetry.telemetryLevel': 'off',
-  'update.mode': 'none',
-  'extensions.autoCheckUpdates': false,
-  'chat.disableAIFeatures': true,
-  'workbench.secondarySideBar.defaultVisibility': 'hidden',
-};
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -111,6 +103,7 @@ export async function runViewBenchmark(
   if (surfaceError !== undefined) {
     throw new Error(surfaceError);
   }
+  const settings = profileSettings(options.theme);
   const root = process.cwd();
   const stream = options.walkthrough
     ? walkthroughStream

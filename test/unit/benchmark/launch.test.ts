@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
   checkSurfaceName,
+  colorThemes,
   devToolsPort,
+  profileSettings,
   screenshotName,
   vscodeArguments,
   vscodeEnvironment,
@@ -23,6 +25,49 @@ describe('checkSurfaceName', () => {
   it.each(['../x', 'Webview', 'a/b', ''])('rejects %j', (name) => {
     expect(checkSurfaceName(name)).toBe('Use lowercase letters, digits and hyphens for --surface.');
   });
+});
+
+describe('profileSettings', () => {
+  it('keeps the settings that quiet the throwaway profile and sets no theme by default', () => {
+    const settings = profileSettings();
+
+    expect(settings).toMatchObject({
+      'workbench.startupEditor': 'none',
+      'telemetry.telemetryLevel': 'off',
+      'update.mode': 'none',
+    });
+    expect(settings).not.toHaveProperty('workbench.colorTheme');
+  });
+
+  it.each([
+    'Default Dark Modern',
+    'Default Light Modern',
+    'Default High Contrast',
+    'Default High Contrast Light',
+  ])('writes the requested theme into the profile settings: %s', (theme) => {
+    const settings = profileSettings(theme);
+
+    expect(settings['workbench.colorTheme']).toBe(theme);
+    expect(settings['telemetry.telemetryLevel']).toBe('off');
+  });
+
+  it('accepts exactly the four default themes', () => {
+    expect(colorThemes).toEqual([
+      'Default Dark Modern',
+      'Default Light Modern',
+      'Default High Contrast',
+      'Default High Contrast Light',
+    ]);
+  });
+
+  it.each(['Solarized Dark', 'default dark modern', '', 'Default Dark Modern\n'])(
+    'refuses the theme %j',
+    (theme) => {
+      expect(() => profileSettings(theme)).toThrow(
+        'Use one of Default Dark Modern, Default Light Modern, Default High Contrast, Default High Contrast Light for --theme.',
+      );
+    },
+  );
 });
 
 describe('vscodeArguments', () => {

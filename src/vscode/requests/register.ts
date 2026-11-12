@@ -1,5 +1,6 @@
 import * as path from 'node:path';
 import * as vscode from 'vscode';
+import { benchmarkEnabled } from '../../benchmark/contract';
 import type { StreamSession } from '../../events/session';
 import { SpillArea } from '../../events/spill';
 import type { HttpFile, HttpRequest } from '../../http-file/model';
@@ -20,6 +21,7 @@ import {
 import { defaultSpillLimits } from '../../streaming/limits';
 import { NodeTransport } from '../../transport/node-transport';
 import { confirmOnce } from '../../runs/confirm-once';
+import { PanelProbe, registerBenchmarkCommands } from '../benchmark/commands';
 import type { EnvironmentStore } from '../environments/environment-store';
 import type { ParseCache } from '../language/parse-cache';
 import { httpSelector } from '../language/register';
@@ -235,10 +237,17 @@ export function registerRequestFeatures(
     vscode.window.setStatusBarMessage(`Saved ${path.basename(chosen.fsPath)}`, 3000);
   };
 
+  const benchmark = benchmarkEnabled(
+    process.env,
+    context.extensionMode === vscode.ExtensionMode.Production,
+  )
+    ? new PanelProbe()
+    : undefined;
   const panels = new ResponsePanels({
     extensionUri: context.extensionUri,
     state: context.globalState,
     presenter,
+    benchmark,
     save: (run, documentUri) => saveRun(run, documentUri, undefined),
   });
 
@@ -300,7 +309,11 @@ export function registerRequestFeatures(
     return panels.reveal(key);
   };
 
-  const sendRequest = async (uri?: vscode.Uri, line?: number): Promise<void> => {
+  const send = async (
+    uri?: vscode.Uri,
+    line?: number,
+    started?: (handle: RunHandle) => void,
+  ): Promise<void> => {
     const found = await target(uri, line);
     if (!found) {
       void vscode.window.showInformationMessage(
@@ -340,6 +353,7 @@ export function registerRequestFeatures(
       limits: limits.limits,
     });
     history.add(handle);
+    started?.(handle);
     const shown = (): boolean => presenter.run(key) === handle;
     const showRun = (): void => {
       if (!shown() && registry.latest(key) === handle) {
@@ -370,6 +384,8 @@ export function registerRequestFeatures(
     }
     lenses.refresh();
   };
+
+  const sendRequest = (uri?: vscode.Uri, line?: number): Promise<void> => send(uri, line);
 
   const stopRequest = async (uri?: unknown, line?: unknown): Promise<void> => {
     const key = await responseKey(uri, line);
@@ -534,6 +550,10 @@ export function registerRequestFeatures(
   );
 
   void closeResponseTabs();
+
+  if (benchmark !== undefined) {
+    registerBenchmarkCommands(context, { probe: benchmark, panels, send });
+  }
 
   if (context.extensionMode === vscode.ExtensionMode.Test) {
     const statuses = new Map<number, RunStatus>();

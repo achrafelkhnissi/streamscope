@@ -22,6 +22,16 @@ describe('extension activation', () => {
     }
   });
 
+  it('registers the benchmark commands only when STREAMSCOPE_BENCHMARK is 1', async () => {
+    await vscode.extensions.getExtension(extensionId)?.activate();
+
+    const registered = await vscode.commands.getCommands(true);
+    const enabled = process.env.STREAMSCOPE_BENCHMARK === '1';
+    for (const command of ['streamscope.benchmark.stream', 'streamscope.benchmark.walkthrough']) {
+      assert.equal(registered.includes(command), enabled, command);
+    }
+  });
+
   it('runs the Show Log command', async () => {
     await vscode.commands.executeCommand('streamscope.showLog');
   });

@@ -1,5 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import * as vscode from 'vscode';
+import type { TaskTimer } from '../../benchmark/task-timer';
 import { PanelFeed } from '../../response/panel-feed';
 import { panelHtml } from '../../response/panel-html';
 import { parsePanelMessage, type PanelBody, type PanelView } from '../../response/panel-protocol';
@@ -29,10 +30,16 @@ export interface ResponseState {
   bodyText: string | undefined;
 }
 
+export interface PanelBenchmark {
+  timer: TaskTimer;
+  rendered(run: number, newest: number): void;
+}
+
 export interface ResponsePanelsOptions {
   extensionUri: vscode.Uri;
   state: vscode.Memento;
   presenter: ResponsePresenter;
+  benchmark?: PanelBenchmark;
   save(run: RunHandle, documentUri: vscode.Uri): Promise<void>;
 }
 
@@ -117,7 +124,7 @@ export class ResponsePanels implements vscode.Disposable {
       existing.feed = this.feed(key, run, options.readOnly);
     }
     entry.unsubscribe = run.onUpdate(() => {
-      entry.feed.refresh();
+      this.refresh(entry);
     });
     run.done.then(() => this.ended(entry, run)).catch(reportFailure('show the response body'));
     if (entry.panel === undefined) {
@@ -314,6 +321,28 @@ export class ResponsePanels implements vscode.Disposable {
   }
 
   private receive(entry: Entry, value: unknown): void {
+    const timer = this.options.benchmark?.timer;
+    if (timer === undefined) {
+      this.handle(entry, value);
+      return;
+    }
+    const started = performance.now();
+    this.handle(entry, value);
+    timer.record(performance.now() - started);
+  }
+
+  private refresh(entry: Entry): void {
+    const timer = this.options.benchmark?.timer;
+    if (timer === undefined) {
+      entry.feed.refresh();
+      return;
+    }
+    const started = performance.now();
+    entry.feed.refresh();
+    timer.record(performance.now() - started);
+  }
+
+  private handle(entry: Entry, value: unknown): void {
     const message = parsePanelMessage(value, entry.feed.count);
     if (message === undefined || ('run' in message && message.run !== entry.run.id)) {
       return;
@@ -329,6 +358,7 @@ export class ResponsePanels implements vscode.Disposable {
         return;
       case 'rendered':
         entry.feed.acknowledge(message.newest);
+        this.options.benchmark?.rendered(message.run, message.newest);
         return;
       case 'detail':
         void entry.feed.detail(message.index);
@@ -376,7 +406,7 @@ export class ResponsePanels implements vscode.Disposable {
     if (entry.ready && isRunning(entry.run)) {
       entry.ticker = setInterval(() => {
         if (isRunning(entry.run)) {
-          entry.feed.refresh();
+          this.refresh(entry);
         } else {
           this.tick(entry);
         }

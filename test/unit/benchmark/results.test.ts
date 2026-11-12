@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import type { StreamBenchmarkResult } from '../../../src/benchmark/contract';
 import {
   checkSurfaceResult,
   expectedEvents,
@@ -26,7 +27,15 @@ describe('readDriverResult', () => {
     const written: DriverResult = {
       mode: 'stream',
       vscodeVersion: '1.106.0',
-      surface: { surface: 'webview', events: 10, visible: 10, latency, endedBy: 'completed' },
+      surface: {
+        surface: 'm6',
+        events: 10,
+        visible: 10,
+        latency,
+        longestTaskMs: 12.5,
+        tasksOverBudget: 1,
+        endedBy: 'completed',
+      },
       extensionHost: {
         longTasks: { count: 0, maxMs: 0, totalMs: 0 },
         cpuPercent: 12.5,
@@ -55,10 +64,12 @@ describe('expectedEvents', () => {
 
 describe('checkSurfaceResult', () => {
   const passing = {
-    surface: 'webview',
+    surface: 'm6',
     events: 10,
     visible: 10,
     latency,
+    longestTaskMs: 12.5,
+    tasksOverBudget: 0,
     endedBy: 'completed',
   } as const;
 
@@ -92,5 +103,27 @@ describe('checkSurfaceResult', () => {
     expect(checkSurfaceResult({ ...passing, latency: { ...latency, count: 8 } }, 10)).toBe(
       '2 visible events have no latency.',
     );
+  });
+
+  it('fails a run in which the surface reported no longest task', () => {
+    const reported = JSON.parse(
+      JSON.stringify({ ...passing, longestTaskMs: undefined }),
+    ) as StreamBenchmarkResult;
+
+    expect(checkSurfaceResult(reported, 10)).toBe('The surface reported no task durations.');
+  });
+
+  it('fails a run in which the surface reported no count of tasks over budget', () => {
+    const reported = JSON.parse(
+      JSON.stringify({ ...passing, tasksOverBudget: undefined }),
+    ) as StreamBenchmarkResult;
+
+    expect(checkSurfaceResult(reported, 10)).toBe('The surface reported no task durations.');
+  });
+
+  it('does not fail a run for tasks over budget: the budget is judged from the numbers', () => {
+    expect(
+      checkSurfaceResult({ ...passing, tasksOverBudget: 3, longestTaskMs: 80 }, 10),
+    ).toBeUndefined();
   });
 });
