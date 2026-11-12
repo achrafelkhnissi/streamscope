@@ -28,7 +28,7 @@ flowchart LR
 ```
 
 - **Can run in parallel:** M4 (streaming core) and M7a (expression language) are pure TypeScript with no VS Code dependency, so they can proceed alongside M1 to M3. M8 and M9 can proceed in parallel after M7b.
-- **Must stay sequential:** M0 before everything; M5 needs both transport (M2) and the streaming core (M4); M6 needs the M5 decision; M10 needs checks (M9); M12 needs everything, plus the Open VSX namespace claim to be closed.
+- **Must stay sequential:** M0 before everything; M5 needs both transport (M2) and the streaming core (M4); M6 needs the M5 decision; M10 needs checks (M9); M12 needs everything.
 
 ## M0 Foundation and identity
 
@@ -151,6 +151,6 @@ M7a (pure, parallel) and M7b (wiring) are tracked together.
 
 - **Objective:** published, used by the team, then released to everyone.
 - **Includes:** Marketplace trusted publishing policy; GitHub `release` environment with the user as required reviewer; pre-release `0.1.0` on the Marketplace; first Open VSX publish with an access token (run by the user), then Open VSX trusted publishing; team trial against the success criteria; fixes; release `0.2.0`.
-- **Depends on:** M11; Open VSX namespace claim [#15561](https://github.com/EclipseFdn/open-vsx.org/issues/15561) closed (trusted publishing requires an owned namespace).
-- **Acceptance:** both registries list the extension; installing from each works in a clean profile; the team confirms "no copied ids, events live"; the temporary Reader member is removed from the Marketplace publisher.
+- **Depends on:** M11.
+- **Acceptance:** both registries list the extension; installing from each works in a clean profile; the team confirms "no copied ids, events live".
 - **Deliverables:** Streamscope 0.2.0 on both registries.
