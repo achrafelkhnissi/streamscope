@@ -107,6 +107,11 @@
         "icon": "$(list-unordered)"
       },
       {
+        "command": "streamscope.moveToSecretStorage",
+        "title": "Move to Secret Storage",
+        "category": "Streamscope"
+      },
+      {
         "command": "streamscope.showLog",
         "title": "Show Log",
         "category": "Streamscope"
@@ -141,6 +146,10 @@
         {
           "command": "streamscope.showResponseBody",
           "when": "editorLangId == http || resourceScheme == streamscope-response"
+        },
+        {
+          "command": "streamscope.moveToSecretStorage",
+          "when": "false"
         }
       ],
       "editor/title": [

@@ -103,7 +103,10 @@ describe('http language features', () => {
   });
 
   it('reports and clears syntax diagnostics', async () => {
-    const document = await open('diagnostics.http', 'GET {{baseUrl/items');
+    const document = await open(
+      'diagnostics.http',
+      ['@baseUrl = https://api.example.test', 'GET {{baseUrl/items'].join('\n'),
+    );
 
     await waitFor(() => vscode.languages.getDiagnostics(document.uri).length === 1);
     const [diagnostic] = vscode.languages.getDiagnostics(document.uri);
@@ -113,7 +116,7 @@ describe('http language features', () => {
     const editor = vscode.window.activeTextEditor;
     assert.ok(editor);
     await editor.edit((builder) => {
-      builder.insert(new vscode.Position(0, 13), '}}');
+      builder.insert(new vscode.Position(1, 13), '}}');
     });
     await waitFor(() => vscode.languages.getDiagnostics(document.uri).length === 0);
   });
@@ -132,6 +135,138 @@ describe('http language features', () => {
       assert.deepEqual(vscode.languages.getDiagnostics(uri), []);
     } finally {
       provider.dispose();
+    }
+  });
+
+  async function hoverText(
+    document: vscode.TextDocument,
+    position: vscode.Position,
+  ): Promise<string> {
+    const hovers = await vscode.commands.executeCommand<vscode.Hover[]>(
+      'vscode.executeHoverProvider',
+      document.uri,
+      position,
+    );
+    return hovers
+      .flatMap((hover) => hover.contents)
+      .map((content) => (content instanceof vscode.MarkdownString ? content.value : ''))
+      .join('\n')
+      .replace(/&nbsp;/g, ' ');
+  }
+
+  async function completionLabels(
+    document: vscode.TextDocument,
+    position: vscode.Position,
+    trigger: string,
+  ): Promise<string[]> {
+    const list = await vscode.commands.executeCommand<vscode.CompletionList>(
+      'vscode.executeCompletionItemProvider',
+      document.uri,
+      position,
+      trigger,
+    );
+    return list.items.map((item) =>
+      typeof item.label === 'string' ? item.label : item.label.label,
+    );
+  }
+
+  it('shows the resolved value and its source on hover', async () => {
+    const document = await open(
+      'hover.http',
+      ['@host = api.example.test', 'GET https://{{host}}/items'].join('\n'),
+    );
+
+    const text = await hoverText(document, new vscode.Position(1, 15));
+
+    assert.ok(text.includes('api.example.test'), text);
+    assert.ok(text.includes('file variable'), text);
+  });
+
+  it('masks a credential-named value on hover', async () => {
+    const document = await open(
+      'hover-secret.http',
+      ['@apiToken = synthetic-token', 'GET https://api.example.test/{{apiToken}}'].join('\n'),
+    );
+
+    const text = await hoverText(document, new vscode.Position(1, 32));
+
+    assert.ok(!text.includes('synthetic-token'), text);
+    assert.ok(text.includes('••••••'), text);
+  });
+
+  it('completes file and system variables after {{', async () => {
+    const document = await open(
+      'complete.http',
+      ['@base = https://api.example.test', 'GET {{'].join('\n'),
+    );
+
+    const labels = await completionLabels(document, new vscode.Position(1, 6), '{');
+
+    assert.ok(labels.includes('base'), labels.join(', '));
+    assert.ok(labels.includes('$guid'), labels.join(', '));
+    assert.ok(labels.includes('$secret'), labels.join(', '));
+  });
+
+  it('completes directives after # @', async () => {
+    const document = await open(
+      'directives.http',
+      ['# @', 'GET https://api.example.test/items'].join('\n'),
+    );
+
+    const labels = await completionLabels(document, new vscode.Position(0, 3), '@');
+
+    assert.ok(labels.includes('name'), labels.join(', '));
+    assert.ok(labels.includes('timeout'), labels.join(', '));
+  });
+
+  it('warns about an undefined variable and clears the warning when an environment defines it', async () => {
+    const environmentFile = path.join(folder, 'http-client.env.json');
+    const document = await open('undefined.http', 'GET https://api.example.test/{{envOnly}}');
+    try {
+      await waitFor(() =>
+        vscode.languages
+          .getDiagnostics(document.uri)
+          .some((diagnostic) => diagnostic.code === 'undefined-variable'),
+      );
+      const [warning] = vscode.languages.getDiagnostics(document.uri);
+      assert.equal(warning?.severity, vscode.DiagnosticSeverity.Warning);
+
+      writeFileSync(environmentFile, JSON.stringify({ dev: { envOnly: 'value' } }));
+      await vscode.commands.executeCommand('streamscope.selectEnvironment', 'dev');
+
+      await waitFor(() => vscode.languages.getDiagnostics(document.uri).length === 0);
+    } finally {
+      await vscode.commands.executeCommand('streamscope.selectEnvironment', '');
+      rmSync(environmentFile, { force: true });
+    }
+  });
+
+  it('moves a literal credential into secret storage', async () => {
+    const document = await open(
+      'move.http',
+      ['@integrationMoveToken = synthetic-token', 'GET https://api.example.test/items'].join('\n'),
+    );
+    try {
+      const actions = await vscode.commands.executeCommand<vscode.CodeAction[]>(
+        'vscode.executeCodeActionProvider',
+        document.uri,
+        new vscode.Range(0, 2, 0, 2),
+      );
+      const move = actions.find((action) => action.title === 'Move to secret storage');
+      assert.ok(move?.command, 'the quick fix is missing');
+
+      const commandArguments: unknown[] = move.command.arguments ?? [];
+      await vscode.commands.executeCommand(move.command.command, ...commandArguments);
+
+      assert.equal(
+        document.lineAt(0).text,
+        '@integrationMoveToken = {{$secret integrationMoveToken}}',
+      );
+      const names = await vscode.commands.executeCommand<string[]>('streamscope.listSecrets');
+      await vscode.commands.executeCommand('workbench.action.closeQuickOpen');
+      assert.ok(names.includes('integrationMoveToken'));
+    } finally {
+      await vscode.commands.executeCommand('streamscope.clearSecret', 'integrationMoveToken');
     }
   });
 });

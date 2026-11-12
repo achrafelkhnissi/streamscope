@@ -1,6 +1,8 @@
 import * as vscode from 'vscode';
 import type { HttpFile, HttpRequest, ParseDiagnostic, Range } from '../../http-file/model';
+import { variableDiagnostics } from '../../variables/inspect';
 import type { ParseCache } from './parse-cache';
+import type { LanguageVariables } from './variables';
 
 const languageId = 'http';
 const supportedSchemes: ReadonlySet<string> = new Set(['file', 'untitled']);
@@ -68,13 +70,27 @@ function toDiagnostic(problem: ParseDiagnostic): vscode.Diagnostic {
 export function registerLanguageFeatures(
   context: vscode.ExtensionContext,
   cache: ParseCache,
+  variables: LanguageVariables,
 ): void {
   const diagnostics = vscode.languages.createDiagnosticCollection('streamscope');
   const pending = new Map<string, ReturnType<typeof setTimeout>>();
 
+  const update = async (document: vscode.TextDocument): Promise<void> => {
+    const version = document.version;
+    const file = cache.get(document);
+    const sources = await variables.sourcesFor(document);
+    if (document.isClosed || document.version !== version) {
+      return;
+    }
+    diagnostics.set(
+      document.uri,
+      [...file.diagnostics, ...variableDiagnostics(file, sources)].map(toDiagnostic),
+    );
+  };
+
   const refresh = (document: vscode.TextDocument): void => {
     if (isSupported(document)) {
-      diagnostics.set(document.uri, cache.get(document).diagnostics.map(toDiagnostic));
+      void update(document);
     }
   };
 
@@ -112,6 +128,9 @@ export function registerLanguageFeatures(
           ),
     }),
     vscode.workspace.onDidOpenTextDocument(refresh),
+    variables.onDidChange(() => {
+      vscode.workspace.textDocuments.forEach(refresh);
+    }),
     vscode.workspace.onDidChangeTextDocument((event) => {
       if (event.contentChanges.length > 0) {
         scheduleRefresh(event.document);

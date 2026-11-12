@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import type { HttpFile, HttpRequest } from '../../http-file/model';
@@ -16,6 +15,7 @@ import { ResponsePresenter, type ResponseSlot } from '../response/presenter';
 import { ResponseFileSystem, responseScheme } from '../response/response-file-system';
 import { RequestCodeLenses } from './code-lens';
 import type { SecretStore } from '../secrets/secret-store';
+import { liveSystemContext } from '../system-context';
 import { readRequestSettings } from './settings';
 import { variablesFor } from './variables';
 
@@ -92,12 +92,7 @@ export function registerRequestFeatures(
   );
   const dependencies: RunDependencies = {
     transport: new NodeTransport(),
-    system: {
-      now: () => new Date(),
-      uuid: () => randomUUID(),
-      randomInt: (minInclusive, maxExclusive) =>
-        minInclusive + Math.floor(Math.random() * (maxExclusive - minInclusive)),
-    },
+    system: liveSystemContext,
     clock: () => performance.now(),
   };
   const registry = new RunRegistry(dependencies);

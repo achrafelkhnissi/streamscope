@@ -19,7 +19,7 @@ const inertSystem: SystemContext = {
   randomInt: (minInclusive) => minInclusive,
 };
 
-async function readDotenv(
+export async function readDotenv(
   document: vscode.Uri,
   environment: string | undefined,
 ): Promise<DotenvState> {

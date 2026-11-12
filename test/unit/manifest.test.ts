@@ -106,6 +106,7 @@ describe('extension manifest', () => {
       'streamscope.setSecret',
       'streamscope.clearSecret',
       'streamscope.listSecrets',
+      'streamscope.moveToSecretStorage',
       'streamscope.showLog',
     ]);
   });
@@ -146,6 +147,7 @@ describe('extension manifest', () => {
     expect(palette['streamscope.sendRequest']).toBe(
       'editorLangId == http && resourceScheme != streamscope-response',
     );
+    expect(palette['streamscope.moveToSecretStorage']).toBe('false');
     expect(palette['streamscope.saveResponse']).toBe(
       'editorLangId == http || resourceScheme == streamscope-response',
     );

@@ -5,6 +5,7 @@ import { registerEnvironmentPicker } from './vscode/environments/picker';
 import { registerSecretCommands } from './vscode/secrets/commands';
 import { SecretStore, workspaceIdentity } from './vscode/secrets/secret-store';
 import { registerLanguageFeatures } from './vscode/language/register';
+import { createLanguageVariables, registerVariableFeatures } from './vscode/language/variables';
 import { ParseCache } from './vscode/language/parse-cache';
 import { registerRequestFeatures } from './vscode/requests/register';
 
@@ -22,7 +23,9 @@ export function activate(context: vscode.ExtensionContext): void {
   registerEnvironmentPicker(context, environments);
   const secrets = new SecretStore(context.secrets, context.workspaceState, workspaceIdentity());
   registerSecretCommands(context, secrets);
-  registerLanguageFeatures(context, cache);
+  const variables = createLanguageVariables(context, environments, secrets);
+  registerVariableFeatures(context, cache, variables, secrets);
+  registerLanguageFeatures(context, cache, variables);
   registerRequestFeatures(context, log, cache, environments, secrets);
   void offerToHideOtherSendLenses(context);
   log.info('Extension activated');
