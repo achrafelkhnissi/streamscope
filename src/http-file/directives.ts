@@ -1,8 +1,8 @@
+import { parseDuration } from '../runs/duration';
 import type { DiagnosticCode, Directive, ParseDiagnostic } from './model';
 
 export const requestNamePattern = /^\w+$/;
 const capturePattern = /^(secret\s+)?[A-Za-z_]\w*\s*=\s*\S/;
-const timeoutPattern = /^\d+(ms|s|m)$/;
 const streamFormats: ReadonlySet<string> = new Set([
   'sse',
   'ndjson',
@@ -52,7 +52,7 @@ export function directiveDiagnostics(directive: Directive): ParseDiagnostic[] {
       'Expected one of sse, ndjson, json, text, raw or auto.',
     );
   }
-  if (kind === 'timeout' && !timeoutPattern.test(argument)) {
+  if (kind === 'timeout' && parseDuration(argument) === undefined) {
     return problem(directive, 'invalid-timeout', 'Expected a duration such as 500ms, 30s or 5m.');
   }
   if (flagKinds.has(kind) && argument !== '') {

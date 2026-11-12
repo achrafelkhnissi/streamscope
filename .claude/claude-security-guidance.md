@@ -14,4 +14,4 @@ This project is a VS Code extension (Node.js extension host) that sends HTTP req
 
 ## Accepted findings
 
-None yet.
+- `rejectUnauthorized: options.rejectUnauthorized` in `src/transport/node-transport.ts` turns TLS verification off only for a request marked `# @insecure` (design section 6). It is per request, never global, and never uses `NODE_TLS_REJECT_UNAUTHORIZED`.

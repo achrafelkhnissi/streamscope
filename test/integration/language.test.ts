@@ -117,4 +117,21 @@ describe('http language features', () => {
     });
     await waitFor(() => vscode.languages.getDiagnostics(document.uri).length === 0);
   });
+
+  it('ignores http documents from other schemes', async () => {
+    const provider = vscode.workspace.registerTextDocumentContentProvider('streamscope-test', {
+      provideTextDocumentContent: () => 'GET {{unclosed',
+    });
+    try {
+      const uri = vscode.Uri.parse('streamscope-test:/broken.http');
+      const document = await vscode.workspace.openTextDocument(uri);
+      await vscode.window.showTextDocument(document);
+      await new Promise((resolve) => setTimeout(resolve, 500));
+
+      assert.equal(document.languageId, 'http');
+      assert.deepEqual(vscode.languages.getDiagnostics(uri), []);
+    } finally {
+      provider.dispose();
+    }
+  });
 });

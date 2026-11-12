@@ -18,6 +18,9 @@ interface Manifest {
     commands: { command: string; title: string; category?: string }[];
     languages: unknown[];
     grammars: unknown[];
+    keybindings: unknown[];
+    configuration: { properties: Record<string, { default: unknown; type: string }> };
+    menus: Record<string, { command: string; when?: string }[]>;
   };
 }
 
@@ -62,9 +65,10 @@ describe('extension manifest', () => {
     expect(manifest.files).toContain('dist/extension.js');
   });
 
-  it('ships the bundle, language files, changelog and license', () => {
+  it('ships the bundle, format worker, language files, changelog and license', () => {
     expect(manifest.files).toEqual([
       'dist/extension.js',
+      'dist/format-worker.js',
       'syntaxes/http.tmLanguage.json',
       'language-configuration.json',
       'CHANGELOG.md',
@@ -86,8 +90,65 @@ describe('extension manifest', () => {
         language: 'http',
         scopeName: 'source.http.streamscope',
         path: './syntaxes/http.tmLanguage.json',
-        embeddedLanguages: { 'source.json': 'json' },
+        embeddedLanguages: { 'meta.embedded.block.json': 'json' },
       },
+    ]);
+  });
+
+  it('contributes the request commands with the shared category', () => {
+    expect(manifest.contributes.commands.map((command) => command.command)).toEqual([
+      'streamscope.sendRequest',
+      'streamscope.stopRequest',
+      'streamscope.saveResponse',
+      'streamscope.showResponseHeaders',
+      'streamscope.showResponseBody',
+      'streamscope.showLog',
+    ]);
+  });
+
+  it('binds Send Request to cmd+alt+enter and ctrl+alt+enter in http editors', () => {
+    expect(manifest.contributes.keybindings).toEqual([
+      {
+        command: 'streamscope.sendRequest',
+        key: 'ctrl+alt+enter',
+        mac: 'cmd+alt+enter',
+        when: 'editorTextFocus && editorLangId == http && resourceScheme != streamscope-response',
+      },
+    ]);
+  });
+
+  it('contributes request settings with their defaults', () => {
+    const properties = manifest.contributes.configuration.properties;
+
+    expect(
+      Object.fromEntries(
+        Object.entries(properties).map(([name, property]) => [name, property.default]),
+      ),
+    ).toEqual({
+      'streamscope.request.connectTimeout': '30s',
+      'streamscope.request.headersTimeout': '300s',
+      'streamscope.request.followRedirects': true,
+      'streamscope.request.maxRedirects': 10,
+      'streamscope.request.caFile': '',
+      'streamscope.codeLens.enabled': true,
+    });
+  });
+
+  it('only offers response commands where they apply', () => {
+    const palette = Object.fromEntries(
+      manifest.contributes.menus.commandPalette?.map(({ command, when }) => [command, when]) ?? [],
+    );
+
+    expect(palette['streamscope.sendRequest']).toBe(
+      'editorLangId == http && resourceScheme != streamscope-response',
+    );
+    expect(palette['streamscope.saveResponse']).toBe(
+      'editorLangId == http || resourceScheme == streamscope-response',
+    );
+    expect(manifest.contributes.menus['editor/title']?.map(({ command }) => command)).toEqual([
+      'streamscope.showResponseHeaders',
+      'streamscope.showResponseBody',
+      'streamscope.saveResponse',
     ]);
   });
 });

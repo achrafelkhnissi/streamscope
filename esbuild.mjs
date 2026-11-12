@@ -29,8 +29,11 @@ const problemMatcherPlugin = {
 };
 
 const context = await esbuild.context({
-  entryPoints: ['src/extension.ts'],
-  outfile: 'dist/extension.js',
+  entryPoints: {
+    extension: 'src/extension.ts',
+    'format-worker': 'src/response/format-worker.ts',
+  },
+  outdir: 'dist',
   bundle: true,
   format: 'cjs',
   platform: 'node',

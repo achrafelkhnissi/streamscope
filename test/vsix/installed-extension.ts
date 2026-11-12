@@ -22,7 +22,11 @@ export async function run(): Promise<void> {
     `${extensionId} was loaded from ${installedFrom}, not from ${extensionsDir}`,
   );
 
-  for (const file of ['syntaxes/http.tmLanguage.json', 'language-configuration.json']) {
+  for (const file of [
+    'dist/format-worker.js',
+    'syntaxes/http.tmLanguage.json',
+    'language-configuration.json',
+  ]) {
     assert.ok(existsSync(path.join(installedFrom, file)), `${file} is missing from the package`);
   }
 

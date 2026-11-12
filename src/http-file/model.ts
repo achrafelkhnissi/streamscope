@@ -8,18 +8,21 @@ export interface Range {
   end: Position;
 }
 
-export type DirectiveKind =
-  | 'name'
-  | 'capture'
-  | 'expect'
-  | 'stream'
-  | 'timeout'
-  | 'until'
-  | 'insecure'
-  | 'no-redirect'
-  | 'no-cookie-jar'
-  | 'note'
-  | 'prompt';
+export const directiveKinds = [
+  'name',
+  'capture',
+  'expect',
+  'stream',
+  'timeout',
+  'until',
+  'insecure',
+  'no-redirect',
+  'no-cookie-jar',
+  'note',
+  'prompt',
+] as const;
+
+export type DirectiveKind = (typeof directiveKinds)[number];
 
 export interface Directive {
   kind: DirectiveKind;

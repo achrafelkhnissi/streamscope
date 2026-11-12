@@ -1,17 +1,19 @@
 import { directiveDiagnostics, requestNamePattern } from './directives';
-import type {
-  BodyPart,
-  Directive,
-  DirectiveKind,
-  FileVariable,
-  Header,
-  HttpFile,
-  HttpRequest,
-  ParseDiagnostic,
-  Range,
-  RequestLine,
-  VariableReference,
+import {
+  directiveKinds,
+  type BodyPart,
+  type Directive,
+  type DirectiveKind,
+  type FileVariable,
+  type Header,
+  type HttpFile,
+  type HttpRequest,
+  type ParseDiagnostic,
+  type Range,
+  type RequestLine,
+  type VariableReference,
 } from './model';
+import { span } from './ranges';
 import { scanReferences } from './references';
 
 const separatorPattern = /^#{3,}/;
@@ -25,28 +27,12 @@ const queryContinuationPattern = /^\s*[&?]/;
 const bodyFilePattern = /^<(?:(@)(\w+)?)?\s+(\S(?:.*\S)?)\s*$/d;
 const responseStatusPattern = /^\s*HTTP\/[\d.]+/;
 
-const directiveKinds: ReadonlySet<string> = new Set<DirectiveKind>([
-  'name',
-  'capture',
-  'expect',
-  'stream',
-  'timeout',
-  'until',
-  'insecure',
-  'no-redirect',
-  'no-cookie-jar',
-  'note',
-  'prompt',
-]);
+const knownDirectives: ReadonlySet<string> = new Set<string>(directiveKinds);
 
 interface Block {
   separatorLine: number | undefined;
   firstLine: number;
   lastLine: number;
-}
-
-function span(line: number, start: number, end: number): Range {
-  return { start: { line, character: start }, end: { line, character: end } };
 }
 
 function lineSpan(lines: readonly string[], line: number): Range {
@@ -103,7 +89,7 @@ function parseFileVariable(text: string, line: number, lines: readonly string[])
 function parseDirective(text: string, line: number, lines: readonly string[]): Directive[] {
   const match = metadataPattern.exec(text);
   const keyword = match?.[1]?.toLowerCase();
-  if (!match || keyword === undefined || !directiveKinds.has(keyword)) {
+  if (!match || keyword === undefined || !knownDirectives.has(keyword)) {
     return [];
   }
   const argumentIndices = match.indices?.[2];
@@ -305,10 +291,11 @@ function requestReferences(
   lines: readonly string[],
   sections: RequestSections,
 ): VariableReference[] {
-  const bodyTextLines = sections.bodyLines.filter(
-    (line) => !bodyFilePattern.test(lines[line] ?? ''),
-  );
-  return referencesIn(lines, [...sections.urlLines, ...sections.headerLines, ...bodyTextLines]);
+  return referencesIn(lines, [
+    ...sections.urlLines,
+    ...sections.headerLines,
+    ...sections.bodyLines,
+  ]);
 }
 
 function layoutDiagnostics(
