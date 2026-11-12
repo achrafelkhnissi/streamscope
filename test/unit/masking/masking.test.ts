@@ -67,6 +67,12 @@ describe('masking', () => {
       'https://api.example.test/a?token=x',
     );
     expect(maskUrl('not a url')).toBe('not a url');
+    expect(maskUrl('https://user:pa ss@api.example.test/a')).toBe(
+      'https://••••••@api.example.test/a',
+    );
+    expect(maskUrl('https://user:p"s`s@api.example.test/a')).toBe(
+      'https://••••••@api.example.test/a',
+    );
     expect(maskUrl('//user:synthetic@files.example.test/a')).toBe('//••••••@files.example.test/a');
   });
 
@@ -74,11 +80,13 @@ describe('masking', () => {
     expect(
       maskHeaders([
         ['Location', 'https://user:synthetic@files.example.test/a'],
+        ['Content-Location', 'https://user:p"ss@files.example.test/c'],
         ['Link', '<https://user:synthetic@files.example.test/b>; rel="next"'],
         ['X-Trace', 'plain'],
       ]),
     ).toEqual([
       ['Location', 'https://••••••@files.example.test/a'],
+      ['Content-Location', 'https://••••••@files.example.test/c'],
       ['Link', '<https://••••••@files.example.test/b>; rel="next"'],
       ['X-Trace', 'plain'],
     ]);
