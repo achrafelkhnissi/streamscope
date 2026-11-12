@@ -394,15 +394,38 @@ describe('SpillArea and SpillFile', () => {
       await area.dispose();
     });
 
-    it('removes the partial destination when the file is evicted during the copy', async () => {
+    async function handlePrototype(): Promise<FileHandle> {
+      const probe = await open(path.join(root, 'probe.bin'), 'w');
+      const prototype = Object.getPrototypeOf(probe) as FileHandle;
+      await probe.close();
+      return prototype;
+    }
+
+    function failClosing(handle: FileHandle): void {
+      const close = handle.close.bind(handle);
+      Object.assign(handle, {
+        close: async () => {
+          await close();
+          throw new Error('synthetic close failure');
+        },
+      });
+    }
+
+    function savedFolder(): { folder: string; destination: string } {
+      const folder = path.join(root, 'saved');
+      mkdirSync(folder);
+      const destination = path.join(folder, 'existing.bin');
+      writeFileSync(destination, 'earlier');
+      return { folder, destination };
+    }
+
+    it('keeps an existing destination when the file is evicted during the copy', async () => {
       const baseline = fileHandles();
       const area = await SpillArea.open(root);
       const file = await area.create();
       file.append(pattern(3 * chunkBytes));
       await file.finish();
-      const probe = await open(path.join(root, 'probe.bin'), 'w');
-      const prototype = Object.getPrototypeOf(probe) as FileHandle;
-      await probe.close();
+      const prototype = await handlePrototype();
       const writeFile = Reflect.get(prototype, 'writeFile') as (
         this: FileHandle,
         data: Uint8Array,
@@ -414,7 +437,7 @@ describe('SpillArea and SpillFile', () => {
         file.evict();
         return writeFile.call(this, data as Uint8Array);
       });
-      const destination = path.join(root, 'partial.bin');
+      const { folder, destination } = savedFolder();
 
       try {
         expect(await file.copyTo(destination)).toBe('unavailable');
@@ -422,9 +445,148 @@ describe('SpillArea and SpillFile', () => {
         spy.mockRestore();
       }
 
-      expect(existsSync(destination)).toBe(false);
+      expect(readFileSync(destination, 'utf8')).toBe('earlier');
+      expect(readdirSync(folder)).toEqual(['existing.bin']);
       await area.dispose();
       expect(fileHandles()).toBe(baseline);
+    });
+
+    it('creates no destination when the file is evicted during the copy', async () => {
+      const area = await SpillArea.open(root);
+      const file = await area.create();
+      file.append(pattern(3 * chunkBytes));
+      await file.finish();
+      const prototype = await handlePrototype();
+      const writeFile = Reflect.get(prototype, 'writeFile') as (
+        this: FileHandle,
+        data: Uint8Array,
+      ) => Promise<void>;
+      const spy = vi.spyOn(prototype, 'writeFile').mockImplementation(function (
+        this: FileHandle,
+        data,
+      ) {
+        file.evict();
+        return writeFile.call(this, data as Uint8Array);
+      });
+      const { folder } = savedFolder();
+      const destination = path.join(folder, 'new.bin');
+
+      try {
+        expect(await file.copyTo(destination)).toBe('unavailable');
+      } finally {
+        spy.mockRestore();
+      }
+
+      expect(readdirSync(folder)).toEqual(['existing.bin']);
+      await area.dispose();
+    });
+
+    it('keeps an existing destination when writing the copy fails', async () => {
+      const baseline = fileHandles();
+      const area = await SpillArea.open(root);
+      const file = await area.create();
+      file.append(pattern(3 * chunkBytes));
+      await file.finish();
+      const prototype = await handlePrototype();
+      const writeFile = Reflect.get(prototype, 'writeFile') as (
+        this: FileHandle,
+        data: Uint8Array,
+      ) => Promise<void>;
+      let writes = 0;
+      const spy = vi.spyOn(prototype, 'writeFile').mockImplementation(function (
+        this: FileHandle,
+        data,
+      ) {
+        writes += 1;
+        return writes === 2
+          ? Promise.reject(new Error('synthetic EIO'))
+          : writeFile.call(this, data as Uint8Array);
+      });
+      const { folder, destination } = savedFolder();
+
+      try {
+        await expect(file.copyTo(destination)).rejects.toThrow('synthetic EIO');
+      } finally {
+        spy.mockRestore();
+      }
+
+      expect(readFileSync(destination, 'utf8')).toBe('earlier');
+      expect(readdirSync(folder)).toEqual(['existing.bin']);
+      expect(await file.copyTo(path.join(folder, 'again.bin'))).toBe('complete');
+      await area.dispose();
+      expect(fileHandles()).toBe(baseline);
+    });
+
+    it('reports the write error and still removes the copy when closing it fails too', async () => {
+      const baseline = fileHandles();
+      const area = await SpillArea.open(root);
+      const file = await area.create();
+      file.append(pattern(2 * chunkBytes));
+      await file.finish();
+      const prototype = await handlePrototype();
+      const spy = vi.spyOn(prototype, 'writeFile').mockImplementation(function (this: FileHandle) {
+        failClosing(this);
+        return Promise.reject(new Error('synthetic EIO'));
+      });
+      const { folder, destination } = savedFolder();
+
+      try {
+        await expect(file.copyTo(destination)).rejects.toThrow('synthetic EIO');
+      } finally {
+        spy.mockRestore();
+      }
+
+      expect(readFileSync(destination, 'utf8')).toBe('earlier');
+      expect(readdirSync(folder)).toEqual(['existing.bin']);
+      await area.dispose();
+      expect(fileHandles()).toBe(baseline);
+    });
+
+    it('keeps an existing destination when closing the copy fails', async () => {
+      const baseline = fileHandles();
+      const area = await SpillArea.open(root);
+      const file = await area.create();
+      file.append(pattern(2 * chunkBytes));
+      await file.finish();
+      const prototype = await handlePrototype();
+      const writeFile = Reflect.get(prototype, 'writeFile') as (
+        this: FileHandle,
+        data: Uint8Array,
+      ) => Promise<void>;
+      const spy = vi.spyOn(prototype, 'writeFile').mockImplementation(function (
+        this: FileHandle,
+        data,
+      ) {
+        failClosing(this);
+        return writeFile.call(this, data as Uint8Array);
+      });
+      const { folder, destination } = savedFolder();
+
+      try {
+        await expect(file.copyTo(destination)).rejects.toThrow('synthetic close failure');
+      } finally {
+        spy.mockRestore();
+      }
+
+      expect(readFileSync(destination, 'utf8')).toBe('earlier');
+      expect(readdirSync(folder)).toEqual(['existing.bin']);
+      await area.dispose();
+      expect(fileHandles()).toBe(baseline);
+    });
+
+    it('replaces an existing destination once the copy succeeds', async () => {
+      const area = await SpillArea.open(root);
+      const file = await area.create();
+      const content = pattern(2 * chunkBytes + 5);
+      file.append(content);
+      await file.finish();
+      const { folder, destination } = savedFolder();
+
+      expect(await file.copyTo(destination)).toBe('complete');
+
+      expect(Buffer.from(content).equals(readFileSync(destination))).toBe(true);
+      expect(readdirSync(folder)).toEqual(['existing.bin']);
+      await area.dispose();
     });
 
     it('rejects when the destination cannot be written and keeps the file intact', async () => {

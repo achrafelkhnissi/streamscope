@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { once } from 'node:events';
 import { createWriteStream, type WriteStream } from 'node:fs';
-import { mkdir, open, readdir, rm, type FileHandle } from 'node:fs/promises';
+import { mkdir, open, readdir, rename, rm, type FileHandle } from 'node:fs/promises';
 import * as path from 'node:path';
 import { defaultSpillLimits, type SpillLimits } from '../streaming/limits';
 
@@ -201,8 +201,12 @@ export class SpillFile {
     const end = this.saved;
     const capped = this.isCapped;
     const buffer = new Uint8Array(Math.min(copyChunkBytes, end));
-    const target = await open(destination, 'w');
-    let copied = false;
+    const temporary = path.join(
+      path.dirname(destination),
+      `.streamscope-${randomBytes(8).toString('hex')}.tmp`,
+    );
+    const target = await open(temporary, 'wx');
+    let replaced = false;
     try {
       for (let offset = 0; offset < end; offset += buffer.length) {
         const chunk = buffer.subarray(0, Math.min(buffer.length, end - offset));
@@ -211,14 +215,16 @@ export class SpillFile {
         }
         await target.writeFile(chunk);
       }
-      copied = true;
-    } finally {
       await target.close();
-      if (!copied) {
-        await rm(destination, { force: true });
+      await rename(temporary, destination);
+      replaced = true;
+      return capped ? 'capped' : 'complete';
+    } finally {
+      await target.close().catch(() => undefined);
+      if (!replaced) {
+        await rm(temporary, { force: true }).catch(() => undefined);
       }
     }
-    return capped ? 'capped' : 'complete';
   }
 
   async finish(): Promise<void> {
