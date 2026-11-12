@@ -37,6 +37,7 @@ async function build(...lines: string[]): Promise<BuildResult> {
   return buildOutgoingRequest(resolution.request, resolution.scope, {
     documentDir: root,
     containmentRoot: root,
+    restricted: false,
   });
 }
 
@@ -246,6 +247,38 @@ describe('buildOutgoingRequest', () => {
     expect(await build('POST https://api.example.test/items', '', '<@klingon ./data.txt')).toEqual({
       ok: false,
       problems: [{ message: 'Unsupported encoding `klingon`.', range: at(2, 10, 20) }],
+    });
+  });
+
+  it('blocks body files in a restricted workspace', async () => {
+    writeFileSync(path.join(root, 'payload.json'), '{}');
+    const file = parseHttpFile(
+      ['POST https://api.example.test/items', '', '< ./payload.json'].join('\n'),
+    );
+    const request = file.requests[0];
+    if (!request) {
+      throw new Error('expected a request');
+    }
+    const resolution = resolveRequest(file, request, testSources({ system }));
+    if (!resolution.ok) {
+      throw new Error('expected a resolution');
+    }
+
+    expect(
+      await buildOutgoingRequest(resolution.request, resolution.scope, {
+        documentDir: root,
+        containmentRoot: root,
+        restricted: true,
+      }),
+    ).toEqual({
+      ok: false,
+      problems: [
+        {
+          message:
+            'Body files are not read in a restricted workspace. Trust the workspace to send them.',
+          range: at(2, 2, 16),
+        },
+      ],
     });
   });
 

@@ -25,7 +25,7 @@ interface Target {
 const sendableSchemes: ReadonlySet<string> = new Set(['file', 'untitled']);
 const noResponseMessage = 'Send the request first: there is no response yet.';
 
-function bodyFiles(uri: vscode.Uri): BodyFileContext {
+function bodyFiles(uri: vscode.Uri): Omit<BodyFileContext, 'restricted'> {
   if (uri.scheme !== 'file') {
     return { documentDir: undefined, containmentRoot: undefined };
   }
@@ -133,6 +133,17 @@ export function registerRequestFeatures(
       request,
       bodyFiles: bodyFiles(document.uri),
       settings: settings.settings,
+      variables: {
+        environmentName: undefined,
+        environment: new Map(),
+        shared: new Map(),
+        secrets: new Map(),
+        dotenv: { kind: 'missing' },
+        processEnv: {},
+        privateFileIgnored: false,
+      },
+      restricted: false,
+      confirmSend: undefined,
     }).done;
     logRunEnd(log, run);
     if (registry.latest(key)?.id !== run.id) {

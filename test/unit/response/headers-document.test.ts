@@ -148,4 +148,28 @@ describe('renderHeadersDocument', () => {
       ),
     ).toBe(['### Not sent', '`{{host}}` is not defined. (line 5)', ''].join('\n'));
   });
+
+  it('masks sensitive values in the Headers document, including inside other header values and the URL', () => {
+    const rendered = renderHeadersDocument(
+      snapshot({
+        sensitiveValues: ['synthetic-secret'],
+        sent: {
+          method: 'GET',
+          url: 'https://api.example.test/items?key=synthetic-secret',
+          headers: [['X-Custom', 'prefix synthetic-secret suffix']],
+        },
+        head: {
+          httpVersion: '1.1',
+          status: 200,
+          statusText: 'OK',
+          headers: [['X-Echo', 'synthetic-secret']],
+        },
+      }),
+    );
+
+    expect(rendered).not.toContain('synthetic-secret');
+    expect(rendered).toContain('GET https://api.example.test/items?key=••••••');
+    expect(rendered).toContain('X-Custom: prefix •••••• suffix');
+    expect(rendered).toContain('X-Echo: ••••••');
+  });
 });

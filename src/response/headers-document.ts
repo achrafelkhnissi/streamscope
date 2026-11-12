@@ -1,4 +1,4 @@
-import { maskHeaders, maskUrl } from '../masking/masking';
+import { maskHeaders, maskUrl, maskValues } from '../masking/masking';
 import type { RunSnapshot } from '../runs/run';
 import type { Headers, Timing } from '../transport/model';
 import { formatBytes, formatDuration } from './labels';
@@ -75,5 +75,8 @@ export function renderHeadersDocument(run: RunSnapshot): string {
       `Received ${formatBytes(run.body.length)} (${formatBytes(run.wireBytes)} on the wire)`,
     ]);
   }
-  return `${sections.map((lines) => lines.join('\n')).join('\n\n')}\n`;
+  return maskValues(
+    `${sections.map((lines) => lines.join('\n')).join('\n\n')}\n`,
+    run.sensitiveValues,
+  );
 }

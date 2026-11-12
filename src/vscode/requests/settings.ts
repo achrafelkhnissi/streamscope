@@ -85,6 +85,7 @@ export async function readRequestSettings(uri: vscode.Uri): Promise<SettingsResu
       maxRedirects,
       ca: ca.ca,
       maxBodyBytes,
+      insecureEnvironment: false,
     },
   };
 }

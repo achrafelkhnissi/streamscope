@@ -1,5 +1,6 @@
 import { parseHttpFile } from '../../../src/http-file/parse';
 import type { RequestSettings, RunDependencies, RunInput } from '../../../src/runs/run';
+import type { VariableSources } from '../../../src/variables/sources';
 import { NodeTransport } from '../../../src/transport/node-transport';
 
 export const defaultSettings: RequestSettings = {
@@ -9,6 +10,17 @@ export const defaultSettings: RequestSettings = {
   maxRedirects: 10,
   ca: undefined,
   maxBodyBytes: 268_435_456,
+  insecureEnvironment: false,
+};
+
+export const emptyVariables: Omit<VariableSources, 'system' | 'restricted'> = {
+  environmentName: undefined,
+  environment: new Map(),
+  shared: new Map(),
+  secrets: new Map(),
+  dotenv: { kind: 'missing' },
+  processEnv: {},
+  privateFileIgnored: false,
 };
 
 export const dependencies: RunDependencies = {
@@ -23,7 +35,14 @@ export const dependencies: RunDependencies = {
 
 export function runInput(
   lines: string[],
-  options: { index?: number; key?: string; settings?: Partial<RequestSettings> } = {},
+  options: {
+    index?: number;
+    key?: string;
+    settings?: Partial<RequestSettings>;
+    variables?: Partial<RunInput['variables']>;
+    restricted?: boolean;
+    confirmSend?: () => Promise<boolean>;
+  } = {},
 ): RunInput {
   const file = parseHttpFile(lines.join('\n'));
   const index = options.index ?? 0;
@@ -38,5 +57,8 @@ export function runInput(
     request,
     bodyFiles: { documentDir: undefined, containmentRoot: undefined },
     settings: { ...defaultSettings, ...options.settings },
+    variables: { ...emptyVariables, ...options.variables },
+    restricted: options.restricted ?? false,
+    confirmSend: options.confirmSend,
   };
 }

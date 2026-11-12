@@ -104,4 +104,17 @@ describe('labels', () => {
       'Running · 2.1 s',
     );
   });
+
+  it('masks sensitive values in the outcome text', () => {
+    expect(
+      describeOutcome(
+        snapshot({
+          status: 'failed',
+          head: undefined,
+          sensitiveValues: ['secret.example.test'],
+          failure: { kind: 'dns', message: 'Could not resolve secret.example.test.' },
+        }),
+      ),
+    ).toBe('Failed: Could not resolve ••••••.');
+  });
 });
