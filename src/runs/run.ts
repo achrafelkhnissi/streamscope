@@ -179,7 +179,17 @@ export function startRun(
     if (wasCancelled()) {
       return finish({ status: 'cancelled' });
     }
-    const resolution = resolveRequest(input.file, request, dependencies.system);
+    const resolution = resolveRequest(input.file, request, {
+      system: dependencies.system,
+      restricted: false,
+      environmentName: undefined,
+      environment: new Map(),
+      shared: new Map(),
+      secrets: new Map(),
+      dotenv: { kind: 'missing' },
+      processEnv: {},
+      privateFileIgnored: false,
+    });
     const problems = [...timeoutProblems(), ...(resolution.ok ? [] : resolution.problems)];
     if (!resolution.ok || problems.length > 0) {
       return finish({ status: 'blocked', problems });

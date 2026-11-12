@@ -58,7 +58,7 @@ describe('startRun', () => {
 
     expect(snapshot.status).toBe('blocked');
     expect(snapshot.problems.map((problem) => problem.message)).toEqual([
-      '`{{missing}}` is not defined.',
+      '`{{missing}}` is not defined in this file or `$shared` (no environment selected).',
     ]);
     expect(snapshot.sent).toBeUndefined();
     expect(server.sockets.opened).toBe(0);

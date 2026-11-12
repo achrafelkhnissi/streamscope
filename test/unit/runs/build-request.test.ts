@@ -6,6 +6,7 @@ import { parseHttpFile } from '../../../src/http-file/parse';
 import { buildOutgoingRequest, type BuildResult } from '../../../src/runs/build-request';
 import type { BodyPart } from '../../../src/transport/model';
 import { resolveRequest } from '../../../src/variables/resolve';
+import { testSources } from '../variables/sources';
 
 let root = '';
 
@@ -29,7 +30,7 @@ async function build(...lines: string[]): Promise<BuildResult> {
   if (!request) {
     throw new Error('expected a request');
   }
-  const resolution = resolveRequest(file, request, system);
+  const resolution = resolveRequest(file, request, testSources({ system }));
   if (!resolution.ok) {
     throw new Error(resolution.problems.map((problem) => problem.message).join('\n'));
   }
@@ -229,7 +230,13 @@ describe('buildOutgoingRequest', () => {
 
     expect(await build('POST https://api.example.test/items', '', '<@ ./template.json')).toEqual({
       ok: false,
-      problems: [{ message: '`{{missing}}` is not defined.', range: at(2, 3, 18) }],
+      problems: [
+        {
+          message:
+            '`{{missing}}` is not defined in this file or `$shared` (no environment selected).',
+          range: at(2, 3, 18),
+        },
+      ],
     });
   });
 
