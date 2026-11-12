@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { listWindow, scrollTopFor, type ListInput } from '../../../src/webview/list-window';
+import {
+  followingAfterScroll,
+  listWindow,
+  scrollTopFor,
+  type ListInput,
+} from '../../../src/webview/list-window';
 
 const maxScrollPixels = 8_000_000;
 
@@ -164,5 +169,49 @@ describe('scrollTopFor', () => {
         expect(area.top(index) + 22).toBeLessThanOrEqual(scrollTop + 440);
       }
     }
+  });
+});
+
+describe('followingAfterScroll', () => {
+  const scroll = {
+    following: false,
+    revealPending: false,
+    ownScrollTop: undefined,
+    scrollTop: 500,
+    atBottom: true,
+  };
+
+  it('follows the tail again when the user scrolls to the bottom', () => {
+    expect(followingAfterScroll(scroll)).toBe(true);
+  });
+
+  it('stops following when the user scrolls away from the bottom', () => {
+    expect(followingAfterScroll({ ...scroll, following: true, atBottom: false })).toBe(false);
+  });
+
+  it('ignores the scroll the page made itself, so a key or click that stopped following wins', () => {
+    expect(followingAfterScroll({ ...scroll, ownScrollTop: 500 })).toBe(false);
+    expect(followingAfterScroll({ ...scroll, ownScrollTop: 500, scrollTop: 500.5 })).toBe(false);
+  });
+
+  it('keeps following through the tail scroll the page made itself', () => {
+    expect(followingAfterScroll({ ...scroll, following: true, ownScrollTop: 500 })).toBe(true);
+  });
+
+  it('treats a scroll away from the position the page set as the user scrolling', () => {
+    expect(
+      followingAfterScroll({
+        ...scroll,
+        following: true,
+        ownScrollTop: 500,
+        scrollTop: 400,
+        atBottom: false,
+      }),
+    ).toBe(false);
+  });
+
+  it('lets a pending reveal win over any scroll', () => {
+    expect(followingAfterScroll({ ...scroll, revealPending: true })).toBe(false);
+    expect(followingAfterScroll({ ...scroll, revealPending: true, scrollTop: 100 })).toBe(false);
   });
 });

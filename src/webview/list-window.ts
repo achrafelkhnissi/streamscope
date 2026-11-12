@@ -103,3 +103,21 @@ export function scrollTopFor(input: ListInput, index: number, align: 'start' | '
   }
   return Math.max(0, round(target / shape.ratio));
 }
+
+export interface ListScroll {
+  following: boolean;
+  revealPending: boolean;
+  ownScrollTop: number | undefined;
+  scrollTop: number;
+  atBottom: boolean;
+}
+
+export function followingAfterScroll(scroll: ListScroll): boolean {
+  if (scroll.revealPending) {
+    return scroll.following;
+  }
+  if (scroll.ownScrollTop !== undefined && Math.abs(scroll.scrollTop - scroll.ownScrollTop) < 1) {
+    return scroll.following;
+  }
+  return scroll.atBottom;
+}

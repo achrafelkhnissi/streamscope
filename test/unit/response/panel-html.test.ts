@@ -153,6 +153,16 @@ describe('panelHtml', () => {
     );
   });
 
+  it('announces through one live region, apart from the visible status line', () => {
+    const page = html();
+
+    expect(page.match(/role="status"|aria-live=/g)).toEqual(['role="status"', 'aria-live=']);
+    expect(page).toContain(
+      '<div class="visually-hidden" id="announce" role="status" aria-live="polite"></div>',
+    );
+    expect(page).toContain('<span id="status"></span>');
+  });
+
   it('says there are no checks for this request', () => {
     expect(html()).toContain('<p id="checks">No checks for this request.</p>');
   });

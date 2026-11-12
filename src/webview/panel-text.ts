@@ -44,6 +44,15 @@ export function statusLine(status: PanelStatus): string {
   return parts.join(' · ');
 }
 
+export function stateAnnouncement(
+  previous: PanelRunState | undefined,
+  status: PanelStatus,
+): string | undefined {
+  return status.state === previous
+    ? undefined
+    : `${stateLabels[status.state]}. ${statusLine(status)}`;
+}
+
 export function bodyNote(body: PanelBody): string {
   switch (body.kind) {
     case 'stream':

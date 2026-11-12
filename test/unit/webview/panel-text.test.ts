@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import type { PanelStatus } from '../../../src/response/panel-protocol';
-import { bodyNote, stateLabels, statusLine } from '../../../src/webview/panel-text';
+import {
+  bodyNote,
+  stateAnnouncement,
+  stateLabels,
+  statusLine,
+} from '../../../src/webview/panel-text';
 
 function status(overrides: Partial<PanelStatus> = {}): PanelStatus {
   return {
@@ -38,6 +43,31 @@ describe('statusLine', () => {
       'Running · 3 events · 1.2 s · NDJSON (detected) · 2 warnings',
     );
     expect(statusLine(status({ warnings: 1 }))).toBe('Running · 3 events · 1.2 s · 1 warning');
+  });
+});
+
+describe('stateAnnouncement', () => {
+  it('announces the first status of a run with its status line', () => {
+    expect(stateAnnouncement(undefined, status())).toBe('Receiving. Running · 3 events · 1.2 s');
+  });
+
+  it('announces a change of state with the status line at that moment', () => {
+    expect(
+      stateAnnouncement(
+        'receiving',
+        status({ state: 'completed', text: '200 OK · 3 events · 1.2 s', running: false }),
+      ),
+    ).toBe('Completed. 200 OK · 3 events · 1.2 s');
+    expect(stateAnnouncement('sending', status({ format: 'SSE (from Content-Type)' }))).toBe(
+      'Receiving. Running · 3 events · 1.2 s · SSE (from Content-Type)',
+    );
+  });
+
+  it('says nothing while only the counts, time or warnings change', () => {
+    expect(stateAnnouncement('receiving', status({ text: 'Running · 900 events · 30.0 s' }))).toBe(
+      undefined,
+    );
+    expect(stateAnnouncement('receiving', status({ warnings: 4 }))).toBe(undefined);
   });
 });
 

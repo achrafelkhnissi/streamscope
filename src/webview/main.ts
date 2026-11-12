@@ -4,14 +4,15 @@ import {
   type FromPanel,
   type PanelBody,
   type PanelRow,
+  type PanelRunState,
   type PanelStatus,
   type PanelView,
   type TextDelta,
   type ToPanel,
 } from '../response/panel-protocol';
-import { listWindow, scrollTopFor, type ListInput } from './list-window';
+import { followingAfterScroll, listWindow, scrollTopFor, type ListInput } from './list-window';
 import { canSave, effectiveView, visibleViews } from './panel-state';
-import { bodyNote, stateLabels, statusLine } from './panel-text';
+import { bodyNote, stateAnnouncement, stateLabels, statusLine } from './panel-text';
 import { rawTail, rawTokens, splitLines } from './raw-colour';
 
 interface PanelState {
@@ -112,6 +113,8 @@ let rawChars = 0;
 let rawLines = 0;
 const replyNode = document.createTextNode('');
 let announcement = '';
+let announcedState: PanelRunState | undefined;
+let ownScrollTop: number | undefined;
 let announcedAt = Number.NEGATIVE_INFINITY;
 let announceTimer: number | undefined;
 
@@ -228,7 +231,11 @@ function showStatus(status: PanelStatus): void {
   stopButton.disabled = !status.running;
   saveButton.disabled = !canSave(status);
   showTabs();
-  announce(`${label}. ${line}`);
+  const text = stateAnnouncement(announcedState, status);
+  announcedState = status.state;
+  if (text !== undefined) {
+    announce(text);
+  }
 }
 
 function showHeaders(text: string): void {
@@ -434,9 +441,11 @@ function render(): void {
   spacer.style.height = `${String(area.spacerHeight)}px`;
   if (following) {
     list.scrollTop = area.spacerHeight;
+    ownScrollTop = Math.max(0, area.spacerHeight - base.clientHeight);
   } else if (revealing) {
     list.scrollTop = scrollTop;
-    area = listWindow({ ...base, scrollTop: list.scrollTop });
+    ownScrollTop = list.scrollTop;
+    area = listWindow({ ...base, scrollTop: ownScrollTop });
   }
   const visible = Math.max(0, area.last - area.first + 1);
   const extra = Math.max(0, Math.min(margin, Math.floor((panelLimits.windowRows - visible) / 2)));
@@ -573,6 +582,8 @@ function reset(message: Extract<ToPanel, { type: 'reset' }>): void {
     pendingScroll = undefined;
   }
   run = message.run;
+  announcedState = undefined;
+  ownScrollTop = undefined;
   count = 0;
   following = true;
   selected = undefined;
@@ -654,7 +665,14 @@ function receive(message: ToPanel): void {
 }
 
 list.addEventListener('scroll', () => {
-  following = atBottom(list);
+  following = followingAfterScroll({
+    following,
+    revealPending: reveal !== undefined,
+    ownScrollTop,
+    scrollTop: list.scrollTop,
+    atBottom: atBottom(list),
+  });
+  ownScrollTop = undefined;
   queueRender();
 });
 
