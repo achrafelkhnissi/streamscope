@@ -96,7 +96,9 @@ export type DiagnosticCode =
   | 'unexpected-argument'
   | 'misplaced-directive'
   | 'header-without-colon'
-  | 'directives-without-request';
+  | 'directives-without-request'
+  | 'undefined-variable'
+  | 'invalid-variable';
 
 export interface ParseDiagnostic {
   code: DiagnosticCode;

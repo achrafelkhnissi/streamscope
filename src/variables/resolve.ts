@@ -480,3 +480,15 @@ export function missingSecrets(
 ): string[] {
   return resolveInScope(file, request, sources).scope.missingSecrets;
 }
+
+export function evaluateExpression(
+  file: HttpFile,
+  expression: string,
+  sources: VariableSources,
+): { ok: true; value: string; sensitiveValues: string[] } | { ok: false; message: string } {
+  const scope = new Scope(file, sources);
+  const evaluated = scope.evaluate(expression);
+  return evaluated.ok
+    ? { ok: true, value: evaluated.value, sensitiveValues: [...scope.sensitive] }
+    : { ok: false, message: evaluated.failures[0]?.message ?? '' };
+}
