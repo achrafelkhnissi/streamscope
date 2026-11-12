@@ -73,6 +73,12 @@ describe('masking', () => {
     expect(maskUrl('https://user:p"s`s@api.example.test/a')).toBe(
       'https://••••••@api.example.test/a',
     );
+    expect(maskUrl('{{scheme}}://admin:synthetic@api.example.test/x')).toBe(
+      '{{scheme}}://••••••@api.example.test/x',
+    );
+    expect(maskUrl('{{base}}/redirect?to=https://admin:synthetic@api.example.test/x')).toBe(
+      '{{base}}/redirect?to=https://••••••@api.example.test/x',
+    );
     expect(maskUrl('//user:synthetic@files.example.test/a')).toBe('//••••••@files.example.test/a');
   });
 

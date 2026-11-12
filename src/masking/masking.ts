@@ -30,12 +30,12 @@ export function isSensitiveHeader(name: string): boolean {
 export function maskHeaders(headers: Headers): [string, string][] {
   return headers.map(([name, value]) => [
     name,
-    isSensitiveHeader(name)
-      ? maskedValue
-      : maskUrl(value).replace(embeddedUserInfoPattern, `$1${maskedValue}@`),
+    isSensitiveHeader(name) ? maskedValue : maskUrl(value),
   ]);
 }
 
 export function maskUrl(url: string): string {
-  return url.replace(urlUserInfoPattern, `$1${maskedValue}@`);
+  return url
+    .replace(urlUserInfoPattern, `$1${maskedValue}@`)
+    .replace(embeddedUserInfoPattern, `$1${maskedValue}@`);
 }
