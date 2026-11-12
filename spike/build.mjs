@@ -11,3 +11,13 @@ await esbuild.build({
   sourcemap: true,
   logLevel: 'warning',
 });
+
+await esbuild.build({
+  entryPoints: ['spike/webview/main.ts'],
+  outfile: 'spike/dist/webview.js',
+  bundle: true,
+  format: 'iife',
+  platform: 'browser',
+  target: 'es2022',
+  logLevel: 'warning',
+});

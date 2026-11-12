@@ -11,6 +11,7 @@ import { ResponseFileSystem } from '../../src/vscode/response/response-file-syst
 import { benchmark, walkthrough, type Surface, type SurfaceResponse } from './flows';
 import { statusText, type ViewName } from './format';
 import { contentScheme, ContentBacking, FileBacking, fileScheme, NativeSurface } from './native';
+import { WebviewSurface } from './webview';
 
 const eventsSelector: vscode.DocumentSelector = { language: 'streamscope-events' };
 const detailSelector: vscode.DocumentSelector = [
@@ -32,7 +33,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const content = new ContentBacking();
   const native: NativeSurface[] = [];
   const runningChanged = (): void => {
-    const now = native.some((surface) => surface.running);
+    const now = native.some((surface) => surface.running) || webviewSurface.running;
     if (now !== running) {
       running = now;
       void vscode.commands.executeCommand('setContext', 'streamscope.spikeRunning', now);
@@ -40,10 +41,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   };
   const fileSurface = new NativeSurface(new FileBacking(files), area, nextNumber, runningChanged);
   const contentSurface = new NativeSurface(content, area, nextNumber, runningChanged);
+  const webviewSurface = new WebviewSurface(context.extensionUri, area, nextNumber, runningChanged);
   native.push(fileSurface, contentSurface);
   const surfaces = new Map<string, Surface>([
     ['native-fs', fileSurface],
     ['native-content', contentSurface],
+    ['webview', webviewSurface],
   ]);
 
   const surfaceFor = (name: string): Surface => {

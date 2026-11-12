@@ -22,6 +22,7 @@ export class SpikeStream {
   head: ResponseHead | undefined;
   raw = '';
   rawTrimmed = false;
+  rawGeneration = 0;
   status: SpikeStatus = 'connecting';
   endedAt: number | undefined;
   readonly startedAt = performance.now();
@@ -107,6 +108,7 @@ export class SpikeStream {
       const start = tail.indexOf('\n') + 1;
       this.raw = tail.slice(start);
       this.rawTrimmed = true;
+      this.rawGeneration += 1;
     }
   }
 }

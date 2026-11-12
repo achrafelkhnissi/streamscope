@@ -3,7 +3,9 @@ import type { EventStore } from '../../src/events/store';
 import { formatLabel } from '../../src/streaming/detect';
 import type { SpikeStream } from './stream';
 
-export type ViewName = 'events' | 'reply' | 'raw' | 'headers' | 'body' | 'checks';
+import type { ViewName } from '../webview/messages';
+
+export type { ViewName };
 
 export const viewNames: readonly ViewName[] = [
   'events',
