@@ -21,10 +21,7 @@ const urlUserInfoPattern = /^((?:[a-z][a-z\d+.-]*:)?\/\/)[^/?#]*@/i;
 const embeddedUserInfoPattern = /((?:\b[a-z][a-z\d+.-]*:)?\/\/)[^\s/?#<>"'`]*@/gi;
 
 export function isSensitiveHeader(name: string): boolean {
-  return name
-    .toLowerCase()
-    .split(/[-_]/)
-    .some((word) => sensitiveWords.has(word));
+  return name.split(/[-_]/).some((word) => sensitiveWords.has(word));
 }
 
 export function maskHeaders(headers: Headers): [string, string][] {
