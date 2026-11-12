@@ -1,3 +1,4 @@
+import { RawTail } from '../../../src/runs/raw-tail';
 import type { RunSnapshot } from '../../../src/runs/run';
 
 export function snapshot(overrides: Partial<RunSnapshot> = {}): RunSnapshot {
@@ -30,6 +31,9 @@ export function snapshot(overrides: Partial<RunSnapshot> = {}): RunSnapshot {
     timing: { dnsMs: 3, connectMs: 12.4, tlsMs: 20, firstByteMs: 45, totalMs: 80 },
     wireBytes: 512,
     body: new Uint8Array(1229),
+    bodyKept: true,
+    stream: undefined,
+    raw: new RawTail(1024),
     failure: undefined,
     problems: [],
     sensitiveValues: [],

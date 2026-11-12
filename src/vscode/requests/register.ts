@@ -1,10 +1,12 @@
 import * as path from 'node:path';
 import * as vscode from 'vscode';
+import { SpillArea } from '../../events/spill';
 import type { HttpFile, HttpRequest } from '../../http-file/model';
 import { fileSafeName, requestLabel, saveExtension } from '../../response/labels';
 import type { BodyFileContext } from '../../runs/body-files';
 import { RunRegistry } from '../../runs/registry';
 import { requestKey, type RunDependencies, type RunSnapshot } from '../../runs/run';
+import { defaultSpillLimits } from '../../streaming/limits';
 import { NodeTransport } from '../../transport/node-transport';
 import { confirmOnce } from '../../runs/confirm-once';
 import type { EnvironmentStore } from '../environments/environment-store';
@@ -16,7 +18,7 @@ import { ResponseFileSystem, responseScheme } from '../response/response-file-sy
 import { RequestCodeLenses } from './code-lens';
 import type { SecretStore } from '../secrets/secret-store';
 import { liveSystemContext } from '../system-context';
-import { readRequestSettings } from './settings';
+import { readRequestSettings, readSpillLimits, readStreamSettings } from './settings';
 import { variablesFor } from './variables';
 
 interface Target {
@@ -47,6 +49,17 @@ function defaultSaveUri(slot: ResponseSlot): vscode.Uri | undefined {
       ? vscode.Uri.file(path.dirname(slot.documentUri.fsPath))
       : vscode.workspace.workspaceFolders?.[0]?.uri;
   return folder ? vscode.Uri.joinPath(folder, name) : undefined;
+}
+
+function openSpillArea(context: vscode.ExtensionContext): Promise<SpillArea> {
+  const limits = readSpillLimits();
+  if (!limits.ok) {
+    void vscode.window.showErrorMessage(limits.message);
+  }
+  return SpillArea.open(
+    path.join(context.globalStorageUri.fsPath, 'spill'),
+    limits.ok ? limits.limits : defaultSpillLimits,
+  );
 }
 
 async function showBlocked(document: vscode.TextDocument, run: RunSnapshot): Promise<void> {
@@ -85,6 +98,7 @@ export function registerRequestFeatures(
     );
     return choice === 'Send';
   });
+  const spill = openSpillArea(context);
   const files = new ResponseFileSystem();
   const presenter = new ResponsePresenter(
     files,
@@ -137,12 +151,18 @@ export function registerRequestFeatures(
       void vscode.window.showErrorMessage(settings.message);
       return;
     }
+    const limits = readStreamSettings(found.document.uri);
+    if (!limits.ok) {
+      void vscode.window.showErrorMessage(limits.message);
+      return;
+    }
     const { document, file, request, key } = found;
     const prepared = await variablesFor(document, file, request, environments, secrets);
     if (!prepared) {
       return;
     }
     const restricted = !vscode.workspace.isTrusted;
+    const area = await spill;
     logRunStart(log, request.requestLine.method, request.requestLine.url);
     const run = await registry.start({
       key,
@@ -154,6 +174,8 @@ export function registerRequestFeatures(
       variables: prepared.variables,
       restricted,
       confirmSend: restricted ? confirmRestrictedSend : undefined,
+      spill: area,
+      limits: limits.limits,
     }).done;
     logRunEnd(log, run);
     if (registry.latest(key)?.id !== run.id) {
@@ -228,6 +250,11 @@ export function registerRequestFeatures(
     {
       dispose: () => {
         registry.dispose();
+      },
+    },
+    {
+      dispose: () => {
+        void spill.then((area) => area.dispose());
       },
     },
     vscode.workspace.registerFileSystemProvider(responseScheme, files, {

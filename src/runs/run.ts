@@ -1,5 +1,9 @@
+import { StreamSession } from '../events/session';
+import type { SpillArea, SpillFile } from '../events/spill';
 import type { Directive, DirectiveKind, HttpFile, HttpRequest } from '../http-file/model';
 import { formatBytes } from '../response/labels';
+import type { FormatDecision, StreamDirective } from '../streaming/detect';
+import type { StreamLimits } from '../streaming/limits';
 import type {
   FailureKind,
   Outcome,
@@ -17,6 +21,7 @@ import type { SystemContext } from '../variables/system';
 import type { BodyFileContext } from './body-files';
 import { buildOutgoingRequest, type BuildResult } from './build-request';
 import { parseDuration } from './duration';
+import { RawTail } from './raw-tail';
 
 export type RunStatus = 'sending' | 'receiving' | 'completed' | 'failed' | 'cancelled' | 'blocked';
 
@@ -38,6 +43,9 @@ export interface RunSnapshot {
   timing: Timing | undefined;
   wireBytes: number;
   body: Uint8Array;
+  bodyKept: boolean;
+  stream: StreamSession | undefined;
+  raw: RawTail;
   failure: RunFailure | undefined;
   problems: readonly ResolutionProblem[];
   sensitiveValues: readonly string[];
@@ -63,6 +71,8 @@ export interface RunInput {
   variables: Omit<VariableSources, 'system' | 'restricted'>;
   restricted: boolean;
   confirmSend: (() => Promise<boolean>) | undefined;
+  spill: SpillArea;
+  limits: StreamLimits;
 }
 
 export interface RunDependencies {
@@ -76,11 +86,22 @@ export interface RunHandle {
   readonly done: Promise<RunSnapshot>;
   snapshot(): RunSnapshot;
   cancel(): void;
+  onUpdate(listener: () => void): () => void;
+  release(): Promise<void>;
 }
 
 type RunState = Omit<RunSnapshot, 'elapsedMs'>;
 
 const timeoutMessage = 'Expected a duration such as 500ms, 30s or 5m.';
+const rawTailChars = 2_097_152;
+const streamDirectives: ReadonlySet<string> = new Set<StreamDirective>([
+  'sse',
+  'ndjson',
+  'json',
+  'text',
+  'raw',
+  'auto',
+]);
 let nextRunId = 1;
 
 function lastDirective(request: HttpRequest, kind: DirectiveKind): Directive | undefined {
@@ -89,6 +110,40 @@ function lastDirective(request: HttpRequest, kind: DirectiveKind): Directive | u
 
 function hasDirective(request: HttpRequest, kind: DirectiveKind): boolean {
   return lastDirective(request, kind) !== undefined;
+}
+
+function isStreamDirective(argument: string): argument is StreamDirective {
+  return streamDirectives.has(argument);
+}
+
+function streamDirective(request: HttpRequest): StreamDirective | undefined {
+  const argument = lastDirective(request, 'stream')?.argument;
+  return argument !== undefined && isStreamDirective(argument) ? argument : undefined;
+}
+
+function isEventFormat(decision: FormatDecision | undefined): boolean {
+  return decision?.format === 'sse' || decision?.format === 'ndjson';
+}
+
+function contentTypeOf(head: ResponseHead): string | undefined {
+  return head.headers.find(([name]) => name.toLowerCase() === 'content-type')?.[1];
+}
+
+function drained(session: StreamSession): Promise<void> {
+  return new Promise((resolve) => {
+    const stop = session.onDrain(() => {
+      stop();
+      resolve();
+    });
+  });
+}
+
+async function createSpillFile(area: SpillArea): Promise<SpillFile | undefined> {
+  try {
+    return await area.create();
+  } catch {
+    return undefined;
+  }
 }
 
 export function requestKey(documentUri: string, request: HttpRequest, index: number): string {
@@ -106,10 +161,14 @@ export function startRun(
   const id = nextRunId++;
   const controller = new AbortController();
   const chunks: Uint8Array[] = [];
+  const listeners = new Set<() => void>();
+  const raw = new RawTail(rawTailChars);
   let received = 0;
   let cancelled = false;
   let tooLarge = false;
   let endedAt: number | undefined;
+  let session: StreamSession | undefined;
+  let spillFile: SpillFile | undefined;
   const state: RunState = {
     id,
     key: input.key,
@@ -122,6 +181,9 @@ export function startRun(
     timing: undefined,
     wireBytes: 0,
     body: new Uint8Array(),
+    bodyKept: true,
+    stream: undefined,
+    raw,
     failure: undefined,
     problems: [],
     sensitiveValues: [],
@@ -132,8 +194,38 @@ export function startRun(
     elapsedMs: (endedAt ?? dependencies.clock()) - state.startedAt,
   });
   const wasCancelled = (): boolean => cancelled;
+  const update = (): void => {
+    for (const listener of listeners) {
+      listener();
+    }
+  };
   const notify = (): void => {
     onChange?.(snapshot());
+    update();
+  };
+  const dropBodyOfEvents = (stream: StreamSession): void => {
+    if (state.bodyKept && isEventFormat(stream.format)) {
+      state.bodyKept = false;
+      chunks.length = 0;
+      received = 0;
+    }
+  };
+  const closeStream = async (completed: boolean): Promise<void> => {
+    if (session === undefined) {
+      await spillFile?.delete();
+      return;
+    }
+    if (completed) {
+      raw.end();
+      session.end();
+      dropBodyOfEvents(session);
+    } else {
+      session.stop();
+    }
+  };
+  const cancel = (): void => {
+    cancelled = true;
+    controller.abort();
   };
   const finish = (changes: Partial<RunState>): RunSnapshot => {
     Object.assign(state, changes, { body: Buffer.concat(chunks) });
@@ -148,24 +240,38 @@ export function startRun(
       state.sent = sent;
     },
     onHead: (head, sent) => {
-      Object.assign(state, { head, sent, status: 'receiving' });
+      session = new StreamSession({
+        contentType: contentTypeOf(head),
+        directive: streamDirective(request),
+        spill: spillFile,
+        now: () => dependencies.clock(),
+        onUpdate: update,
+        onText: () => undefined,
+        limits: input.limits,
+      });
+      Object.assign(state, { head, sent, status: 'receiving', stream: session });
       notify();
     },
     onData: (chunk) => {
-      if (tooLarge) {
+      if (tooLarge || session === undefined) {
         return undefined;
       }
-      const room = settings.maxBodyBytes - received;
-      if (chunk.length > room) {
-        chunks.push(chunk.subarray(0, room));
-        received += room;
-        tooLarge = true;
-        controller.abort();
-        return undefined;
+      raw.push(chunk);
+      const accepted = session.write(chunk);
+      dropBodyOfEvents(session);
+      if (state.bodyKept) {
+        const room = settings.maxBodyBytes - received;
+        if (chunk.length > room) {
+          chunks.push(chunk.subarray(0, room));
+          received += room;
+          tooLarge = true;
+          controller.abort();
+          return undefined;
+        }
+        chunks.push(chunk);
+        received += chunk.length;
       }
-      chunks.push(chunk);
-      received += chunk.length;
-      return undefined;
+      return accepted ? undefined : drained(session);
     },
   };
 
@@ -232,10 +338,12 @@ export function startRun(
       followRedirects: settings.followRedirects && !hasDirective(request, 'no-redirect'),
       maxRedirects: settings.maxRedirects,
     };
+    spillFile = await createSpillFile(input.spill);
     let outcome: Outcome;
     try {
       outcome = await dependencies.transport.send(built.request, options, sink, controller.signal);
     } catch (error) {
+      await closeStream(false);
       const reason = error instanceof Error ? error.message : String(error);
       return finish({
         status: 'failed',
@@ -245,6 +353,7 @@ export function startRun(
         },
       });
     }
+    await closeStream(outcome.kind === 'completed');
     const exchange = { hops: outcome.hops, timing: outcome.timing, wireBytes: outcome.wireBytes };
     if (outcome.kind === 'completed') {
       return finish({ ...exchange, status: 'completed' });
@@ -270,9 +379,17 @@ export function startRun(
     id,
     done: Promise.resolve().then(run),
     snapshot,
-    cancel: () => {
-      cancelled = true;
-      controller.abort();
+    cancel,
+    onUpdate: (listener) => {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
+    },
+    release: async () => {
+      cancel();
+      session?.dispose();
+      await spillFile?.delete();
     },
   };
 }

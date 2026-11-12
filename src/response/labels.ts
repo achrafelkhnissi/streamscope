@@ -76,10 +76,19 @@ export function describeOutcome(run: RunSnapshot): string {
   return maskValues(outcomeText(run), run.sensitiveValues);
 }
 
+function eventCount(run: RunSnapshot): string | undefined {
+  if (run.bodyKept || run.stream === undefined) {
+    return undefined;
+  }
+  const count = run.stream.store.count;
+  return `${String(count)} ${count === 1 ? 'event' : 'events'}`;
+}
+
 function outcomeText(run: RunSnapshot): string {
+  const events = eventCount(run);
   switch (run.status) {
     case 'completed':
-      return `${String(run.head?.status ?? '')} ${run.head?.statusText ?? ''} · ${formatBytes(run.body.length)} · ${formatDuration(run.elapsedMs)}`;
+      return `${String(run.head?.status ?? '')} ${run.head?.statusText ?? ''} · ${events ?? formatBytes(run.body.length)} · ${formatDuration(run.elapsedMs)}`;
     case 'failed':
       return `Failed: ${run.failure?.message ?? ''}`;
     case 'cancelled':
@@ -87,6 +96,8 @@ function outcomeText(run: RunSnapshot): string {
     case 'blocked':
       return `Not sent: ${run.problems[0]?.message ?? ''}`;
     default:
-      return `Running · ${formatDuration(run.elapsedMs)}`;
+      return events === undefined
+        ? `Running · ${formatDuration(run.elapsedMs)}`
+        : `Running · ${events} · ${formatDuration(run.elapsedMs)}`;
   }
 }

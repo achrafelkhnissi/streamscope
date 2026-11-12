@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { StreamSession } from '../../../src/events/session';
 import { parseHttpFile } from '../../../src/http-file/parse';
 import {
   bodyExtension,
@@ -10,6 +11,21 @@ import {
   saveExtension,
 } from '../../../src/response/labels';
 import { snapshot } from './fixtures';
+
+function streamOf(count: number): StreamSession {
+  const session = new StreamSession({
+    contentType: 'application/x-ndjson',
+    directive: undefined,
+    spill: undefined,
+    now: () => 0,
+    onUpdate: () => undefined,
+    onText: () => undefined,
+  });
+  session.write(new TextEncoder().encode('{"type":"TEXT_MESSAGE_CONTENT"}\n'.repeat(count)));
+  session.end();
+  session.dispose();
+  return session;
+}
 
 function requests(...lines: string[]) {
   return parseHttpFile(lines.join('\n')).requests;
@@ -103,6 +119,25 @@ describe('labels', () => {
     expect(describeOutcome(snapshot({ status: 'receiving', elapsedMs: 2100 }))).toBe(
       'Running · 2.1 s',
     );
+  });
+
+  it('counts events in the outcome of a stream', () => {
+    const stream = { body: new Uint8Array(), bodyKept: false };
+
+    expect(
+      describeOutcome(
+        snapshot({ ...stream, status: 'receiving', elapsedMs: 2100, stream: streamOf(34) }),
+      ),
+    ).toBe('Running · 34 events · 2.1 s');
+    expect(describeOutcome(snapshot({ ...stream, elapsedMs: 4300, stream: streamOf(120) }))).toBe(
+      '200 OK · 120 events · 4.3 s',
+    );
+    expect(describeOutcome(snapshot({ ...stream, elapsedMs: 900, stream: streamOf(1) }))).toBe(
+      '200 OK · 1 event · 900 ms',
+    );
+    expect(
+      describeOutcome(snapshot({ status: 'receiving', elapsedMs: 2100, stream: streamOf(0) })),
+    ).toBe('Running · 2.1 s');
   });
 
   it('masks sensitive values in the outcome text', () => {

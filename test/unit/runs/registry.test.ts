@@ -3,10 +3,11 @@ import { RunRegistry } from '../../../src/runs/registry';
 import type { RunStatus } from '../../../src/runs/run';
 import { startHttpServer, type LocalServer } from '../../support/servers';
 import { waitFor } from '../transport/harness';
-import { dependencies, runInput } from './support';
+import { dependencies, runInput, useSpillArea } from './support';
 
 const servers: LocalServer[] = [];
 const registries: RunRegistry[] = [];
+useSpillArea();
 
 function registry(): RunRegistry {
   const created = new RunRegistry(dependencies);
