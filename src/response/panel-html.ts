@@ -23,7 +23,7 @@ const panelContents: Record<PanelView, string> = {
   raw: '<pre id="raw"></pre>',
   headers: '<pre id="headers"></pre>',
   body: '<p id="body-note"></p><pre id="body"></pre>',
-  checks: '<p id="checks">No checks for this response.</p>',
+  checks: '<p id="checks">No checks for this request.</p>',
 };
 
 const styles = `
@@ -49,6 +49,7 @@ button:focus-visible, .list:focus-visible { outline: 1px solid var(--vscode-focu
 .panel.on { display: block; }
 #panel-events.on { display: flex; }
 .list { position: relative; flex: 1; overflow-y: auto; overflow-x: hidden; font-family: var(--vscode-editor-font-family); font-size: var(--vscode-editor-font-size); }
+#spacer { position: relative; overflow: hidden; }
 .row { position: absolute; left: 0; right: 0; height: 22px; line-height: 22px; padding: 0 12px; display: flex; gap: 12px; white-space: nowrap; cursor: pointer; }
 .row:hover { background: var(--vscode-list-hoverBackground); }
 .row[aria-selected="true"] { background: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); }
@@ -61,8 +62,9 @@ button:focus-visible, .list:focus-visible { outline: 1px solid var(--vscode-focu
 .row[data-kind="comment"] .label, .row[data-kind="comment"] .preview { font-style: italic; }
 .detail { position: absolute; left: 24px; right: 12px; padding: 8px 12px; border-left: 2px solid var(--vscode-focusBorder); background: var(--vscode-textBlockQuote-background); }
 .detail pre { margin: 0 0 8px; padding: 0; max-height: 300px; overflow: auto; word-break: break-all; }
+.detail p { padding: 0 0 8px; }
 pre { margin: 0; padding: 8px 12px; font-family: var(--vscode-editor-font-family); font-size: var(--vscode-editor-font-size); white-space: pre-wrap; word-break: break-word; }
-#raw .line { white-space: pre; }
+#raw .line { white-space: pre; min-height: 1lh; }
 .key, .field { color: var(--vscode-symbolIcon-propertyForeground); }
 .string { color: var(--vscode-debugTokenExpression-string); }
 .number { color: var(--vscode-debugTokenExpression-number); }

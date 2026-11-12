@@ -144,4 +144,16 @@ describe('panelHtml', () => {
     expect(page).toContain('role="listbox"');
     expect(page).toContain('role="status"');
   });
+
+  it('says there are no checks for this request', () => {
+    expect(html()).toContain('<p id="checks">No checks for this request.</p>');
+  });
+
+  it('clips the rows to the spacer so they never stretch the scroll range', () => {
+    expect(html()).toContain('#spacer { position: relative; overflow: hidden; }');
+  });
+
+  it('gives an empty raw line the height of a line', () => {
+    expect(html()).toContain('#raw .line { white-space: pre; min-height: 1lh; }');
+  });
 });

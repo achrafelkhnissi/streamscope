@@ -28,28 +28,43 @@ const problemMatcherPlugin = {
   },
 };
 
-const context = await esbuild.context({
-  entryPoints: {
-    extension: 'src/extension.ts',
-    'format-worker': 'src/response/format-worker.ts',
-  },
-  outdir: 'dist',
-  bundle: true,
-  format: 'cjs',
-  platform: 'node',
-  target: 'node22',
-  external: ['vscode'],
-  minify: production,
-  sourcemap: !production,
-  sourcesContent: false,
-  keepNames: true,
-  logLevel: 'silent',
-  plugins: [problemMatcherPlugin],
-});
+const contexts = await Promise.all([
+  esbuild.context({
+    entryPoints: {
+      extension: 'src/extension.ts',
+      'format-worker': 'src/response/format-worker.ts',
+    },
+    outdir: 'dist',
+    bundle: true,
+    format: 'cjs',
+    platform: 'node',
+    target: 'node22',
+    external: ['vscode'],
+    minify: production,
+    sourcemap: !production,
+    sourcesContent: false,
+    keepNames: true,
+    logLevel: 'silent',
+    plugins: [problemMatcherPlugin],
+  }),
+  esbuild.context({
+    entryPoints: { 'response-view': 'src/webview/main.ts' },
+    outdir: 'dist',
+    bundle: true,
+    format: 'iife',
+    platform: 'browser',
+    target: 'es2023',
+    minify: production,
+    sourcemap: !production,
+    sourcesContent: false,
+    logLevel: 'silent',
+    plugins: [problemMatcherPlugin],
+  }),
+]);
 
 if (watch) {
-  await context.watch();
+  await Promise.all(contexts.map((context) => context.watch()));
 } else {
-  await context.rebuild();
-  await context.dispose();
+  await Promise.all(contexts.map((context) => context.rebuild()));
+  await Promise.all(contexts.map((context) => context.dispose()));
 }
