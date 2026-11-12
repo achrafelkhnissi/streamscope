@@ -79,7 +79,7 @@ export function registerRequestFeatures(
       {
         modal: true,
         detail:
-          'Streamscope does not read secrets, .env files, http-client.private.env.json, process variables or body files here, and ignores # @insecure.',
+          'Streamscope does not read secrets, .env files, http-client.private.env.json, environments from your user settings, process variables or body files here, and ignores # @insecure.',
       },
       'Send',
     );
@@ -132,13 +132,13 @@ export function registerRequestFeatures(
       );
       return;
     }
-    const settings = await readRequestSettings(found.document.uri);
+    const settings = await readRequestSettings(found.document.uri, !vscode.workspace.isTrusted);
     if (!settings.ok) {
       void vscode.window.showErrorMessage(settings.message);
       return;
     }
     const { document, file, request, key } = found;
-    const prepared = await variablesFor(document.uri, file, request, environments, secrets);
+    const prepared = await variablesFor(document, file, request, environments, secrets);
     if (!prepared) {
       return;
     }

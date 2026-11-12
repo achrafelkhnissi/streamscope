@@ -30,7 +30,7 @@ export function registerEnvironmentPicker(
       await store.setActive(name === '' ? undefined : name);
       return;
     }
-    const { catalog } = await store.catalogFor(vscode.window.activeTextEditor?.document.uri);
+    const catalog = await store.catalogFor(vscode.window.activeTextEditor?.document.uri);
     const picked = await vscode.window.showQuickPick(
       [
         ...catalog.names.map((label) => ({

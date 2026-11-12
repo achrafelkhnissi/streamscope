@@ -269,4 +269,48 @@ describe('http language features', () => {
       await vscode.commands.executeCommand('streamscope.clearSecret', 'integrationMoveToken');
     }
   });
+
+  it('hides URL passwords on hover', async () => {
+    const document = await open(
+      'hover-url.http',
+      ['@base = https://user:synthetic-password@api.example.test', 'GET {{base}}/items'].join('\n'),
+    );
+
+    const text = await hoverText(document, new vscode.Position(1, 7));
+
+    assert.ok(!text.includes('synthetic-password'), text);
+  });
+
+  it('shows hovered values as plain text', async () => {
+    const document = await open(
+      'hover-markdown.http',
+      [
+        '@note = ![x](https://tracker.example.test/pixel)',
+        'GET https://api.example.test/{{note}}',
+      ].join('\n'),
+    );
+
+    const text = await hoverText(document, new vscode.Position(1, 32));
+
+    assert.ok(text.includes('tracker'), text);
+    assert.ok(!text.includes('![x]('), text);
+  });
+
+  it('replaces the typed part of a directive when completing it', async () => {
+    const document = await open(
+      'directive-range.http',
+      ['# @no-', 'GET https://api.example.test/items'].join('\n'),
+    );
+
+    const list = await vscode.commands.executeCommand<vscode.CompletionList>(
+      'vscode.executeCompletionItemProvider',
+      document.uri,
+      new vscode.Position(0, 6),
+    );
+    const item = list.items.find((entry) => entry.label === 'no-redirect');
+    assert.ok(item, 'no-redirect is not offered');
+    const range = item.range instanceof vscode.Range ? item.range : item.range?.replacing;
+    assert.equal(range?.start.character, 3);
+    assert.equal(range.end.character, 6);
+  });
 });

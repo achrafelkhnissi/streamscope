@@ -159,6 +159,27 @@ describe('secret, .env and process variables', () => {
     ).toEqual(['pathKey', 'apiToken', 'envKey']);
   });
 
+  it('never repeats a looked-up name when % indirection fails', () => {
+    const sources = {
+      ...loaded,
+      environmentName: 'dev',
+      environment: sourced({ apiToken: 'synthetic-token-value' }, 'dev environment (settings)'),
+    };
+
+    const processMessage = problem(
+      sources,
+      'GET https://api.example.test/{{$processEnv %apiToken}}',
+    );
+    const dotenvMessage = problem(sources, 'GET https://api.example.test/{{$dotenv %apiToken}}');
+
+    expect(processMessage).toBe(
+      "`{{$processEnv %apiToken}}`: the variable named by `{{apiToken}}` is not set in VS Code's environment.",
+    );
+    expect(dotenvMessage).toBe(
+      `\`{{$dotenv %apiToken}}\`: the key named by \`{{apiToken}}\` is not in ${dotenvPath}.`,
+    );
+  });
+
   it('keeps $aadToken unsupported', () => {
     expect(problem({}, 'GET https://api.example.test/{{$aadToken}}')).toContain(
       'not supported yet',

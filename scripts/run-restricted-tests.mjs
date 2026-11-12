@@ -19,6 +19,7 @@ writeFileSync(
     'security.workspace.trust.enabled': true,
     'security.workspace.trust.startupPrompt': 'never',
     'security.workspace.trust.banner': 'never',
+    'rest-client.environmentVariables': { $shared: { userToken: 'synthetic-user-token' } },
   }),
 );
 

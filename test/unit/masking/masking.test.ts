@@ -129,6 +129,14 @@ describe('masking', () => {
     ).toBe('a=••••••;b=••••••');
   });
 
+  it('masks percent-encoded forms of a value', () => {
+    expect(
+      maskValues('a=synthetic%20pass%22w&b=synthetic+pass%22w&c=synthetic pass"w', [
+        'synthetic pass"w',
+      ]),
+    ).toBe('a=••••••&b=••••••&c=••••••');
+  });
+
   it('ignores empty values', () => {
     expect(maskValues('abc', [''])).toBe('abc');
   });

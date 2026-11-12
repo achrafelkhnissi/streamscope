@@ -20,7 +20,6 @@ export const emptyVariables: Omit<VariableSources, 'system' | 'restricted'> = {
   secrets: new Map(),
   dotenv: { kind: 'missing' },
   processEnv: {},
-  privateFileIgnored: false,
 };
 
 export const dependencies: RunDependencies = {

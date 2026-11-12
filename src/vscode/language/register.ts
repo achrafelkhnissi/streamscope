@@ -78,6 +78,7 @@ export function registerLanguageFeatures(
   const update = async (document: vscode.TextDocument): Promise<void> => {
     const version = document.version;
     const file = cache.get(document);
+    diagnostics.set(document.uri, file.diagnostics.map(toDiagnostic));
     const sources = await variables.sourcesFor(document);
     if (document.isClosed || document.version !== version) {
       return;

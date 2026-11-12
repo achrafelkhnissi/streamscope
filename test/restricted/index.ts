@@ -58,13 +58,16 @@ async function blocksEverythingRestricted(folder: string): Promise<void> {
       `POST ${server.url}/upload`,
       '',
       '< ./payload.json',
+      '',
+      '###',
+      `GET ${server.url}/{{userToken}}`,
     ];
     const file = path.join(folder, 'requests.http');
     writeFileSync(file, lines.join('\n'));
     const uri = vscode.Uri.file(file);
     const document = await vscode.workspace.openTextDocument(uri);
     await vscode.window.showTextDocument(document);
-    const requestLines = [0, 4, 7, 10, 13];
+    const requestLines = [0, 4, 7, 10, 13, 18];
     for (const line of requestLines) {
       await vscode.commands.executeCommand('streamscope.sendRequest', uri, line);
     }
@@ -75,14 +78,49 @@ async function blocksEverythingRestricted(folder: string): Promise<void> {
     assert.equal(titles.get(7), restrictedMessage('$processEnv HOME'));
     assert.equal(
       titles.get(10),
-      'Not sent: `{{privateOnly}}` is not defined in this file or `$shared` (no environment selected). A restricted workspace does not read http-client.private.env.json.',
+      'Not sent: `{{privateOnly}}` is not defined in this file or `$shared` (no environment selected). A restricted workspace does not read http-client.private.env.json or environments from your user settings.',
     );
     assert.equal(
       titles.get(13),
       'Not sent: Body files are not read in a restricted workspace. Trust the workspace to send them.',
     );
+    assert.equal(
+      titles.get(18),
+      'Not sent: `{{userToken}}` is not defined in this file or `$shared` (no environment selected). A restricted workspace does not read http-client.private.env.json or environments from your user settings.',
+    );
     assert.equal(server.sockets.opened, 0);
   } finally {
+    await server.close();
+  }
+}
+
+async function refusesARelativeUserCaFile(folder: string): Promise<void> {
+  const server = await startHttpServer((_request, response) => {
+    response.end('should not be reached');
+  });
+  const settings = vscode.workspace.getConfiguration('streamscope.request');
+  await settings.update('caFile', 'workspace-ca.pem', vscode.ConfigurationTarget.Global);
+  try {
+    const file = path.join(folder, 'plain.http');
+    writeFileSync(file, `GET ${server.url}/plain`);
+    const uri = vscode.Uri.file(file);
+    await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(uri));
+    const finished = await Promise.race([
+      vscode.commands.executeCommand('streamscope.sendRequest', uri, 0).then(() => true),
+      new Promise<boolean>((resolve) =>
+        setTimeout(() => {
+          resolve(false);
+        }, 5000),
+      ),
+    ]);
+
+    assert.ok(
+      finished,
+      'the send waited for a confirmation instead of refusing the relative caFile',
+    );
+    assert.equal(server.sockets.opened, 0);
+  } finally {
+    await settings.update('caFile', undefined, vscode.ConfigurationTarget.Global);
     await server.close();
   }
 }
@@ -115,4 +153,5 @@ export async function run(): Promise<void> {
   assert.equal(vscode.workspace.getConfiguration('streamscope.request').get('caFile'), '');
   await blocksEverythingRestricted(folder);
   await usesOnlyTheFolderForItsOwnFiles(folder);
+  await refusesARelativeUserCaFile(folder);
 }

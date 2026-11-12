@@ -15,5 +15,4 @@ export interface VariableSources {
   secrets: ReadonlyMap<string, string>;
   dotenv: DotenvState;
   processEnv: Readonly<Record<string, string | undefined>>;
-  privateFileIgnored: boolean;
 }

@@ -53,7 +53,7 @@
   "capabilities": {
     "untrustedWorkspaces": {
       "supported": "limited",
-      "description": "In a restricted workspace Streamscope asks once before sending, never reads secrets, .env files, http-client.private.env.json, process environment variables or body files, ignores # @insecure, and uses only your own streamscope.request.caFile.",
+      "description": "In a restricted workspace Streamscope asks once before sending, never reads secrets, .env files, http-client.private.env.json, environments from your user settings, process environment variables or body files, ignores # @insecure, and uses only your own absolute streamscope.request.caFile.",
       "restrictedConfigurations": [
         "streamscope.request.caFile"
       ]

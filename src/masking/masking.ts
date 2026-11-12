@@ -48,8 +48,13 @@ export function looksLikeCredential(name: string): boolean {
   return credentialWords.some((word) => normalized.includes(word));
 }
 
+function encodedForms(value: string): string[] {
+  const component = encodeURIComponent(value);
+  return [value, component, component.replace(/%20/g, '+'), encodeURI(value)];
+}
+
 export function maskValues(text: string, values: readonly string[]): string {
-  return [...values]
+  return [...new Set(values.flatMap(encodedForms))]
     .filter((value) => value !== '')
     .sort((a, b) => b.length - a.length)
     .reduce((masked, value) => masked.split(value).join(maskedValue), text);

@@ -1,6 +1,10 @@
 import * as path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { parseEnvironmentFile, parseSettingsEnvironments } from '../../../src/environments/parse';
+import {
+  mergeEnvironmentSettings,
+  parseEnvironmentFile,
+  parseSettingsEnvironments,
+} from '../../../src/environments/parse';
 import type { EnvironmentLayer } from '../../../src/environments/model';
 
 const file = { kind: 'file', path: path.join('w', 'http-client.env.json') } as const;
@@ -88,5 +92,19 @@ describe('environment parsing', () => {
     expect(parseSettingsEnvironments(undefined).environments.size).toBe(0);
     expect(parseSettingsEnvironments('dev').environments.size).toBe(0);
     expect(parseSettingsEnvironments({ dev: 'host' }).environments.size).toBe(0);
+  });
+
+  it('merges workspace and folder settings, folder last, environment by environment', () => {
+    expect(
+      mergeEnvironmentSettings([
+        { $shared: { a: 'workspace', b: 'workspace' }, dev: { c: 'workspace' } },
+        undefined,
+        { $shared: { b: 'folder' }, prod: { d: 'folder' } },
+      ]),
+    ).toEqual({
+      $shared: { a: 'workspace', b: 'folder' },
+      dev: { c: 'workspace' },
+      prod: { d: 'folder' },
+    });
   });
 });

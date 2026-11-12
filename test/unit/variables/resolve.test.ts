@@ -335,14 +335,14 @@ describe('resolveRequest', () => {
     expect(result.ok && result.sensitiveValues).toEqual(['synthetic-token', 'synthetic-key']);
   });
 
-  it('adds the restricted-workspace hint for undefined variables when the private file was ignored', () => {
+  it('adds the restricted-workspace hint to undefined variables', () => {
     const result = resolveWith(
-      { environmentName: 'dev', privateFileIgnored: true },
+      { environmentName: 'dev', restricted: true },
       'GET https://api.example.test/{{token}}',
     );
 
     expect(!result.ok && result.problems[0]?.message).toBe(
-      '`{{token}}` is not defined in this file, the `dev` environment or `$shared`. A restricted workspace does not read http-client.private.env.json.',
+      '`{{token}}` is not defined in this file, the `dev` environment or `$shared`. A restricted workspace does not read http-client.private.env.json or environments from your user settings.',
     );
   });
 });

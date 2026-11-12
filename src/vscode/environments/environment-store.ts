@@ -5,7 +5,11 @@ import type {
   EnvironmentLayer,
   EnvironmentOrigin,
 } from '../../environments/model';
-import { parseEnvironmentFile, parseSettingsEnvironments } from '../../environments/parse';
+import {
+  mergeEnvironmentSettings,
+  parseEnvironmentFile,
+  parseSettingsEnvironments,
+} from '../../environments/parse';
 
 const activeKey = 'streamscope.activeEnvironment';
 const publicFileName = 'http-client.env.json';
@@ -14,11 +18,6 @@ const privateFileName = 'http-client.private.env.json';
 interface CachedLayer {
   version: string;
   layer: EnvironmentLayer | undefined;
-}
-
-export interface CatalogResult {
-  catalog: EnvironmentCatalog;
-  privateFileIgnored: boolean;
 }
 
 export class EnvironmentStore implements vscode.Disposable {
@@ -61,10 +60,15 @@ export class EnvironmentStore implements vscode.Disposable {
     this.changed.fire();
   }
 
-  async catalogFor(document: vscode.Uri | undefined): Promise<CatalogResult> {
+  async catalogFor(document: vscode.Uri | undefined): Promise<EnvironmentCatalog> {
+    const trusted = vscode.workspace.isTrusted;
+    const settings = vscode.workspace.getConfiguration('rest-client', document);
+    const inspected = settings.inspect('environmentVariables');
     const layers: EnvironmentLayer[] = [
       parseSettingsEnvironments(
-        vscode.workspace.getConfiguration('rest-client', document).get('environmentVariables'),
+        trusted
+          ? settings.get('environmentVariables')
+          : mergeEnvironmentSettings([inspected?.workspaceValue, inspected?.workspaceFolderValue]),
       ),
     ];
     const publicFile = await this.find(document, publicFileName);
@@ -74,9 +78,8 @@ export class EnvironmentStore implements vscode.Disposable {
         layers.push(layer);
       }
     }
-    const privateFile = await this.find(document, privateFileName);
-    const trusted = vscode.workspace.isTrusted;
-    if (privateFile && trusted) {
+    const privateFile = trusted ? await this.find(document, privateFileName) : undefined;
+    if (privateFile) {
       const layer = await this.read(privateFile, {
         kind: 'private-file',
         path: privateFile.fsPath,
@@ -85,10 +88,7 @@ export class EnvironmentStore implements vscode.Disposable {
         layers.push(layer);
       }
     }
-    return {
-      catalog: environmentCatalog(layers, this.active()),
-      privateFileIgnored: privateFile !== undefined && !trusted,
-    };
+    return environmentCatalog(layers, this.active());
   }
 
   dispose(): void {
@@ -139,8 +139,7 @@ export class EnvironmentStore implements vscode.Disposable {
     if (cached?.version === version) {
       return cached.layer;
     }
-    const text = new TextDecoder().decode(await vscode.workspace.fs.readFile(uri));
-    const parsed = parseEnvironmentFile(text, origin);
+    const parsed = await this.parse(uri, origin, stat);
     if (!parsed.ok) {
       const warning = `${uri.toString()}@${version}`;
       if (!this.warned.has(warning)) {
@@ -152,5 +151,23 @@ export class EnvironmentStore implements vscode.Disposable {
     const layer = parsed.ok ? parsed.layer : undefined;
     this.cache.set(uri.toString(), { version, layer });
     return layer;
+  }
+
+  private async parse(
+    uri: vscode.Uri,
+    origin: EnvironmentOrigin,
+    stat: vscode.FileStat,
+  ): Promise<{ ok: true; layer: EnvironmentLayer } | { ok: false; message: string }> {
+    const name = uri.path.slice(uri.path.lastIndexOf('/') + 1);
+    if (!(stat.type & vscode.FileType.File)) {
+      return { ok: false, message: `${name} is not a file, so Streamscope ignores it.` };
+    }
+    let bytes: Uint8Array;
+    try {
+      bytes = await vscode.workspace.fs.readFile(uri);
+    } catch {
+      return { ok: false, message: `${name} could not be read, so Streamscope ignores it.` };
+    }
+    return parseEnvironmentFile(new TextDecoder().decode(bytes), origin);
   }
 }

@@ -60,7 +60,7 @@ const dotenvPattern = /^\$dotenv\s+(%)?([\w.-]+)$/;
 const processEnvPattern = /^\$processEnv\s+(%)?(\w+)$/;
 const sharedName = '$shared';
 
-function unescape(value: string): string {
+export function unescapeFileVariable(value: string): string {
   return value.replace(escapePattern, (_, character: string) => escapes[character] ?? character);
 }
 
@@ -99,6 +99,10 @@ function substitute(text: string, evaluate: (expression: string) => Evaluated): 
 
 function failure(expression: string, message: string): Evaluated {
   return { ok: false, failures: [{ expression, message, range: undefined, inEnvironment: false }] };
+}
+
+function lookedUp(written: string, indirect: boolean, name: string, kind: string): string {
+  return indirect ? `the ${kind} named by ${quoted(written)}` : name;
 }
 
 function formatProblem(expression: string, format: string): Evaluated {
@@ -180,8 +184,8 @@ class Scope implements VariableScope {
       environment === undefined
         ? `in this file or \`${sharedName}\` (no environment selected)`
         : `in this file, the \`${environment}\` environment or \`${sharedName}\``;
-    const hint = this.sources.privateFileIgnored
-      ? ' A restricted workspace does not read http-client.private.env.json.'
+    const hint = this.sources.restricted
+      ? ' A restricted workspace does not read http-client.private.env.json or environments from your user settings.'
       : '';
     return `${quoted(name)} is not defined ${where}.${hint}`;
   }
@@ -269,7 +273,10 @@ class Scope implements VariableScope {
     }
     const value = dotenv.values.get(name.value);
     if (value === undefined) {
-      return failure(expression, `${quoted(expression)}: ${name.value} is not in ${dotenv.path}.`);
+      return failure(
+        expression,
+        `${quoted(expression)}: ${lookedUp(match[2], match[1] !== undefined, name.value, 'key')} is not in ${dotenv.path}.`,
+      );
     }
     return looksLikeCredential(name.value) ? this.sensitiveValue(value) : { ok: true, value };
   }
@@ -290,7 +297,7 @@ class Scope implements VariableScope {
     if (value === undefined) {
       return failure(
         expression,
-        `${quoted(expression)}: ${name.value} is not set in VS Code's environment.`,
+        `${quoted(expression)}: ${lookedUp(match[2], match[1] !== undefined, name.value, 'variable')} is not set in VS Code's environment.`,
       );
     }
     return looksLikeCredential(name.value) ? this.sensitiveValue(value) : { ok: true, value };
@@ -332,7 +339,7 @@ class Scope implements VariableScope {
       };
     }
     const inner = [...stack, identity];
-    const substituted = substitute(unescape(variable.value), (expression) =>
+    const substituted = substitute(unescapeFileVariable(variable.value), (expression) =>
       this.evaluateWithin(expression, inner),
     );
     const evaluated = this.remember(

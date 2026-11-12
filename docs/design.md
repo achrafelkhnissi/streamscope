@@ -519,8 +519,9 @@ Nothing is written to the workspace except files the user asks to save.
 | Editing, colouring, outline, diagnostics                             | Yes     | Yes                                                                 |
 | Sending a request by explicit click                                  | Yes     | Yes, after a one-time confirmation per session **(builder's call)** |
 | `{{$secret}}`, `.env`, `http-client.private.env.json`, `$processEnv` | Yes     | Not resolved (request blocked with an explanation)                  |
+| Environments from the user's own settings                            | Yes     | Not read (only workspace-level values)                              |
 | `< path` body files                                                  | Yes     | No                                                                  |
-| `# @insecure`, custom CA settings from the workspace                 | Yes     | Ignored                                                             |
+| `# @insecure`, custom CA settings from the workspace                 | Yes     | Ignored; a relative user `caFile` blocks the request                |
 | File runs from the Testing view                                      | Yes     | No                                                                  |
 
 The confirmation comes only for a request that would otherwise be sent, just before connecting, so a blocked request never asks; declining cancels it. Restricted mode is tested by `npm run test:restricted`, which opens a real untrusted folder because the standard test runner always disables Workspace Trust.

@@ -55,6 +55,23 @@ function errorLocation(reason: string, text: string): string {
   return ` (line ${String(line)}, column ${String(column)})`;
 }
 
+export function mergeEnvironmentSettings(
+  values: readonly unknown[],
+): Record<string, Record<string, unknown>> {
+  const merged: Record<string, Record<string, unknown>> = {};
+  for (const value of values) {
+    if (!isRecord(value)) {
+      continue;
+    }
+    for (const [name, entries] of Object.entries(value)) {
+      if (isRecord(entries)) {
+        merged[name] = { ...merged[name], ...entries };
+      }
+    }
+  }
+  return merged;
+}
+
 export function parseSettingsEnvironments(value: unknown): EnvironmentLayer {
   return layerFrom(value, { kind: 'settings' });
 }

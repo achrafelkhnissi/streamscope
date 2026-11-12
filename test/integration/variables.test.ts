@@ -1,5 +1,5 @@
 import * as assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
@@ -43,6 +43,8 @@ describe('sending with every variable source', () => {
 
   after(async () => {
     await vscode.commands.executeCommand('streamscope.clearSecret', 'integrationApiToken');
+    await vscode.commands.executeCommand('streamscope.clearSecret', 'integrationBodyToken');
+    await vscode.commands.executeCommand('streamscope.clearSecret', 'integrationEscapedToken');
     await server.close();
     removeTemporaryFolder(folder);
   });
@@ -110,5 +112,71 @@ describe('sending with every variable source', () => {
 
     assert.equal(server.requests.length, before);
     assert.match(await outcome(uri), /^Not sent: /);
+  });
+
+  it('keeps sending and checking when .env and the environment file are folders', async () => {
+    const venv = path.join(folder, 'venv');
+    mkdirSync(path.join(venv, '.env'), { recursive: true });
+    mkdirSync(path.join(venv, 'http-client.env.json'));
+    const sendFile = path.join(venv, 'plain.http');
+    writeFileSync(sendFile, `GET ${server.url}/plain`);
+    const document = await vscode.workspace.openTextDocument(vscode.Uri.file(sendFile));
+    await vscode.window.showTextDocument(document, vscode.ViewColumn.One);
+    const before = server.requests.length;
+
+    await vscode.commands.executeCommand('streamscope.sendRequest');
+
+    assert.equal(server.requests.length, before + 1);
+    const broken = path.join(venv, 'broken.http');
+    writeFileSync(broken, 'GET {{broken');
+    const brokenDocument = await vscode.workspace.openTextDocument(vscode.Uri.file(broken));
+    await vscode.window.showTextDocument(brokenDocument, vscode.ViewColumn.One);
+    const deadline = Date.now() + 3000;
+    while (
+      vscode.languages.getDiagnostics(brokenDocument.uri).length === 0 &&
+      Date.now() < deadline
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    assert.equal(vscode.languages.getDiagnostics(brokenDocument.uri)[0]?.code, 'unclosed-variable');
+  });
+
+  it('sends a stored secret used only inside a <@ body file', async () => {
+    await vscode.commands.executeCommand(
+      'streamscope.setSecret',
+      'integrationBodyToken',
+      'synthetic-body-secret',
+    );
+    writeFileSync(path.join(folder, 'body.json'), '{"token":"{{$secret integrationBodyToken}}"}');
+
+    await send('body-secret.http', [`POST ${server.url}/body`, '', '<@ ./body.json']);
+
+    assert.equal(
+      server.requests[server.requests.length - 1]?.body.toString(),
+      '{"token":"synthetic-body-secret"}\n',
+    );
+  });
+
+  it('stores the unescaped value when moving a credential into secret storage', async () => {
+    const file = path.join(folder, 'move-escaped.http');
+    writeFileSync(
+      file,
+      [
+        String.raw`@integrationEscapedToken = synthetic\-token`,
+        `GET ${server.url}/{{integrationEscapedToken}}`,
+      ].join('\n'),
+    );
+    const document = await vscode.workspace.openTextDocument(vscode.Uri.file(file));
+    await vscode.window.showTextDocument(document, vscode.ViewColumn.One);
+
+    await vscode.commands.executeCommand('streamscope.moveToSecretStorage', document.uri, 0);
+    assert.equal(
+      document.lineAt(0).text,
+      '@integrationEscapedToken = {{$secret integrationEscapedToken}}',
+    );
+    await vscode.window.showTextDocument(document, { selection: new vscode.Range(1, 0, 1, 0) });
+    await vscode.commands.executeCommand('streamscope.sendRequest');
+
+    assert.equal(server.requests[server.requests.length - 1]?.url, '/synthetic-token');
   });
 });

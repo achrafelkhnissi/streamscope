@@ -1,11 +1,12 @@
 import * as vscode from 'vscode';
 import { directiveKinds, type HttpFile } from '../../http-file/model';
 import { scanReferences } from '../../http-file/references';
-import { maskedValue } from '../../masking/masking';
+import { maskedValue, maskUrl } from '../../masking/masking';
+import { unescapeFileVariable } from '../../variables/resolve';
 import { describeReference, secretCandidates, variableCompletions } from '../../variables/inspect';
 import type { VariableSources } from '../../variables/sources';
 import type { EnvironmentStore } from '../environments/environment-store';
-import { readDotenv } from '../requests/variables';
+import { readDotenv, usesDotenv } from '../requests/variables';
 import type { SecretStore } from '../secrets/secret-store';
 import { liveSystemContext } from '../system-context';
 import type { ParseCache } from './parse-cache';
@@ -38,28 +39,22 @@ export function createLanguageVariables(
     onDidChange: changed.event,
     sourcesFor: async (document) => {
       const restricted = !vscode.workspace.isTrusted;
-      const { catalog, privateFileIgnored } = await environments.catalogFor(document.uri);
-      const values = new Map<string, string>();
-      if (!restricted) {
-        for (const name of secrets.names()) {
-          const value = await secrets.get(name);
-          if (value !== undefined) {
-            values.set(name, value);
-          }
-        }
-      }
+      const catalog = await environments.catalogFor(document.uri);
       return {
         system: liveSystemContext,
         restricted,
         environmentName: catalog.active,
         environment: catalog.variables,
         shared: catalog.shared,
-        secrets: values,
+        secrets: new Map(
+          restricted ? [] : secrets.names().map((name): [string, string] => [name, maskedValue]),
+        ),
         dotenv: restricted
           ? { kind: 'restricted' }
-          : await readDotenv(document.uri, catalog.active),
+          : usesDotenv(document.getText(), catalog)
+            ? await readDotenv(document.uri, catalog.active)
+            : { kind: 'missing' },
         processEnv: restricted ? {} : process.env,
-        privateFileIgnored,
       };
     },
     dispose: () => {
@@ -81,14 +76,14 @@ function hover(
   const reference = `{{${expression}}}`;
   switch (description.kind) {
     case 'value':
-      markdown.appendCodeblock(
-        `${reference} = ${description.sensitive ? maskedValue : description.value}`,
-        'text',
+      markdown.appendText(
+        `${reference} = ${description.sensitive ? maskedValue : maskUrl(description.value)}`,
       );
+      markdown.appendMarkdown('\n\n');
       markdown.appendText(description.origin);
       break;
     case 'secret':
-      markdown.appendCodeblock(reference, 'text');
+      markdown.appendText(`${reference}: `);
       markdown.appendText(
         description.stored
           ? 'Stored in secret storage.'
@@ -96,8 +91,7 @@ function hover(
       );
       break;
     case 'generated':
-      markdown.appendCodeblock(reference, 'text');
-      markdown.appendText(description.description);
+      markdown.appendText(`${reference}: ${description.description}`);
       break;
     default:
       markdown.appendText(description.message);
@@ -119,7 +113,19 @@ export function registerVariableFeatures(
     if (!variable || !secretNamePattern.test(variable.name)) {
       return;
     }
-    await secrets.set(variable.name, variable.value);
+    const value = unescapeFileVariable(variable.value);
+    const existing = await secrets.get(variable.name);
+    if (existing !== undefined && existing !== value) {
+      const choice = await vscode.window.showWarningMessage(
+        `A different value is already stored for ${variable.name}. Replace it?`,
+        { modal: true, detail: 'Other .http files that use this secret will send the new value.' },
+        'Replace',
+      );
+      if (choice !== 'Replace') {
+        return;
+      }
+    }
+    await secrets.set(variable.name, value);
     const edit = new vscode.WorkspaceEdit();
     const { start, end } = variable.valueRange;
     edit.replace(
@@ -179,10 +185,20 @@ export function registerVariableFeatures(
               return item;
             });
           }
-          if (directivePrefix.test(before)) {
-            return directiveKinds.map(
-              (kind) => new vscode.CompletionItem(kind, vscode.CompletionItemKind.Keyword),
+          const directive = directivePrefix.exec(before);
+          if (directive) {
+            const typed = directive[1] ?? '';
+            const range = new vscode.Range(
+              position.line,
+              position.character - typed.length,
+              position.line,
+              position.character,
             );
+            return directiveKinds.map((kind) => {
+              const item = new vscode.CompletionItem(kind, vscode.CompletionItemKind.Keyword);
+              item.range = range;
+              return item;
+            });
           }
           return undefined;
         },

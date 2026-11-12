@@ -22,7 +22,6 @@ export function testSources(overrides: Partial<VariableSources> = {}): VariableS
     secrets: new Map(),
     dotenv: { kind: 'missing' },
     processEnv: {},
-    privateFileIgnored: false,
     ...overrides,
   };
 }
