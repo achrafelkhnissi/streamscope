@@ -50,6 +50,19 @@
     "CHANGELOG.md",
     "LICENSE"
   ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": "limited",
+      "description": "In a restricted workspace Streamscope asks once before sending, never reads secrets, .env files, http-client.private.env.json, process environment variables or body files, ignores # @insecure, and uses only your own streamscope.request.caFile.",
+      "restrictedConfigurations": [
+        "streamscope.request.caFile"
+      ]
+    },
+    "virtualWorkspaces": {
+      "supported": "limited",
+      "description": "Streamscope sends requests only from local and untitled .http files."
+    }
+  },
   "contributes": {
     "commands": [
       {
@@ -241,15 +254,16 @@
     "build:production": "node esbuild.mjs --production",
     "watch": "node esbuild.mjs --watch",
     "watch:types": "tsc --noEmit --watch --project tsconfig.json",
-    "typecheck": "tsc --noEmit --project tsconfig.json && tsc --noEmit --project test/unit/tsconfig.json && tsc --noEmit --project test/integration/tsconfig.json && tsc --noEmit --project test/vsix/tsconfig.json",
+    "typecheck": "tsc --noEmit --project tsconfig.json && tsc --noEmit --project test/unit/tsconfig.json && tsc --noEmit --project test/integration/tsconfig.json && tsc --noEmit --project test/vsix/tsconfig.json && tsc --noEmit --project test/restricted/tsconfig.json",
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test:unit": "vitest run",
     "test:unit:watch": "vitest",
     "test:coverage": "vitest run --coverage",
-    "compile:host-tests": "tsc --project test/integration/tsconfig.json && tsc --project test/vsix/tsconfig.json",
+    "compile:host-tests": "tsc --project test/integration/tsconfig.json && tsc --project test/vsix/tsconfig.json && tsc --project test/restricted/tsconfig.json",
     "test:integration": "npm run build && npm run compile:host-tests && vscode-test",
+    "test:restricted": "npm run build && npm run compile:host-tests && node scripts/run-restricted-tests.mjs",
     "test": "npm run test:unit && npm run test:integration",
     "check": "npm run typecheck && npm run lint && npm run format:check && npm run test:unit",
     "vscode:prepublish": "npm run build:production",

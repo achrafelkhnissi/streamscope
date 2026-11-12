@@ -43,6 +43,12 @@ jobs:
       - name: Integration tests
         if: runner.os != 'Linux'
         run: npm run test:integration
+      - name: Restricted workspace tests
+        if: runner.os == 'Linux'
+        run: xvfb-run -a npm run test:restricted
+      - name: Restricted workspace tests
+        if: runner.os != 'Linux'
+        run: npm run test:restricted
 
   package:
     needs: check
