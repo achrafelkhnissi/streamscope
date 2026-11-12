@@ -15,10 +15,25 @@ interface Proxy {
   close(): Promise<void>;
 }
 
+function isTestHost(target: string): boolean {
+  try {
+    return new URL(target.includes('://') ? target : `http://${target}`).hostname.endsWith(
+      '.streamscope.test',
+    );
+  } catch {
+    return false;
+  }
+}
+
 function startProxy(tunnelPort = 0): Promise<Proxy> {
   const seen: string[] = [];
   const sockets = new Set<net.Socket>();
   const server = http.createServer((request, response) => {
+    if (!isTestHost(request.url ?? '')) {
+      response.writeHead(502);
+      response.end();
+      return;
+    }
     seen.push(`${request.method ?? ''} ${request.url ?? ''}`);
     response.end('proxied');
   });
@@ -27,6 +42,10 @@ function startProxy(tunnelPort = 0): Promise<Proxy> {
     socket.on('close', () => sockets.delete(socket));
   });
   server.on('connect', (request: http.IncomingMessage, client: net.Socket, head: Buffer) => {
+    if (!isTestHost(request.url ?? '')) {
+      client.end('HTTP/1.1 502 Bad Gateway\r\n\r\n');
+      return;
+    }
     seen.push(`CONNECT ${request.url ?? ''}`);
     const upstream = net.connect(tunnelPort, '127.0.0.1', () => {
       client.write('HTTP/1.1 200 Connection Established\r\n\r\n');
