@@ -138,11 +138,19 @@ describe('panelHtml', () => {
   it('has the status line, the stop and open buttons and the event list', () => {
     const page = html();
 
-    for (const id of ['state', 'status', 'stop', 'open', 'announce', 'list', 'spacer']) {
+    for (const id of ['state', 'status', 'stop', 'save', 'open', 'announce', 'list', 'spacer']) {
       expect(page).toContain(`id="${id}"`);
     }
     expect(page).toContain('role="listbox"');
     expect(page).toContain('role="status"');
+  });
+
+  it('has a Save Response button next to Stop, disabled until there is something to save', () => {
+    const page = html();
+
+    expect(page).toContain(
+      '<button type="button" id="save" disabled>Save Response</button><button type="button" id="stop" disabled>Stop</button>',
+    );
   });
 
   it('says there are no checks for this request', () => {

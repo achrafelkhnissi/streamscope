@@ -10,6 +10,7 @@ import {
   type ToPanel,
 } from '../response/panel-protocol';
 import { listWindow, scrollTopFor, type ListInput } from './list-window';
+import { canSave, effectiveView, visibleViews } from './panel-state';
 import { bodyNote, stateLabels, statusLine } from './panel-text';
 import { rawTail, rawTokens, splitLines } from './raw-colour';
 
@@ -70,6 +71,7 @@ const statePill = element('state', HTMLSpanElement);
 const statusText = element('status', HTMLSpanElement);
 const openButton = element('open', HTMLButtonElement);
 const stopButton = element('stop', HTMLButtonElement);
+const saveButton = element('save', HTMLButtonElement);
 const announcer = element('announce', HTMLDivElement);
 const replyPanel = element('panel-reply', HTMLElement);
 const replyText = element('reply', HTMLPreElement);
@@ -94,6 +96,7 @@ let expanded: Expanded | undefined;
 let detailWanted: number | undefined;
 let body: PanelBody = { kind: 'none' };
 let headers = '';
+let latestStatus: PanelStatus | undefined;
 let openTarget: 'body' | 'headers' | undefined;
 const rows = new Map<number, PanelRow>();
 const entries = new Map<number, RowEntry>();
@@ -204,7 +207,18 @@ function showView(next: PanelView, picked: boolean): void {
   }
 }
 
+function showTabs(): void {
+  const shown = visibleViews(latestStatus);
+  for (const entry of views) {
+    entry.tab.hidden = !shown.includes(entry.name);
+  }
+  if (!shown.includes(view)) {
+    showView('events', false);
+  }
+}
+
 function showStatus(status: PanelStatus): void {
+  latestStatus = status;
   const label = stateLabels[status.state];
   const line = statusLine(status);
   statePill.textContent = label;
@@ -212,6 +226,8 @@ function showStatus(status: PanelStatus): void {
   statusText.textContent = line;
   statusText.title = line;
   stopButton.disabled = !status.running;
+  saveButton.disabled = !canSave(status);
+  showTabs();
   announce(`${label}. ${line}`);
 }
 
@@ -579,7 +595,7 @@ function reset(message: Extract<ToPanel, { type: 'reset' }>): void {
   showBody(message.body);
   stopButton.hidden = message.readOnly;
   showStatus(message.status);
-  showView(message.view, false);
+  showView(effectiveView(message.view, message.status), false);
   queueRender();
 }
 
@@ -629,7 +645,7 @@ function receive(message: ToPanel): void {
       }
       return;
     case 'select':
-      showView(message.view, false);
+      showView(effectiveView(message.view, latestStatus), false);
       return;
     case 'expand':
       expand(message.index);
@@ -683,29 +699,38 @@ list.addEventListener('keydown', (event) => {
   }
 });
 
-views.forEach((entry, position) => {
+for (const entry of views) {
   entry.tab.addEventListener('click', () => {
     showView(entry.name, true);
   });
   entry.tab.addEventListener('keydown', (event) => {
+    const names = visibleViews(latestStatus);
+    const shown = views.filter((candidate) => names.includes(candidate.name));
+    const position = shown.indexOf(entry);
     const targets: Partial<Record<string, number>> = {
       ArrowRight: position + 1,
       ArrowLeft: position - 1,
       Home: 0,
-      End: views.length - 1,
+      End: shown.length - 1,
     };
     const target = targets[event.key];
-    const next = target === undefined ? undefined : views[(target + views.length) % views.length];
+    const next = target === undefined ? undefined : shown[(target + shown.length) % shown.length];
     if (next !== undefined) {
       event.preventDefault();
       next.tab.focus();
       showView(next.name, true);
     }
   });
-});
+}
 
 stopButton.addEventListener('click', () => {
   post({ type: 'stop' });
+});
+
+saveButton.addEventListener('click', () => {
+  if (run !== undefined) {
+    post({ type: 'save', run });
+  }
 });
 
 openButton.addEventListener('click', () => {
@@ -723,5 +748,6 @@ sizes.observe(list);
 const initial = readState(api.getState());
 pendingScroll = initial.scroll ?? undefined;
 savedScroll = initial.scroll;
-showView(initial.view, false);
+showTabs();
+showView(effectiveView(initial.view, latestStatus), false);
 post({ type: 'ready' });

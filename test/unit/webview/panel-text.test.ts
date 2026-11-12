@@ -10,6 +10,7 @@ function status(overrides: Partial<PanelStatus> = {}): PanelStatus {
     events: 3,
     warnings: 0,
     format: undefined,
+    reply: false,
     ...overrides,
   };
 }

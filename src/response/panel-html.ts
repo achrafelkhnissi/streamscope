@@ -109,7 +109,7 @@ export function panelHtml(options: PanelHtmlOptions): string {
 <style nonce="${nonce}">${styles}</style>
 </head>
 <body>
-<header class="bar"><span class="pill" id="state"></span><span id="status"></span><button type="button" id="open" hidden>Open in Editor</button><button type="button" id="stop" disabled>Stop</button></header>
+<header class="bar"><span class="pill" id="state"></span><span id="status"></span><button type="button" id="open" hidden>Open in Editor</button><button type="button" id="save" disabled>Save Response</button><button type="button" id="stop" disabled>Stop</button></header>
 <div class="tabs" role="tablist" aria-label="Response views">${panelViews.map(tabButton).join('')}</div>
 ${panelViews.map(panel).join('\n')}
 <div class="visually-hidden" id="announce" role="status" aria-live="polite"></div>

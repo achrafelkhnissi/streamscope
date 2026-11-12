@@ -39,6 +39,7 @@ export interface PanelStatus {
   events: number;
   warnings: number;
   format: string | undefined;
+  reply: boolean;
 }
 
 export interface TextDelta {
@@ -84,6 +85,7 @@ export type FromPanel =
   | { type: 'rendered'; run: number; newest: number }
   | { type: 'detail'; run: number; index: number }
   | { type: 'stop' }
+  | { type: 'save'; run: number }
   | { type: 'tab'; view: PanelView }
   | { type: 'open'; run: number; target: 'body' | 'headers' }
   | { type: 'openEvent'; run: number; index: number };
@@ -130,6 +132,10 @@ export function parsePanelMessage(value: unknown, eventCount: number): FromPanel
         typeof following === 'boolean'
         ? { type: 'window', run, start, end, following }
         : undefined;
+    }
+    case 'save': {
+      const { run } = value;
+      return hasOnly(value, ['type', 'run']) && isRun(run) ? { type: 'save', run } : undefined;
     }
     case 'rendered': {
       const { run, newest } = value;

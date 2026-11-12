@@ -44,6 +44,7 @@ describe('parsePanelMessage', () => {
   it('accepts every message the page may send', () => {
     expect(parse({ type: 'ready' })).toEqual({ type: 'ready' });
     expect(parse({ type: 'stop' })).toEqual({ type: 'stop' });
+    expect(parse({ type: 'save', run: 3 })).toEqual({ type: 'save', run: 3 });
     expect(parse({ type: 'window', run: 3, start: 10, end: 60, following: true })).toEqual({
       type: 'window',
       run: 3,
@@ -127,6 +128,15 @@ describe('parsePanelMessage', () => {
       expect(parse({ type: 'detail', run, index: 1 })).toBeUndefined();
     }
     expect(parse({ type: 'detail', index: 1 })).toBeUndefined();
+  });
+
+  it('rejects a save without a positive whole-number run or with any other key', () => {
+    for (const run of [0, -1, 1.5, Number.NaN, '1', null, undefined]) {
+      expect(parse({ type: 'save', run })).toBeUndefined();
+    }
+    expect(parse({ type: 'save' })).toBeUndefined();
+    expect(parse({ type: 'save', run: 1, path: '/tmp/out.ndjson' })).toBeUndefined();
+    expect(parse({ type: 'save', run: 1, uri: 'file:///x' })).toBeUndefined();
   });
 
   it('rejects a window that is reversed, too large or outside the events', () => {
