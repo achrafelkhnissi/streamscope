@@ -1,5 +1,5 @@
 import * as assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import * as http from 'node:http';
 import * as net from 'node:net';
 import { tmpdir } from 'node:os';
@@ -7,6 +7,7 @@ import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { createSelfSignedCertificate } from '../support/certificate';
 import { startHttpsServer, type LocalServer } from '../support/servers';
+import { removeTemporaryFolder } from './temporary-folder';
 
 interface Proxy {
   url: string;
@@ -110,7 +111,7 @@ describe('proxies', () => {
   });
 
   after(() => {
-    rmSync(folder, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    removeTemporaryFolder(folder);
   });
 
   it('routes http requests through http.proxy', async () => {

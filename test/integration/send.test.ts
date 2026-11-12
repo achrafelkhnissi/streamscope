@@ -1,5 +1,5 @@
 import * as assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import type * as http from 'node:http';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
@@ -7,6 +7,7 @@ import * as zlib from 'node:zlib';
 import * as vscode from 'vscode';
 import { createSelfSignedCertificate } from '../support/certificate';
 import { startHttpServer, startHttpsServer, type LocalServer } from '../support/servers';
+import { removeTemporaryFolder } from './temporary-folder';
 
 const responseScheme = 'streamscope-response';
 
@@ -86,7 +87,7 @@ describe('sending requests', () => {
   });
 
   after(() => {
-    rmSync(folder, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    removeTemporaryFolder(folder);
   });
 
   it('sends the request under the cursor and shows the pretty body', async () => {
