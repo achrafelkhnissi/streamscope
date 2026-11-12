@@ -9,6 +9,8 @@ export interface ExtensionHostResult {
   baselineHeapBytes: number;
   maxHeapBytes: number;
   maxArrayBuffersBytes: number;
+  baselineRssBytes: number;
+  maxRssBytes: number;
 }
 
 export interface DriverResult {

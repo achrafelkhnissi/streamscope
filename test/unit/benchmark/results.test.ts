@@ -32,6 +32,8 @@ describe('readDriverResult', () => {
         baselineHeapBytes: 1,
         maxHeapBytes: 2,
         maxArrayBuffersBytes: 3,
+        baselineRssBytes: 4,
+        maxRssBytes: 5,
       },
       typing: latency,
       error: undefined,

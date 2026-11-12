@@ -104,11 +104,16 @@ async function streamMode(
       );
   }, 100);
   const baseline = process.memoryUsage();
-  const memory = { heap: baseline.heapUsed, arrayBuffers: baseline.arrayBuffers };
+  const memory = {
+    heap: baseline.heapUsed,
+    arrayBuffers: baseline.arrayBuffers,
+    rss: baseline.rss,
+  };
   const sampler = setInterval(() => {
     const usage = process.memoryUsage();
     memory.heap = Math.max(memory.heap, usage.heapUsed);
     memory.arrayBuffers = Math.max(memory.arrayBuffers, usage.arrayBuffers);
+    memory.rss = Math.max(memory.rss, usage.rss);
   }, 1000);
   const cpuStart = process.cpuUsage();
   const wallStart = performance.now();
@@ -125,6 +130,8 @@ async function streamMode(
       baselineHeapBytes: baseline.heapUsed,
       maxHeapBytes: memory.heap,
       maxArrayBuffersBytes: memory.arrayBuffers,
+      baselineRssBytes: baseline.rss,
+      maxRssBytes: memory.rss,
     };
     return { surface: result, extensionHost, typing: typing.summary() };
   } finally {

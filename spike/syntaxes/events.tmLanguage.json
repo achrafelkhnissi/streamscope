@@ -1,0 +1,18 @@
+{
+  "scopeName": "source.streamscope-events",
+  "patterns": [
+    {
+      "match": "^(\\[\\d+\\])\\s+(\\+\\S+)\\s+(\\S+)",
+      "captures": {
+        "1": { "name": "constant.numeric.index.streamscope-events" },
+        "2": { "name": "comment.time.streamscope-events" },
+        "3": { "name": "entity.name.type.streamscope-events" }
+      }
+    },
+    { "match": "^──.*", "name": "comment.line.streamscope-events" },
+    { "match": "\"(?:[^\"\\\\]|\\\\.)*\"(?=\\s*:)", "name": "support.type.property-name.json" },
+    { "match": "\"(?:[^\"\\\\]|\\\\.)*\"", "name": "string.quoted.double.json" },
+    { "match": "-?\\b\\d+(?:\\.\\d+)?(?:[eE][+-]?\\d+)?\\b", "name": "constant.numeric.json" },
+    { "match": "\\b(?:true|false|null)\\b", "name": "constant.language.json" }
+  ]
+}

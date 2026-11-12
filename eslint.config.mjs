@@ -2,7 +2,7 @@ import { defineConfig, globalIgnores } from 'eslint/config';
 import tseslint from 'typescript-eslint';
 
 export default defineConfig(
-  globalIgnores(['dist/', 'out/', 'coverage/', '.vscode-test/']),
+  globalIgnores(['dist/', 'out/', 'coverage/', '.vscode-test/', 'spike/dist/']),
   tseslint.configs.strictTypeChecked,
   {
     languageOptions: {
