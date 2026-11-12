@@ -1,7 +1,7 @@
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
-import type { JsonValue } from '../../src/events/model';
+import { LatencyHistogram, sentAtOf } from '../../src/benchmark/latency';
 import { StreamSession } from '../../src/events/session';
 import { SpillArea } from '../../src/events/spill';
 import { NodeTransport } from '../../src/transport/node-transport';
@@ -22,29 +22,6 @@ export interface SoakResult {
   lagMaxMs: number;
   spillBytes: number;
   spillDirectory: string;
-}
-
-const histogramLimitMs = 10_000;
-
-function sentAtOf(value: JsonValue | undefined): number | undefined {
-  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
-    return undefined;
-  }
-  const sentAt = (value as { readonly [key: string]: JsonValue }).sentAt;
-  return typeof sentAt === 'number' ? sentAt : undefined;
-}
-
-function percentile(histogram: Uint32Array, fraction: number): number {
-  const total = histogram.reduce((sum, count) => sum + count, 0);
-  const target = Math.ceil(total * fraction);
-  let seen = 0;
-  for (const [bucket, count] of histogram.entries()) {
-    seen += count;
-    if (seen >= target && count > 0) {
-      return bucket;
-    }
-  }
-  return 0;
 }
 
 const transportOptions: TransportOptions = {
@@ -68,9 +45,8 @@ export async function runSoak(options: {
   const root = await mkdtemp(path.join(tmpdir(), 'streamscope-soak-'));
   const area = await SpillArea.open(root);
   const spill = await area.create();
-  const histogram = new Uint32Array(histogramLimitMs + 1);
+  const histogram = new LatencyHistogram();
   const memory = { heap: 0, external: 0, rss: 0, arrayBuffers: 0, total: 0 };
-  let lagMax = 0;
   let measured = 0;
   let session: StreamSession | undefined;
   const sample = (): void => {
@@ -90,10 +66,7 @@ export async function runSoak(options: {
     for (let index = measured + 1; index <= session.store.count; index += 1) {
       const sentAt = sentAtOf(session.store.inMemory(index)?.value);
       if (sentAt !== undefined) {
-        const lag = Math.max(0, now - sentAt);
-        lagMax = Math.max(lagMax, lag);
-        const bucket = Math.min(histogramLimitMs, Math.floor(lag));
-        histogram[bucket] = (histogram[bucket] ?? 0) + 1;
+        histogram.record(now - sentAt);
       }
     }
     measured = session.store.count;
@@ -149,8 +122,8 @@ export async function runSoak(options: {
     maxRssBytes: memory.rss,
     maxArrayBuffersBytes: memory.arrayBuffers,
     maxMemoryBytes: memory.total,
-    lagP95Ms: percentile(histogram, 0.95),
-    lagMaxMs: lagMax,
+    lagP95Ms: histogram.percentile(0.95),
+    lagMaxMs: histogram.maxMs,
     spillBytes,
     spillDirectory: area.directory,
   };
