@@ -7,6 +7,24 @@ import { createSelfSignedCertificate, derInteger } from '../support/certificate'
 import { everySplit, randomSplits } from '../support/chunks';
 import { startHttpServer } from '../support/servers';
 import { streamFixtures } from '../support/stream-fixtures';
+import { startStreamServer } from '../support/stream-server';
+
+function get(url: string): Promise<{ contentType: string | undefined; body: string }> {
+  return new Promise((resolve, reject) => {
+    http
+      .get(url, (response) => {
+        const chunks: Buffer[] = [];
+        response.on('data', (chunk: Buffer) => chunks.push(chunk));
+        response.on('end', () => {
+          resolve({
+            contentType: response.headers['content-type'],
+            body: Buffer.concat(chunks).toString(),
+          });
+        });
+      })
+      .on('error', reject);
+  });
+}
 
 function post(url: string, body: string): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -121,5 +139,46 @@ describe('test support', () => {
 
     expect(events).toHaveLength(4);
     expect(events.at(-1)?.data).toBe('[DONE]');
+  });
+
+  it('serves a paced synthetic AG-UI stream', async () => {
+    const server = await startStreamServer();
+    const startedAt = performance.now();
+    const { contentType, body } = await get(`${server.url}/stream?rate=200&seconds=1&size=256`);
+    const elapsed = performance.now() - startedAt;
+    await server.close();
+    const lines = body.split('\n').slice(0, -1);
+    const events = lines.map((line) => JSON.parse(line) as { type: string; sequence?: number });
+    const sequences = events.flatMap((event) =>
+      event.sequence === undefined ? [] : [event.sequence],
+    );
+
+    expect(contentType).toBe('application/x-ndjson');
+    expect(elapsed).toBeGreaterThanOrEqual(900);
+    expect(lines.length).toBeGreaterThanOrEqual(150);
+    expect(lines.length).toBeLessThanOrEqual(260);
+    expect(lines.every((line) => Buffer.byteLength(`${line}\n`) === 256)).toBe(true);
+    expect(events[0]?.type).toBe('RUN_STARTED');
+    expect(events.at(-1)?.type).toBe('RUN_FINISHED');
+    expect(sequences).toEqual(sequences.map((_, index) => index + 1));
+  });
+
+  it('serves the same stream as SSE', async () => {
+    const server = await startStreamServer();
+    const { contentType, body } = await get(
+      `${server.url}/stream?format=sse&rate=100&seconds=0.3&size=200`,
+    );
+    const override = await get(
+      `${server.url}/stream?format=ndjson&type=application%2Fjson&rate=10&seconds=0.1`,
+    );
+    await server.close();
+    const blocks = body.split('\n\n').slice(0, -1);
+
+    expect(contentType).toBe('text/event-stream');
+    expect(blocks.length).toBeGreaterThanOrEqual(20);
+    expect(blocks.every((block) => block.startsWith('data: '))).toBe(true);
+    expect(blocks.every((block) => Buffer.byteLength(`${block}\n\n`) === 200)).toBe(true);
+    expect(blocks.at(-1)).toContain('RUN_FINISHED');
+    expect(override.contentType).toBe('application/json');
   });
 });

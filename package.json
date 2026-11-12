@@ -254,7 +254,7 @@
     "build:production": "node esbuild.mjs --production",
     "watch": "node esbuild.mjs --watch",
     "watch:types": "tsc --noEmit --watch --project tsconfig.json",
-    "typecheck": "tsc --noEmit --project tsconfig.json && tsc --noEmit --project test/unit/tsconfig.json && tsc --noEmit --project test/integration/tsconfig.json && tsc --noEmit --project test/vsix/tsconfig.json && tsc --noEmit --project test/restricted/tsconfig.json",
+    "typecheck": "tsc --noEmit --project tsconfig.json && tsc --noEmit --project test/unit/tsconfig.json && tsc --noEmit --project test/integration/tsconfig.json && tsc --noEmit --project test/vsix/tsconfig.json && tsc --noEmit --project test/restricted/tsconfig.json && tsc --noEmit --project test/benchmark/tsconfig.json",
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
@@ -269,7 +269,8 @@
     "vscode:prepublish": "npm run build:production",
     "package": "vsce package --no-dependencies",
     "package:list": "vsce ls --tree --no-dependencies",
-    "verify:vsix": "npm run package && npm run compile:host-tests && node scripts/verify-vsix.mjs"
+    "verify:vsix": "npm run package && npm run compile:host-tests && node scripts/verify-vsix.mjs",
+    "bench": "node scripts/benchmark.mjs"
   },
   "devDependencies": {
     "@types/mocha": "10.0.10",
