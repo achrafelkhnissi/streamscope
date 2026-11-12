@@ -17,24 +17,28 @@ The product is **Streamscope** (`achrafelkhnissi.streamscope`, display name "Str
 
 ## Layout
 
-| Path                      | Purpose                                                                                                    |
-| ------------------------- | ---------------------------------------------------------------------------------------------------------- |
-| `src/extension.ts`        | Activation and VS Code wiring                                                                              |
-| `src/http-file/`          | `.http` parser, directives and diagnostics                                                                 |
-| `src/variables/`          | File and system variable resolution                                                                        |
-| `src/transport/`          | `node:http`/`node:https` exchange, decompression, TLS options and redirects                                |
-| `src/runs/`               | Outgoing request building, body files, durations, runs and the run registry                                |
-| `src/response/`           | Body formatting (worker above 1 MiB), labels and the Headers document                                      |
-| `src/masking/`            | Masking of secret headers and URL passwords                                                                |
-| `src/coexistence/`        | Detection of other extensions' Send CodeLens                                                               |
-| `src/vscode/`             | VS Code wiring: language features, requests (commands, CodeLens, settings), response view, log             |
-| `test/support/`           | Local HTTP, HTTPS and raw servers and a generated test certificate, shared by unit and integration tests   |
-| `test/unit/`              | Vitest tests for pure modules and the manifest                                                             |
-| `test/integration/`       | Mocha tests run by `@vscode/test-cli` inside the Extension Development Host, on VS Code stable and 1.101.0 |
-| `test/vsix/`              | Check that the packaged VSIX installs and activates in an isolated profile                                 |
-| `scripts/verify-vsix.mjs` | Installs the VSIX into a temporary profile and runs `test/vsix`                                            |
-| `.claude/`                | Project plugins, subagents, hooks and security-review rules                                                |
-| `.github/`                | CI on Linux, macOS and Windows; Dependabot                                                                 |
+| Path                               | Purpose                                                                                                    |
+| ---------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `src/extension.ts`                 | Activation and VS Code wiring                                                                              |
+| `src/http-file/`                   | `.http` parser, directives and diagnostics                                                                 |
+| `src/environments/`                | REST Client and JetBrains environments, the merged catalog, and `.env` parsing and lookup order            |
+| `src/variables/`                   | Variable resolution from every source, sensitive values, and reference descriptions for hovers             |
+| `src/secrets/`                     | Secret storage key format                                                                                  |
+| `src/transport/`                   | `node:http`/`node:https` exchange, decompression, TLS options and redirects                                |
+| `src/runs/`                        | Outgoing request building, body files, durations, runs and the run registry                                |
+| `src/response/`                    | Body formatting (worker above 1 MiB), labels and the Headers document                                      |
+| `src/masking/`                     | Masking of secret headers, URL user info, credential names and sensitive values                            |
+| `src/coexistence/`                 | Detection of other extensions' Send CodeLens                                                               |
+| `src/vscode/`                      | VS Code wiring: language features, environments, secrets, requests, response view, log                     |
+| `test/support/`                    | Local HTTP, HTTPS and raw servers and a generated test certificate, shared by unit and integration tests   |
+| `test/unit/`                       | Vitest tests for pure modules and the manifest                                                             |
+| `test/integration/`                | Mocha tests run by `@vscode/test-cli` inside the Extension Development Host, on VS Code stable and 1.101.0 |
+| `test/restricted/`                 | Checks run in a real restricted (untrusted) workspace built from `test/fixtures/restricted`                |
+| `test/vsix/`                       | Check that the packaged VSIX installs and activates in an isolated profile                                 |
+| `scripts/verify-vsix.mjs`          | Installs the VSIX into a temporary profile and runs `test/vsix`                                            |
+| `scripts/run-restricted-tests.mjs` | Launches VS Code on a fresh copy of the restricted fixture without `--disable-workspace-trust`             |
+| `.claude/`                         | Project plugins, subagents, hooks and security-review rules                                                |
+| `.github/`                         | CI on Linux, macOS and Windows; Dependabot                                                                 |
 
 ## Architecture conventions
 
@@ -55,6 +59,7 @@ The product is **Streamscope** (`achrafelkhnissi.streamscope`, display name "Str
 | Lint / format        | `npm run lint` / `npm run format` (`npm run format:check` to verify)                     |
 | Unit tests           | `npm run test:unit` (`npm run test:coverage` for coverage)                               |
 | Integration tests    | `npm run test:integration` (add `-- --label stable` for one VS Code version)             |
+| Restricted workspace | `npm run test:restricted`                                                                |
 | Quick gate           | `npm run check` (typecheck, lint, format check, unit tests)                              |
 | Package              | `npm run package` (VSIX in the project root), `npm run package:list` to see its contents |
 | Installed-VSIX check | `npm run verify:vsix`                                                                    |
@@ -85,8 +90,9 @@ The product is **Streamscope** (`achrafelkhnissi.streamscope`, display name "Str
 ## Verification
 
 - `npm run check` must pass before work is reported done. The Stop hook runs it automatically when files changed since the last passing run.
-- CI runs `npm run check`, the integration tests and `npm run verify:vsix` on every push to `main` and every pull request, on Linux, macOS and Windows.
-- Also run `npm run test:integration` when activation, commands, contributions or other `vscode`-facing code change, and `npm run verify:vsix` when packaging, `files` or activation change.
+- CI runs `npm run check`, the integration tests, the restricted workspace tests and `npm run verify:vsix` on every push to `main` and every pull request, on Linux, macOS and Windows.
+- Also run `npm run test:integration` when activation, commands, contributions or other `vscode`-facing code change, `npm run test:restricted` when Workspace Trust behaviour, variable sources or the manifest's `capabilities` change, and `npm run verify:vsix` when packaging, `files` or activation change.
+- `@vscode/test-electron` always passes `--disable-workspace-trust`, so `npm run test:integration` runs trusted; only `npm run test:restricted` exercises restricted mode.
 - Streaming code needs tests that split input at every byte boundary; the `stream-parser-test-author` agent writes them.
 
 ## Hooks

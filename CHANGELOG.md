@@ -13,3 +13,9 @@
 - `# @timeout`, `# @no-redirect` and `# @insecure`; settings for connect and headers timeouts, redirects and an extra CA file.
 - **Save Response** saves the decoded body exactly as received.
 - A one-time offer to hide REST Client's and httpyac's Send links when they are installed.
+- Environments from `rest-client.environmentVariables`, `http-client.env.json` and `http-client.private.env.json`, with `$shared`, a status bar picker and **Select Environment**.
+- `{{$secret}}` values kept in VS Code's secret storage, with **Set Secret**, **Clear Secret**, **List Secrets** and a **Move to secret storage** quick fix.
+- `{{$dotenv}}` and `{{$processEnv}}`, including `%name` indirection; missing values block the request.
+- Secret and credential-like values are hidden in the Headers view, CodeLens, log, messages and hovers.
+- Hovers show each variable's value and source; completion for variables and directives; warnings for undefined variables.
+- Restricted workspaces are supported with limited features, and virtual workspaces are declared as limited.
