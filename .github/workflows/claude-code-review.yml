@@ -34,4 +34,6 @@ jobs:
           prompt: '/code-review:code-review --comment ${{ github.repository }}/pull/${{ github.event.pull_request.number }}'
           claude_args: >-
             --setting-sources user
-            --allowedTools "Agent,Read(./**),mcp__github_inline_comment__create_inline_comment,Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr list:*),Bash(gh pr comment:*),Bash(gh issue view:*),Bash(gh issue list:*),Bash(gh search:*)"
+            --model opus
+            --append-system-prompt "You run in CI and nobody can answer questions. Follow the code-review command step by step: launch every subagent it asks for, with the model it names, and wait for each result before the next step. Never review the code yourself in place of the review and validation agents. In Bash, run only the allowed gh commands, without pipes, redirection or chaining, and tell every subagent the same. When a diff is too large for one tool result, list the changed files with gh pr diff --name-only and read them from the checkout with Read."
+            --allowedTools "Agent,Read(./**),Read(~/.claude/projects/**/tool-results/**),mcp__github_inline_comment__create_inline_comment,Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr list:*),Bash(gh pr comment:*),Bash(gh issue view:*),Bash(gh issue list:*),Bash(gh search:*)"
