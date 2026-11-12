@@ -11,3 +11,7 @@ export function effectiveView(requested: PanelView, status: PanelStatus | undefi
 export function canSave(status: PanelStatus | undefined): boolean {
   return status !== undefined && status.state !== 'sending';
 }
+
+export function canOpen(status: PanelStatus | undefined): boolean {
+  return status?.released !== true;
+}

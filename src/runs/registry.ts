@@ -6,7 +6,7 @@ import {
   type RunSnapshot,
 } from './run';
 
-function isActive(handle: RunHandle): boolean {
+export function isActive(handle: RunHandle): boolean {
   const { status } = handle.snapshot();
   return status === 'sending' || status === 'receiving';
 }

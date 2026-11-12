@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { RunRegistry } from '../../../src/runs/registry';
+import { isActive, RunRegistry } from '../../../src/runs/registry';
 import type { RunStatus } from '../../../src/runs/run';
 import { startHttpServer, type LocalServer } from '../../support/servers';
 import { waitFor } from '../transport/harness';
@@ -83,6 +83,22 @@ describe('RunRegistry', () => {
     runs.cancel('second');
     await second.done;
     expect(runs.running()).toEqual([replacing]);
+  });
+
+  it('tells whether a run is still active, even after a re-send replaced it', async () => {
+    const server = await holdingServer();
+    const runs = registry();
+    const first = runs.start(runInput([`GET ${server.url}/hold`], { key: 'same' }));
+    await waitFor(() => first.snapshot().status === 'receiving', 2000);
+    expect(isActive(first)).toBe(true);
+
+    const second = runs.start(runInput([`GET ${server.url}/quick`], { key: 'same' }));
+
+    expect(runs.running()).not.toContain(first);
+    await second.done;
+    await first.done;
+    expect(isActive(first)).toBe(false);
+    expect(isActive(second)).toBe(false);
   });
 
   it('notifies listeners on every status change', async () => {

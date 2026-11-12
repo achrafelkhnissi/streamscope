@@ -18,13 +18,37 @@ interface ResponseState {
   body: string;
   visible: boolean;
   readOnly: boolean;
+  released: boolean;
+  title: string | undefined;
   statusBar: string | undefined;
+}
+
+interface HistoryEntry {
+  id: number;
+  label: string;
+  description: string;
+  detail: string;
 }
 
 function responseState(key?: string): Thenable<ResponseState | undefined> {
   return vscode.commands.executeCommand<ResponseState | undefined>(
     'streamscope.test.responseState',
     key,
+  );
+}
+
+function showHistory(runId: number): Thenable<HistoryEntry[]> {
+  return vscode.commands.executeCommand<HistoryEntry[]>('streamscope.showHistory', runId);
+}
+
+function listHistory(): Thenable<HistoryEntry[]> {
+  return showHistory(0);
+}
+
+function newestEventInMemory(run: number): Thenable<boolean | undefined> {
+  return vscode.commands.executeCommand<boolean | undefined>(
+    'streamscope.test.newestEventInMemory',
+    run,
   );
 }
 
@@ -521,5 +545,277 @@ describe('the response panel', () => {
     assert.ok(document, 'the body document is not open');
     const text = Buffer.from(await vscode.workspace.fs.readFile(document)).toString('utf8');
     assert.equal(text, JSON.stringify(value, null, 2));
+  });
+
+  describe('history', () => {
+    const maxHistory = 50;
+
+    async function sendLine(uri: vscode.Uri, line: number): Promise<number> {
+      await vscode.commands.executeCommand('streamscope.sendRequest', uri, line);
+      const [newest] = await listHistory();
+      if (newest === undefined) {
+        throw new Error('the run was not added to the history');
+      }
+      return newest.id;
+    }
+
+    async function churn(uri: vscode.Uri, line: number, count: number): Promise<void> {
+      for (let sent = 0; sent < count; sent += 1) {
+        await vscode.commands.executeCommand('streamscope.sendRequest', uri, line);
+      }
+    }
+
+    async function openPair(name: string, url: string): Promise<vscode.Uri> {
+      const editor = await open(name, [
+        '# @name kept',
+        `GET ${url}/kept`,
+        '',
+        '###',
+        '# @name churn',
+        `GET ${url}/churn`,
+      ]);
+      return editor.document.uri;
+    }
+
+    it('lists the runs of the session, newest first', async () => {
+      const server = await startHttpServer((_request, response) => {
+        response.end('ok');
+      });
+      servers.push(server);
+      const editor = await open('history-list.http', [
+        '# @name first',
+        `GET ${server.url}/first`,
+        '',
+        '###',
+        '# @name second',
+        `GET ${server.url}/second`,
+        '',
+        '###',
+        '# @name third',
+        `GET ${server.url}/third`,
+      ]);
+      const uri = editor.document.uri;
+
+      const firstId = await sendLine(uri, 1);
+      const secondId = await sendLine(uri, 5);
+      const thirdId = await sendLine(uri, 9);
+      const [third, second, first] = (await listHistory()).slice(0, 3);
+
+      assert.deepEqual([third?.label, second?.label, first?.label], ['third', 'second', 'first']);
+      assert.deepEqual([third?.id, second?.id, first?.id], [thirdId, secondId, firstId]);
+      assert.ok(firstId < secondId && secondId < thirdId);
+      for (const item of [third, second, first]) {
+        assert.match(item?.description ?? '', /^200 OK · 2 B · \d+ ms$/);
+        assert.match(item?.detail ?? '', /^\d{2}:\d{2}:\d{2}$/);
+      }
+    });
+
+    it('lists a run that is still running', async function () {
+      this.timeout(30_000);
+      const server = await streamServer();
+      await open('history-running.http', [`GET ${server.url}/stream?rate=100&seconds=30&size=256`]);
+
+      start();
+      await waitForState((seen) => seen.events >= 5, 'five events were not received');
+      const [running] = await listHistory();
+
+      assert.match(running?.description ?? '', /^Running · \d+ events · /);
+      await vscode.commands.executeCommand('streamscope.stopRequest');
+      await waitForState((seen) => seen.status === 'cancelled', 'the run did not end cancelled');
+      const [ended] = await listHistory();
+      assert.equal(ended?.id, running?.id);
+      assert.match(ended?.description ?? '', /^Cancelled after /);
+    });
+
+    it('reopens an earlier run read-only with its events', async () => {
+      const server = await streamServer();
+      await open('history-reopen.http', [`GET ${server.url}/stream?rate=100&seconds=0.3&size=256`]);
+
+      await send();
+      const first = await waitForState(
+        (seen) => seen.status === 'completed' && seen.rendered === seen.events,
+        'the first run did not complete',
+      );
+      await send();
+      const second = await waitForState(
+        (seen) =>
+          seen.run !== first.run && seen.status === 'completed' && seen.rendered === seen.events,
+        'the second run did not complete',
+      );
+      assert.equal(second.readOnly, false);
+
+      const list = await showHistory(first.run);
+      const reopened = await waitForState(
+        (seen) => seen.run === first.run && seen.visible && seen.rendered === seen.events,
+        'the earlier run was not reopened and drawn',
+      );
+
+      assert.deepEqual(
+        list.slice(0, 2).map((item) => item.id),
+        [second.run, first.run],
+      );
+      assert.equal(reopened.readOnly, true);
+      assert.equal(reopened.released, false);
+      assert.equal(reopened.status, 'completed');
+      assert.equal(reopened.events, first.events);
+      assert.ok(reopened.events > 5);
+      assert.match(
+        reopened.title ?? '',
+        /^GET http:\/\/127\.0\.0\.1:\d+\/stream\?.* · \d{2}:\d{2}:\d{2}$/,
+      );
+      assert.equal(panelTabs().length, 1);
+    });
+
+    it('shows the latest run again when its request is shown after an earlier run was reopened', async () => {
+      const server = await streamServer();
+      const editor = await open('history-latest.http', [
+        `GET ${server.url}/stream?rate=100&seconds=0.3&size=256`,
+      ]);
+
+      await send();
+      const first = await waitForState(
+        (seen) => seen.status === 'completed' && seen.rendered === seen.events,
+        'the first run did not complete',
+      );
+      await send();
+      const second = await waitForState(
+        (seen) => seen.run !== first.run && seen.status === 'completed',
+        'the second run did not complete',
+      );
+      await showHistory(first.run);
+      await waitForState((seen) => seen.run === first.run, 'the earlier run was not reopened');
+
+      await vscode.commands.executeCommand('streamscope.showResponse', editor.document.uri, 0);
+      const latest = await waitForState(
+        (seen) => seen.run === second.run && seen.visible && seen.rendered === seen.events,
+        'the latest run did not come back',
+      );
+
+      assert.equal(latest.readOnly, false);
+      assert.equal(panelTabs().length, 1);
+    });
+
+    it('keeps a stream compacted once it ends with its panel closed', async function () {
+      this.timeout(30_000);
+      const server = await streamServer();
+      await open('history-compact.http', [`GET ${server.url}/stream?rate=100&seconds=1&size=256`]);
+
+      start();
+      const streaming = await waitForState(
+        (seen) => seen.rendered >= 10,
+        'ten events were not drawn',
+      );
+      assert.equal(await newestEventInMemory(streaming.run), true);
+      await vscode.window.tabGroups.close(panelTabs());
+      await waitForState((seen) => !seen.visible, 'the panel did not close');
+      await until(
+        async () => (await runStatus(streaming.run)) === 'completed',
+        'the stream did not complete',
+      );
+
+      await until(
+        async () => (await newestEventInMemory(streaming.run)) === false,
+        'the events of the ended run were not released from memory',
+      );
+    });
+
+    it('drops the oldest runs past 50 and says so when a request shows one that left history', async function () {
+      this.timeout(120_000);
+      const server = await startHttpServer((_request, response) => {
+        response.end('ok');
+      });
+      servers.push(server);
+      const uri = await openPair('history-evict.http', server.url);
+
+      const dropped = await sendLine(uri, 1);
+      const kept = await waitForState(
+        (seen) => seen.status === 'completed' && seen.visible,
+        'the first panel did not open',
+      );
+      await until(() => panelTabs().length === 1, 'the first panel has no tab');
+      await vscode.window.tabGroups.close(panelTabs());
+      await until(
+        async () => (await responseState(kept.key)) === undefined,
+        'the first panel did not close',
+      );
+      await churn(uri, 5, maxHistory);
+      const list = await listHistory();
+
+      assert.equal(list.length, maxHistory);
+      assert.ok(!list.some((item) => item.id === dropped), 'the oldest run is still listed');
+      await vscode.commands.executeCommand('streamscope.showResponse', uri, 1);
+      const gone = await waitForState(
+        (seen) => seen.released && seen.visible,
+        'the run that left history was not shown as released',
+        10_000,
+        kept.key,
+      );
+      assert.equal(gone.run, dropped);
+      assert.equal(gone.status, 'completed');
+    });
+
+    it('keeps a run that is still running while older runs are dropped', async function () {
+      this.timeout(120_000);
+      const server = await streamServer();
+      const quick = await startHttpServer((_request, response) => {
+        response.end('ok');
+      });
+      servers.push(quick);
+      const streaming = await open('history-running-kept.http', [
+        `GET ${server.url}/stream?rate=100&seconds=60&size=256`,
+      ]);
+      start();
+      const running = await waitForState(
+        (seen) => seen.rendered >= 5,
+        'five events were not drawn',
+      );
+      await until(() => panelTabs().length === 1, 'the stream has no panel tab');
+      await vscode.window.tabGroups.close(panelTabs());
+      await waitForState((seen) => !seen.visible, 'the panel did not close', 10_000, running.key);
+      const uri = await openPair('history-running-churn.http', quick.url);
+
+      await churn(uri, 5, maxHistory + 1);
+      const list = await listHistory();
+
+      assert.equal(list.length, maxHistory);
+      assert.ok(
+        list.some((item) => item.id === running.run),
+        'the running run was dropped',
+      );
+      const state = await responseState(running.key);
+      assert.equal(state?.released, false);
+      assert.equal(state.status, 'receiving');
+      await vscode.commands.executeCommand('streamscope.stopRequest', streaming.document.uri, 0);
+      await until(
+        async () => (await runStatus(running.run)) === 'cancelled',
+        'the run did not end cancelled',
+      );
+    });
+
+    it('keeps a run that a panel shows while older runs are dropped', async function () {
+      this.timeout(120_000);
+      const server = await startHttpServer((_request, response) => {
+        response.end('ok');
+      });
+      servers.push(server);
+      const uri = await openPair('history-shown.http', server.url);
+
+      const shown = await sendLine(uri, 1);
+      const panel = await waitForState(
+        (seen) => seen.status === 'completed' && seen.visible,
+        'the panel did not open',
+      );
+      await churn(uri, 5, maxHistory + 1);
+      const list = await listHistory();
+
+      assert.equal(list.length, maxHistory);
+      assert.ok(
+        list.some((item) => item.id === shown),
+        'the shown run was dropped',
+      );
+      const state = await responseState(panel.key);
+      assert.equal(state?.released, false);
+      assert.equal(state.run, shown);
+    });
   });
 });

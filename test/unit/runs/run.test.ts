@@ -5,7 +5,7 @@ import * as zlib from 'node:zlib';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { SpillFile } from '../../../src/events/spill';
 import { parseHttpFile } from '../../../src/http-file/parse';
-import { requestKey, startRun, type RunStatus } from '../../../src/runs/run';
+import { requestKey, requestKeyDocument, startRun, type RunStatus } from '../../../src/runs/run';
 import type { Transport } from '../../../src/transport/model';
 import { createSelfSignedCertificate } from '../../support/certificate';
 import { startHttpServer, startHttpsServer, type LocalServer } from '../../support/servers';
@@ -759,6 +759,68 @@ describe('startRun streaming', () => {
   });
 });
 
+describe('release', () => {
+  it('drops the events the store holds in memory', async () => {
+    const server = await track(startStreamServer());
+    const run = startRun(
+      runInput([`GET ${server.url}/stream?rate=100&seconds=0.3&size=256`]),
+      dependencies,
+    );
+    const store = (await run.done).stream?.store;
+    expect(store?.inMemory(1)).toBeDefined();
+    expect(store?.inMemory(32)).toBeDefined();
+
+    await run.release();
+
+    expect(store?.count).toBe(32);
+    expect(store?.inMemory(1)).toBeUndefined();
+    expect(store?.inMemory(32)).toBeUndefined();
+  });
+
+  it('marks the run released and its raw data removed', async () => {
+    const server = await track(startStreamServer());
+    const run = startRun(
+      runInput([`GET ${server.url}/stream?rate=100&seconds=0.3&size=256`]),
+      dependencies,
+    );
+    const before = await run.done;
+    expect(before.released).toBe(false);
+    expect(before.rawData).toBe('saved');
+
+    await run.release();
+
+    expect(run.snapshot().released).toBe(true);
+    expect(run.snapshot().rawData).toBe('removed');
+    expect(run.snapshot().status).toBe('completed');
+  });
+
+  it('keeps saying the raw data was never saved when there was no spill file', async () => {
+    const server = await track(startStreamServer());
+    const run = startRun(
+      { ...runInput([`GET ${server.url}/stream?rate=100&seconds=0.1&size=256`]), spill: undefined },
+      dependencies,
+    );
+    await run.done;
+
+    await run.release();
+
+    expect(run.snapshot().released).toBe(true);
+    expect(run.snapshot().rawData).toBe('unsaved');
+  });
+});
+
+describe('wall-clock start', () => {
+  it('records the time of day the run started, not the monotonic clock', async () => {
+    const snapshot = await startRun(
+      runInput(['GET https://api.example.test/{{missing}}']),
+      dependencies,
+    ).done;
+
+    expect(snapshot.wallStartedAt).toBe(new Date('2026-11-11T10:20:30.456Z').getTime());
+    expect(snapshot.startedAt).not.toBe(snapshot.wallStartedAt);
+  });
+});
+
 describe('requestKey', () => {
   it('keys named requests by name and others by position, method and url', () => {
     const file = parseHttpFile(
@@ -779,5 +841,26 @@ describe('requestKey', () => {
     expect(requestKey('file:///a.http', me, 1)).toBe(
       'file:///a.http\n#1 GET https://api.example.test/me',
     );
+  });
+
+  it('gives back the document a key was made from', () => {
+    const file = parseHttpFile(
+      [
+        '# @name login',
+        'POST https://api.example.test/login',
+        '',
+        '###',
+        'get https://api.example.test/me',
+      ].join('\n'),
+    );
+    const [login, me] = file.requests;
+    if (!login || !me) {
+      throw new Error('expected two requests');
+    }
+    const document = 'file:///my%20folder/a.http';
+
+    expect(requestKeyDocument(requestKey(document, login, 0))).toBe(document);
+    expect(requestKeyDocument(requestKey(document, me, 1))).toBe(document);
+    expect(requestKeyDocument('untitled:Untitled-1\n@x')).toBe('untitled:Untitled-1');
   });
 });

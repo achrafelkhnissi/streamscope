@@ -4,6 +4,7 @@ import { panelBody } from '../../response/panel-content';
 import { PanelFeed } from '../../response/panel-feed';
 import { panelHtml } from '../../response/panel-html';
 import { parsePanelMessage, type PanelBody, type PanelView } from '../../response/panel-protocol';
+import { panelTitle } from '../../response/run-status';
 import type { RunHandle, RunStatus } from '../../runs/run';
 import { formatLabel } from '../../streaming/detect';
 import { readDefaultView } from '../requests/settings';
@@ -20,6 +21,8 @@ export interface ResponseState {
   body: PanelBody['kind'];
   visible: boolean;
   readOnly: boolean;
+  released: boolean;
+  title: string | undefined;
 }
 
 export interface ResponsePanelsOptions {
@@ -106,7 +109,7 @@ export class ResponsePanels implements vscode.Disposable {
       this.open(entry, false);
       return;
     }
-    entry.panel.title = run.snapshot().label;
+    entry.panel.title = panelTitle(run.snapshot(), entry.readOnly);
     if (entry.ready) {
       entry.feed.start();
       this.tick(entry);
@@ -162,7 +165,18 @@ export class ResponsePanels implements vscode.Disposable {
       body: entry.feed.body.kind,
       visible: entry.panel?.visible ?? false,
       readOnly: entry.readOnly,
+      released: snapshot.released,
+      title: entry.panel?.title,
     };
+  }
+
+  isShown(run: RunHandle): boolean {
+    for (const entry of this.entries.values()) {
+      if (entry.run === run && entry.panel !== undefined) {
+        return true;
+      }
+    }
+    return false;
   }
 
   active(): string | undefined {
@@ -235,7 +249,7 @@ export class ResponsePanels implements vscode.Disposable {
 
   private open(entry: Entry, focus: boolean): void {
     const dist = vscode.Uri.joinPath(this.options.extensionUri, 'dist');
-    const title = entry.run.snapshot().label;
+    const title = panelTitle(entry.run.snapshot(), entry.readOnly);
     const panel = vscode.window.createWebviewPanel(
       responseViewType,
       title,

@@ -52,6 +52,13 @@ export function formatDuration(ms: number): string {
   return ms < 1000 ? `${String(Math.round(ms))} ms` : `${(ms / 1000).toFixed(1)} s`;
 }
 
+export function formatTimeOfDay(epochMs: number): string {
+  const time = new Date(epochMs);
+  return [time.getHours(), time.getMinutes(), time.getSeconds()]
+    .map((part) => String(part).padStart(2, '0'))
+    .join(':');
+}
+
 export function requestLabel(request: HttpRequest): string {
   return (
     request.name ??

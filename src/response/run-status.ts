@@ -1,11 +1,18 @@
 import { maskValues } from '../masking/masking';
 import type { RunSnapshot } from '../runs/run';
-import { describeOutcome, eventCount, formatDuration } from './labels';
+import { describeOutcome, eventCount, formatDuration, formatTimeOfDay } from './labels';
 
 export interface RunPickItem {
   label: string;
   description: string;
   key: string;
+}
+
+export interface HistoryItem {
+  id: number;
+  label: string;
+  description: string;
+  detail: string;
 }
 
 function maskedLabel(run: RunSnapshot): string {
@@ -42,4 +49,18 @@ export function runPickItems(runs: readonly RunSnapshot[]): RunPickItem[] {
     description: describeOutcome(run),
     key: run.key,
   }));
+}
+
+export function historyItems(runs: readonly RunSnapshot[]): HistoryItem[] {
+  return runs.map((run) => ({
+    id: run.id,
+    label: maskedLabel(run),
+    description: describeOutcome(run),
+    detail: formatTimeOfDay(run.wallStartedAt),
+  }));
+}
+
+export function panelTitle(run: RunSnapshot, readOnly: boolean): string {
+  const label = maskedLabel(run);
+  return readOnly ? `${label} · ${formatTimeOfDay(run.wallStartedAt)}` : label;
 }

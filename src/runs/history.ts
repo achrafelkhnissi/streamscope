@@ -3,15 +3,20 @@ import type { RunHandle } from './run';
 export class RunHistory {
   private readonly runs = new Map<number, RunHandle>();
 
-  constructor(private readonly limit: number) {}
+  constructor(
+    private readonly limit: number,
+    private readonly canEvict: (run: RunHandle) => boolean,
+  ) {}
 
   add(run: RunHandle): void {
     this.runs.set(run.id, run);
-    if (this.runs.size > this.limit) {
-      const oldest = this.runs.values().next().value;
-      if (oldest !== undefined) {
-        this.runs.delete(oldest.id);
-        void oldest.release();
+    for (const held of this.runs.values()) {
+      if (this.runs.size <= this.limit) {
+        break;
+      }
+      if (held !== run && this.canEvict(held)) {
+        this.runs.delete(held.id);
+        void held.release();
       }
     }
   }

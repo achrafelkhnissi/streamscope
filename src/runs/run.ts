@@ -38,6 +38,7 @@ export interface RunSnapshot {
   label: string;
   status: RunStatus;
   startedAt: number;
+  wallStartedAt: number;
   elapsedMs: number;
   sent: SentRequest | undefined;
   head: ResponseHead | undefined;
@@ -50,6 +51,7 @@ export interface RunSnapshot {
   stream: StreamSession | undefined;
   raw: RawTail;
   rawData: RawData;
+  released: boolean;
   failure: RunFailure | undefined;
   problems: readonly ResolutionProblem[];
   sensitiveValues: readonly string[];
@@ -95,7 +97,7 @@ export interface RunHandle {
   release(): Promise<void>;
 }
 
-type RunState = Omit<RunSnapshot, 'elapsedMs' | 'receivedBytes' | 'rawData'>;
+type RunState = Omit<RunSnapshot, 'elapsedMs' | 'receivedBytes' | 'rawData' | 'released'>;
 
 const timeoutMessage = 'Expected a duration such as 500ms, 30s or 5m.';
 const rawTailChars = 2_097_152;
@@ -151,11 +153,11 @@ async function createSpillFile(area: SpillArea | undefined): Promise<SpillFile |
   }
 }
 
-function rawDataOf(file: SpillFile | undefined): RawData {
+function rawDataOf(file: SpillFile | undefined, released: boolean): RawData {
   if (file === undefined) {
     return 'unsaved';
   }
-  if (file.evicted) {
+  if (released || file.evicted) {
     return 'removed';
   }
   return file.capped ? 'stopped' : 'saved';
@@ -169,6 +171,10 @@ export function requestKey(documentUri: string, request: HttpRequest, index: num
   return request.name === undefined
     ? `${documentUri}\n#${String(index)} ${request.requestLine.method.toUpperCase()} ${request.requestLine.url}`
     : `${documentUri}\n@${request.name}`;
+}
+
+export function requestKeyDocument(key: string): string {
+  return key.slice(0, key.indexOf('\n'));
 }
 
 export function startRun(
@@ -186,6 +192,7 @@ export function startRun(
   let arrived = 0;
   let cancelled = false;
   let tooLarge = false;
+  let released = false;
   let endedAt: number | undefined;
   let session: StreamSession | undefined;
   let spillFile: SpillFile | undefined;
@@ -195,6 +202,7 @@ export function startRun(
     label: input.label,
     status: 'sending',
     startedAt: dependencies.clock(),
+    wallStartedAt: dependencies.system.now().getTime(),
     sent: undefined,
     head: undefined,
     hops: [],
@@ -213,7 +221,8 @@ export function startRun(
     ...state,
     elapsedMs: (endedAt ?? dependencies.clock()) - state.startedAt,
     receivedBytes: arrived,
-    rawData: rawDataOf(spillFile),
+    rawData: rawDataOf(spillFile, released),
+    released,
   });
   const wasCancelled = (): boolean => cancelled;
   const update = (): void => {
@@ -413,8 +422,10 @@ export function startRun(
       session?.store.release();
     },
     release: async () => {
+      released = true;
       cancel();
       session?.dispose();
+      session?.store.release();
       await deleteSpillFile(spillFile);
     },
   };

@@ -6,6 +6,7 @@ import {
   fileSafeName,
   formatBytes,
   formatDuration,
+  formatTimeOfDay,
   requestLabel,
   saveExtension,
 } from '../../../src/response/labels';
@@ -85,6 +86,12 @@ describe('labels', () => {
     expect(formatDuration(120)).toBe('120 ms');
     expect(formatDuration(12.6)).toBe('13 ms');
     expect(formatDuration(2100)).toBe('2.1 s');
+  });
+
+  it('formats the time of day in local time with two digits per part', () => {
+    expect(formatTimeOfDay(new Date(2026, 10, 12, 9, 5, 7, 999).getTime())).toBe('09:05:07');
+    expect(formatTimeOfDay(new Date(2026, 10, 12, 0, 0, 0).getTime())).toBe('00:00:00');
+    expect(formatTimeOfDay(new Date(2026, 10, 12, 23, 59, 59).getTime())).toBe('23:59:59');
   });
 
   it('describes each outcome', () => {

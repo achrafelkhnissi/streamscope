@@ -57,6 +57,10 @@ export function replyNote(status: PanelStatus | undefined): string {
   return status?.replyCut === true ? 'The reply was cut off at 1,048,576 characters.' : '';
 }
 
+export function historyNote(status: PanelStatus | undefined): string {
+  return status?.released === true ? 'This run is no longer in history.' : '';
+}
+
 export function bodyNote(body: PanelBody): string {
   switch (body.kind) {
     case 'stream':

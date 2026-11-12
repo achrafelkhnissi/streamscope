@@ -3,6 +3,7 @@ import type { PanelStatus } from '../../../src/response/panel-protocol';
 import { maxReplyLength } from '../../../src/streaming/limits';
 import {
   bodyNote,
+  historyNote,
   replyNote,
   stateAnnouncement,
   stateLabels,
@@ -19,6 +20,7 @@ function status(overrides: Partial<PanelStatus> = {}): PanelStatus {
     format: undefined,
     reply: false,
     replyCut: false,
+    released: false,
     ...overrides,
   };
 }
@@ -104,6 +106,14 @@ describe('bodyNote', () => {
     expect(bodyNote({ kind: 'preview', language: 'text', text: 'a\nb', totalBytes: 900 })).toBe(
       'Showing the first 2 lines of a 900 B body.',
     );
+  });
+});
+
+describe('historyNote', () => {
+  it('says when the run is no longer in history, and nothing while it is', () => {
+    expect(historyNote(status({ released: true }))).toBe('This run is no longer in history.');
+    expect(historyNote(status({ released: false }))).toBe('');
+    expect(historyNote(undefined)).toBe('');
   });
 });
 

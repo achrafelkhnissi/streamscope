@@ -11,8 +11,15 @@ import {
   type ToPanel,
 } from '../response/panel-protocol';
 import { followingAfterScroll, listWindow, scrollTopFor, type ListInput } from './list-window';
-import { canSave, effectiveView, visibleViews } from './panel-state';
-import { bodyNote, replyNote, stateAnnouncement, stateLabels, statusLine } from './panel-text';
+import { canOpen, canSave, effectiveView, visibleViews } from './panel-state';
+import {
+  bodyNote,
+  historyNote,
+  replyNote,
+  stateAnnouncement,
+  stateLabels,
+  statusLine,
+} from './panel-text';
 import { rawTail, rawTokens, splitLines } from './raw-colour';
 
 interface PanelState {
@@ -71,6 +78,7 @@ const spacer = element('spacer', HTMLDivElement);
 const statePill = element('state', HTMLSpanElement);
 const statusText = element('status', HTMLSpanElement);
 const openButton = element('open', HTMLButtonElement);
+const historyText = element('history-note', HTMLParagraphElement);
 const stopButton = element('stop', HTMLButtonElement);
 const saveButton = element('save', HTMLButtonElement);
 const announcer = element('announce', HTMLDivElement);
@@ -231,6 +239,10 @@ function showStatus(status: PanelStatus): void {
   statusText.title = line;
   stopButton.disabled = !status.running;
   saveButton.disabled = !canSave(status);
+  openButton.disabled = !canOpen(status);
+  const gone = historyNote(status);
+  historyText.textContent = gone;
+  historyText.hidden = gone === '';
   const cut = replyNote(status);
   replyCutText.textContent = cut;
   replyCutText.hidden = cut === '';

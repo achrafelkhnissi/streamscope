@@ -128,6 +128,7 @@ describe('extension manifest', () => {
       'streamscope.listSecrets',
       'streamscope.moveToSecretStorage',
       'streamscope.showLog',
+      'streamscope.showHistory',
     ]);
   });
 
@@ -275,6 +276,7 @@ describe('extension manifest', () => {
 
     expect(titles['streamscope.showResponse']).toBe('Show Response');
     expect(titles['streamscope.showResponseView']).toBe('Switch Response View…');
+    expect(titles['streamscope.showHistory']).toBe('Show History');
     expect(titles['streamscope.showResponseBody']).toBe('Open Response Body in Editor');
     expect(titles['streamscope.showResponseHeaders']).toBe('Open Response Headers in Editor');
   });

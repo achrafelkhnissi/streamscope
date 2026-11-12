@@ -81,6 +81,7 @@ export function panelStatus(run: RunSnapshot): PanelStatus {
     format: stream?.format === undefined ? undefined : formatLabel(stream.format),
     reply: stream?.reply.adapter !== undefined,
     replyCut: stream?.reply.truncated ?? false,
+    released: run.released,
   };
 }
 

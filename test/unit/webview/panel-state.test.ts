@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { panelViews, type PanelStatus } from '../../../src/response/panel-protocol';
-import { canSave, effectiveView, visibleViews } from '../../../src/webview/panel-state';
+import { canOpen, canSave, effectiveView, visibleViews } from '../../../src/webview/panel-state';
 
 function status(overrides: Partial<PanelStatus> = {}): PanelStatus {
   return {
@@ -12,6 +12,7 @@ function status(overrides: Partial<PanelStatus> = {}): PanelStatus {
     format: undefined,
     reply: false,
     replyCut: false,
+    released: false,
     ...overrides,
   };
 }
@@ -62,5 +63,16 @@ describe('canSave', () => {
   it('does not allow saving while sending or before the first status', () => {
     expect(canSave(status({ state: 'sending' }))).toBe(false);
     expect(canSave(undefined)).toBe(false);
+  });
+});
+
+describe('canOpen', () => {
+  it('allows opening in the editor while the run is in history', () => {
+    expect(canOpen(status({ released: false }))).toBe(true);
+    expect(canOpen(undefined)).toBe(true);
+  });
+
+  it('does not allow opening a run that has left history', () => {
+    expect(canOpen(status({ released: true }))).toBe(false);
   });
 });

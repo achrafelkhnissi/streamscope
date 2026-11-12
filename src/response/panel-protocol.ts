@@ -41,6 +41,7 @@ export interface PanelStatus {
   format: string | undefined;
   reply: boolean;
   replyCut: boolean;
+  released: boolean;
 }
 
 export interface TextDelta {

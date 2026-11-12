@@ -76,6 +76,7 @@ describe('panelStatus', () => {
       format: 'NDJSON (server said application/x-ndjson)',
       reply: false,
       replyCut: false,
+      released: false,
     });
   });
 
@@ -89,6 +90,7 @@ describe('panelStatus', () => {
       format: undefined,
       reply: false,
       replyCut: false,
+      released: false,
     });
   });
 
@@ -177,6 +179,11 @@ describe('panelStatus', () => {
 
     expect(status.reply).toBe(true);
     expect(status.replyCut).toBe(true);
+  });
+
+  it('says when the run has left history', () => {
+    expect(panelStatus(snapshot()).released).toBe(false);
+    expect(panelStatus(snapshot({ released: true })).released).toBe(true);
   });
 
   it('masks sensitive values in the status text', () => {

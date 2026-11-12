@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   describeRunning,
+  historyItems,
+  panelTitle,
   runPickItems,
   runStatusText,
   runStatusTooltip,
@@ -83,5 +85,88 @@ describe('run status text', () => {
       { label: 'items', description: 'Running · 34 events · 2.1 s', key: 'a' },
       { label: 'login', description: 'Running · 2.1 s', key: 'b' },
     ]);
+  });
+});
+
+describe('history items', () => {
+  const at = (hours: number, minutes: number, seconds: number): number =>
+    new Date(2026, 10, 12, hours, minutes, seconds).getTime();
+
+  it('lists the runs as given with label, outcome and start time', () => {
+    const items = historyItems([
+      snapshot({ id: 7, ...events, stream: streamOf(34), wallStartedAt: at(10, 21, 33) }),
+      snapshot({
+        id: 6,
+        label: 'login',
+        status: 'failed',
+        head: undefined,
+        failure: { kind: 'refused', message: 'Connection refused.' },
+        wallStartedAt: at(9, 5, 7),
+      }),
+    ]);
+
+    expect(items).toEqual([
+      { id: 7, label: 'items', description: '200 OK · 34 events · 120 ms', detail: '10:21:33' },
+      { id: 6, label: 'login', description: 'Failed: Connection refused.', detail: '09:05:07' },
+    ]);
+  });
+
+  it('describes a run that is still running by its live state', () => {
+    const [item] = historyItems([
+      running({ id: 3, ...events, stream: streamOf(2), wallStartedAt: at(8, 0, 0) }),
+    ]);
+
+    expect(item).toEqual({
+      id: 3,
+      label: 'items',
+      description: 'Running · 2 events · 2.1 s',
+      detail: '08:00:00',
+    });
+  });
+
+  it('masks the sensitive values in the label and the outcome', () => {
+    const [item] = historyItems([
+      snapshot({
+        label: 'GET https://synthetic-secret.example.test/items',
+        status: 'failed',
+        head: undefined,
+        failure: { kind: 'refused', message: 'Could not reach synthetic-secret.example.test.' },
+        sensitiveValues: ['synthetic-secret'],
+      }),
+    ]);
+
+    expect(item?.label).toBe('GET https://••••••.example.test/items');
+    expect(item?.description).toBe('Failed: Could not reach ••••••.example.test.');
+    expect(`${item?.label ?? ''}${item?.description ?? ''}${item?.detail ?? ''}`).not.toContain(
+      'synthetic-secret',
+    );
+  });
+
+  it('lists nothing for no runs', () => {
+    expect(historyItems([])).toEqual([]);
+  });
+});
+
+describe('panelTitle', () => {
+  it('is the masked label of a live panel', () => {
+    expect(panelTitle(snapshot(), false)).toBe('items');
+    expect(
+      panelTitle(
+        snapshot({ label: 'login synthetic-secret', sensitiveValues: ['synthetic-secret'] }),
+        false,
+      ),
+    ).toBe('login ••••••');
+  });
+
+  it('adds the start time to the title of a run reopened read-only', () => {
+    const reopened = snapshot({ wallStartedAt: new Date(2026, 10, 12, 10, 21, 33).getTime() });
+
+    expect(panelTitle(reopened, true)).toBe('items · 10:21:33');
+    expect(
+      panelTitle(
+        { ...reopened, label: 'login synthetic-secret', sensitiveValues: ['synthetic-secret'] },
+        true,
+      ),
+    ).toBe('login •••••• · 10:21:33');
   });
 });

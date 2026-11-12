@@ -4,10 +4,19 @@ import type { StreamSession } from '../../events/session';
 import { SpillArea } from '../../events/spill';
 import type { HttpFile, HttpRequest } from '../../http-file/model';
 import { fileSafeName, formatBytes, requestLabel, saveExtension } from '../../response/labels';
+import { historyItems, type HistoryItem } from '../../response/run-status';
 import type { BodyFileContext } from '../../runs/body-files';
 import { panelViews, type PanelView } from '../../response/panel-protocol';
-import { RunRegistry } from '../../runs/registry';
-import { requestKey, type RunDependencies, type RunSnapshot, type RunStatus } from '../../runs/run';
+import { RunHistory } from '../../runs/history';
+import { isActive, RunRegistry } from '../../runs/registry';
+import {
+  requestKey,
+  requestKeyDocument,
+  type RunDependencies,
+  type RunHandle,
+  type RunSnapshot,
+  type RunStatus,
+} from '../../runs/run';
 import { defaultSpillLimits } from '../../streaming/limits';
 import { NodeTransport } from '../../transport/node-transport';
 import { confirmOnce } from '../../runs/confirm-once';
@@ -33,6 +42,8 @@ interface Target {
 }
 
 const sendableSchemes: ReadonlySet<string> = new Set(['file', 'untitled']);
+const historyLimit = 50;
+const noHistoryMessage = 'Send a request first: this session has no history yet.';
 const noResponseMessage = 'Send the request first: there is no response yet.';
 const webviewPanelScheme = 'webview-panel';
 const localFolderMessage = 'Save the stream to a local folder.';
@@ -48,6 +59,10 @@ const viewTitles: Record<PanelView, string> = {
   body: 'Body',
   checks: 'Checks',
 };
+
+function hasResponse(run: RunSnapshot): boolean {
+  return run.head !== undefined || run.status === 'failed';
+}
 
 function editorUri(value: unknown): vscode.Uri | undefined {
   return value instanceof vscode.Uri && value.scheme !== webviewPanelScheme ? value : undefined;
@@ -215,6 +230,8 @@ export function registerRequestFeatures(
     save: (run, documentUri) => saveRun(run.snapshot(), documentUri, undefined),
   });
 
+  const history = new RunHistory(historyLimit, (run) => !isActive(run) && !panels.isShown(run));
+
   const target = async (uri?: vscode.Uri, line?: number): Promise<Target | undefined> => {
     const editor = vscode.window.activeTextEditor;
     const document = uri ? await vscode.workspace.openTextDocument(uri) : editor?.document;
@@ -248,6 +265,17 @@ export function registerRequestFeatures(
   };
 
   const showPanel = (key: string): boolean => {
+    const latest = registry.latest(key);
+    const shownUri = presenter.documentUri(key);
+    if (
+      latest !== undefined &&
+      shownUri !== undefined &&
+      presenter.run(key) !== latest &&
+      hasResponse(latest.snapshot())
+    ) {
+      panels.show(latest, shownUri, { reveal: true, readOnly: false });
+      return panels.reveal(key);
+    }
     if (panels.reveal(key)) {
       return true;
     }
@@ -299,6 +327,7 @@ export function registerRequestFeatures(
       spill: area,
       limits: limits.limits,
     });
+    history.add(handle);
     const shown = (): boolean => presenter.run(key) === handle;
     const showRun = (): void => {
       if (!shown() && registry.latest(key) === handle) {
@@ -321,7 +350,7 @@ export function registerRequestFeatures(
       void showBlocked(document, run);
       return;
     }
-    if (run.head !== undefined || run.status === 'failed') {
+    if (hasResponse(run)) {
       showRun();
     }
     if (shown()) {
@@ -390,6 +419,37 @@ export function registerRequestFeatures(
     }
   };
 
+  const reopenRun = (run: RunHandle): void => {
+    const { key } = run.snapshot();
+    panels.show(run, vscode.Uri.parse(requestKeyDocument(key)), { reveal: true, readOnly: true });
+    panels.reveal(key);
+  };
+
+  const showHistory = async (runId?: unknown): Promise<HistoryItem[]> => {
+    const items = historyItems(history.list().map((run) => run.snapshot()));
+    if (typeof runId === 'number') {
+      const run = history.find(runId);
+      if (run !== undefined) {
+        reopenRun(run);
+      }
+      return items;
+    }
+    if (items.length === 0) {
+      void vscode.window.showInformationMessage(noHistoryMessage);
+      return items;
+    }
+    const picked = await vscode.window.showQuickPick(items, {
+      placeHolder: 'Reopen a request from this session',
+      matchOnDescription: true,
+      matchOnDetail: true,
+    });
+    const run = picked === undefined ? undefined : history.find(picked.id);
+    if (run !== undefined) {
+      reopenRun(run);
+    }
+    return items;
+  };
+
   const showResponseView = async (view?: unknown): Promise<void> => {
     const key = await responseKey();
     const run = key === undefined ? undefined : presenter.run(key);
@@ -427,6 +487,11 @@ export function registerRequestFeatures(
     },
     {
       dispose: () => {
+        void history.dispose();
+      },
+    },
+    {
+      dispose: () => {
         void spill.then((area) => area?.dispose());
       },
     },
@@ -445,6 +510,7 @@ export function registerRequestFeatures(
     vscode.commands.registerCommand('streamscope.saveResponse', saveResponse),
     vscode.commands.registerCommand('streamscope.showResponse', showResponse),
     vscode.commands.registerCommand('streamscope.showResponseView', showResponseView),
+    vscode.commands.registerCommand('streamscope.showHistory', showHistory),
     vscode.commands.registerCommand('streamscope.showResponseHeaders', openDocument('headers')),
     vscode.commands.registerCommand('streamscope.showResponseBody', openDocument('body')),
   );
@@ -467,6 +533,11 @@ export function registerRequestFeatures(
         typeof id === 'number' ? statuses.get(id) : undefined,
       ),
       vscode.commands.registerCommand('streamscope.test.closeResponseTabs', closeResponseTabs),
+      vscode.commands.registerCommand('streamscope.test.newestEventInMemory', (id?: unknown) => {
+        const store =
+          typeof id === 'number' ? history.find(id)?.snapshot().stream?.store : undefined;
+        return store === undefined ? undefined : store.inMemory(store.count) !== undefined;
+      }),
     );
   }
 }

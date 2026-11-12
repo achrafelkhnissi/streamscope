@@ -167,6 +167,12 @@ describe('panelHtml', () => {
     expect(html()).toContain('<pre id="reply"></pre><p id="reply-note" hidden></p>');
   });
 
+  it('has a hidden note between the status bar and the tabs for a run that left history', () => {
+    const page = html();
+
+    expect(page).toContain('</header>\n<p id="history-note" hidden></p>\n<div class="tabs"');
+  });
+
   it('says there are no checks for this request', () => {
     expect(html()).toContain('<p id="checks">No checks for this request.</p>');
   });

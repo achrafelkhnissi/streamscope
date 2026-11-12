@@ -9,6 +9,7 @@ export function snapshot(overrides: Partial<RunSnapshot> = {}): RunSnapshot {
     label: 'items',
     status: 'completed',
     startedAt: 0,
+    wallStartedAt: new Date(2026, 10, 12, 9, 5, 7).getTime(),
     elapsedMs: 120,
     sent: {
       method: 'GET',
@@ -37,6 +38,7 @@ export function snapshot(overrides: Partial<RunSnapshot> = {}): RunSnapshot {
     stream: undefined,
     raw: new RawTail(1024),
     rawData: 'saved',
+    released: false,
     failure: undefined,
     problems: [],
     sensitiveValues: [],
