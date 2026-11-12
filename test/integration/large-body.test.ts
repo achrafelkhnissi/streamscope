@@ -31,6 +31,30 @@ async function largestDelayDuring(action: () => Thenable<unknown>): Promise<numb
   return delay.max / 1_000_000;
 }
 
+function median(values: number[]): number {
+  const middle = values.toSorted((a, b) => a - b)[Math.floor(values.length / 2)];
+  assert.ok(middle !== undefined);
+  return middle;
+}
+
+function milliseconds(values: number[]): string {
+  return values.map((value) => value.toFixed(1)).join(', ');
+}
+
+function openBodyUri(): vscode.Uri | undefined {
+  return vscode.window.tabGroups.all
+    .flatMap((group) => group.tabs)
+    .flatMap((tab) =>
+      tab.input instanceof vscode.TabInputText &&
+      tab.input.uri.scheme === 'streamscope-response' &&
+      tab.input.uri.path.endsWith('.json')
+        ? [tab.input.uri]
+        : [],
+    )[0];
+}
+
+const samples = 7;
+
 describe('large responses', () => {
   let folder = '';
   let server: LocalServer | undefined;
@@ -56,41 +80,43 @@ describe('large responses', () => {
     const file = path.join(folder, 'large.http');
     writeFileSync(file, `GET ${server.url}/large`);
     const document = await vscode.workspace.openTextDocument(vscode.Uri.file(file));
-    await vscode.window.showTextDocument(document, vscode.ViewColumn.One);
 
-    const sendMs = await largestDelayDuring(() =>
-      vscode.commands.executeCommand('streamscope.sendRequest'),
-    );
-    const bodyUri = vscode.window.tabGroups.all
-      .flatMap((group) => group.tabs)
-      .flatMap((tab) =>
-        tab.input instanceof vscode.TabInputText &&
-        tab.input.uri.scheme === 'streamscope-response' &&
-        tab.input.uri.path.endsWith('.json')
-          ? [tab.input.uri]
-          : [],
-      )[0];
-    assert.ok(bodyUri, 'the body document is not open');
-    const size = (await vscode.workspace.fs.stat(bodyUri)).size;
-    assert.ok(size > 50_000_000);
+    const sendMs: number[] = [];
+    const baselineMs: number[] = [];
+    for (let sample = 0; sample < samples; sample += 1) {
+      await vscode.commands.executeCommand('workbench.action.closeAllEditors');
+      await vscode.window.showTextDocument(document, vscode.ViewColumn.One);
+      sendMs.push(
+        await largestDelayDuring(() => vscode.commands.executeCommand('streamscope.sendRequest')),
+      );
+      const bodyUri = openBodyUri();
+      assert.ok(bodyUri, 'the body document is not open');
+      const size = (await vscode.workspace.fs.stat(bodyUri)).size;
+      assert.ok(size > 50_000_000);
 
-    const baselineUri = bodyUri.with({ query: 'baseline' });
-    const baselineMs = await largestDelayDuring(() =>
-      vscode.commands.executeCommand('vscode.open', baselineUri, {
-        viewColumn: vscode.ViewColumn.Beside,
-        preserveFocus: true,
-        preview: false,
-      }),
-    );
-    assert.equal((await vscode.workspace.fs.stat(baselineUri)).size, size);
+      const baselineUri = bodyUri.with({ query: `baseline-${String(sample)}` });
+      baselineMs.push(
+        await largestDelayDuring(() =>
+          vscode.commands.executeCommand('vscode.open', baselineUri, {
+            viewColumn: vscode.ViewColumn.Beside,
+            preserveFocus: true,
+            preview: false,
+          }),
+        ),
+      );
+      assert.equal((await vscode.workspace.fs.stat(baselineUri)).size, size);
+    }
 
+    const send = median(sendMs);
+    const baseline = median(baselineMs);
     console.log(
-      `Largest event loop delay for 50 MB: ${sendMs.toFixed(1)} ms sending, ${baselineMs.toFixed(1)} ms for VS Code to open the same document`,
+      `Largest event loop delay for 50 MB over ${String(samples)} runs: sending ${milliseconds(sendMs)} ms (median ${send.toFixed(1)}), VS Code opening the same document ${milliseconds(baselineMs)} ms (median ${baseline.toFixed(1)})`,
     );
     assert.ok(
-      sendMs < baselineMs + 250,
-      `Streamscope blocked the extension host ${(sendMs - baselineMs).toFixed(1)} ms longer than VS Code's own open`,
+      send < baseline + 250,
+      `Streamscope blocked the extension host ${(send - baseline).toFixed(1)} ms longer than VS Code's own open (medians of ${String(samples)} runs)`,
     );
-    assert.ok(sendMs < 2_000, `the extension host froze for ${sendMs.toFixed(1)} ms`);
+    const worst = Math.max(...sendMs);
+    assert.ok(worst < 2_000, `the extension host froze for ${worst.toFixed(1)} ms`);
   });
 });

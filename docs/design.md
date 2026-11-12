@@ -571,7 +571,7 @@ Rules: never swallow an error, never send a partly resolved request, notificatio
   - The stable API reads a provider file whole, so opening a document copies all its bytes out of the extension host in one step: about 20–60 ms for a 77 MB document on a fast Mac, and several hundred milliseconds on slow CI runners.
   - VS Code also syncs the text of every open document under 50 MiB into the extension host, whatever its scheme. A 46 MB document blocked it for about 350 ms on the same Mac.
   - Both costs are inputs to the M5 response-view decision and to how M11 counts "a synchronous task of the extension".
-- The 50 MB integration test checks that Streamscope adds less than 250 ms to VS Code's own cost of opening the same document, and that nothing blocks for 2 s.
+- The 50 MB integration test checks that Streamscope adds less than 250 ms to VS Code's own cost of opening the same document, comparing the medians of seven sends and seven reopenings because a single open on GitHub's macOS runner ranged from 38 to 1,103 ms, and that no send blocks for 2 s.
 - The native surface's full-document re-diff cost is measured in the spike; if native is chosen, the live Events document is capped (for example the newest 5,000 lines) with older events reachable by paging.
 - The extension ships as one bundle plus the format worker, so transport code loads at activation; the M11 benchmark checks the activation budget.
 - A benchmark harness (synthetic local server, scripted VS Code session) runs before each release and its numbers are kept in `docs/benchmarks.md`. Since M4, `npm run bench -- throughput` measures parsing speed and `npm run bench -- soak` measures heap, spill size and event lag over a real local stream.
