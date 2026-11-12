@@ -104,8 +104,9 @@ export class EnvironmentStore implements vscode.Disposable {
       folders.push(vscode.Uri.joinPath(document, '..'));
     }
     const workspaceFolder =
-      (document && vscode.workspace.getWorkspaceFolder(document)) ??
-      vscode.workspace.workspaceFolders?.[0];
+      document?.scheme === 'file'
+        ? vscode.workspace.getWorkspaceFolder(document)
+        : vscode.workspace.workspaceFolders?.[0];
     if (workspaceFolder) {
       folders.push(workspaceFolder.uri);
     }

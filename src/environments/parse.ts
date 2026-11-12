@@ -40,6 +40,21 @@ function layerFrom(value: unknown, origin: EnvironmentOrigin): EnvironmentLayer 
   return { origin, environments, insecure };
 }
 
+function errorLocation(reason: string, text: string): string {
+  const reported = /line (\d+) column (\d+)/.exec(reason);
+  if (reported) {
+    return ` (line ${reported[1] ?? ''}, column ${reported[2] ?? ''})`;
+  }
+  const position = /position (\d+)/.exec(reason);
+  if (!position) {
+    return '';
+  }
+  const before = text.slice(0, Number(position[1]));
+  const line = before.split('\n').length;
+  const column = before.length - before.lastIndexOf('\n');
+  return ` (line ${String(line)}, column ${String(column)})`;
+}
+
 export function parseSettingsEnvironments(value: unknown): EnvironmentLayer {
   return layerFrom(value, { kind: 'settings' });
 }
@@ -54,7 +69,7 @@ export function parseEnvironmentFile(
     value = JSON.parse(text);
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
-    return { ok: false, message: `${name} is not valid JSON: ${reason}` };
+    return { ok: false, message: `${name} is not valid JSON${errorLocation(reason, text)}.` };
   }
   if (!isRecord(value)) {
     return { ok: false, message: `${name} must contain a JSON object of environments.` };

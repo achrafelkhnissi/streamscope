@@ -63,6 +63,21 @@ describe('environment parsing', () => {
     expect(!result.ok && result.message).toContain('http-client.env.json');
   });
 
+  it('never repeats file contents in a JSON error', () => {
+    const result = parseEnvironmentFile('{"dev":{"token": synthetic-secret}}', file);
+
+    expect(!result.ok && result.message).not.toContain('synthetic');
+    expect(!result.ok && result.message).not.toContain('token');
+  });
+
+  it('gives the line and column of a JSON error when the parser reports one', () => {
+    const result = parseEnvironmentFile('{\n  "dev": {"a": "b",}\n}', file);
+
+    expect(!result.ok && result.message).toBe(
+      'http-client.env.json is not valid JSON (line 2, column 20).',
+    );
+  });
+
   it('reports a file that is not an object of environments', () => {
     const result = parseEnvironmentFile('["dev"]', file);
 
