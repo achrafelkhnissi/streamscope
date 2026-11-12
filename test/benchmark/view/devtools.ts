@@ -1,6 +1,5 @@
 import { writeFile } from 'node:fs/promises';
 import * as http from 'node:http';
-import * as net from 'node:net';
 
 export interface DevToolsTarget {
   type: string;
@@ -10,21 +9,44 @@ export interface DevToolsTarget {
 
 const screenshotTimeoutMs = 15_000;
 
-export function workbenchTarget(targets: readonly DevToolsTarget[]): DevToolsTarget | undefined {
-  return targets.find((target) => target.type === 'page' && target.url.endsWith('workbench.html'));
+export interface DevToolsReply {
+  id: number | undefined;
+  data: string | undefined;
+  error: string | undefined;
 }
 
-export function freePort(): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const server = net.createServer();
-    server.once('error', reject);
-    server.listen(0, '127.0.0.1', () => {
-      const { port } = server.address() as net.AddressInfo;
-      server.close(() => {
-        resolve(port);
-      });
-    });
-  });
+export function workbenchTarget(
+  targets: readonly DevToolsTarget[],
+  port: number,
+): DevToolsTarget | undefined {
+  return targets.find(
+    (target) =>
+      target.type === 'page' &&
+      target.url.endsWith('workbench.html') &&
+      target.webSocketDebuggerUrl?.startsWith(`ws://127.0.0.1:${String(port)}/`) === true,
+  );
+}
+
+export function parseReply(text: string): DevToolsReply | undefined {
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return undefined;
+  }
+  const reply = value as {
+    id?: unknown;
+    result?: { data?: unknown };
+    error?: { message?: unknown };
+  };
+  return {
+    id: typeof reply.id === 'number' ? reply.id : undefined,
+    data: typeof reply.result?.data === 'string' ? reply.result.data : undefined,
+    error: typeof reply.error?.message === 'string' ? reply.error.message : undefined,
+  };
 }
 
 function getText(url: string): Promise<string> {
@@ -73,18 +95,13 @@ function screenshotData(webSocketUrl: string): Promise<string> {
       );
     });
     socket.addEventListener('message', (event) => {
-      const message = JSON.parse(String(event.data)) as {
-        id?: number;
-        result?: { data?: string };
-        error?: { message?: string };
-      };
-      if (message.id === 1) {
-        finish(
-          message.error === undefined
-            ? undefined
-            : new Error(message.error.message ?? 'The screenshot failed.'),
-          message.result?.data,
-        );
+      const reply = parseReply(String(event.data));
+      if (reply === undefined) {
+        finish(new Error('DevTools sent a reply that is not JSON.'));
+        return;
+      }
+      if (reply.id === 1) {
+        finish(reply.error === undefined ? undefined : new Error(reply.error), reply.data);
       }
     });
     socket.addEventListener('error', () => {
@@ -97,7 +114,7 @@ export async function captureScreenshot(port: number, file: string): Promise<voi
   const targets = JSON.parse(
     await getText(`http://127.0.0.1:${String(port)}/json/list`),
   ) as DevToolsTarget[];
-  const target = workbenchTarget(targets);
+  const target = workbenchTarget(targets, port);
   if (target?.webSocketDebuggerUrl === undefined) {
     throw new Error('The VS Code workbench is not available for screenshots.');
   }

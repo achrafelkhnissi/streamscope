@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   checkSurfaceResult,
+  expectedEvents,
   readDriverResult,
   type DriverResult,
 } from '../../benchmark/view/results';
@@ -45,28 +46,51 @@ describe('readDriverResult', () => {
   });
 });
 
+describe('expectedEvents', () => {
+  it('counts the content events plus RUN_STARTED and RUN_FINISHED', () => {
+    expect(expectedEvents(500, 30)).toBe(15_002);
+    expect(expectedEvents(20, 0.25)).toBe(7);
+  });
+});
+
 describe('checkSurfaceResult', () => {
-  it('fails a run in which events never became visible', () => {
-    expect(
-      checkSurfaceResult({
-        surface: 'webview',
-        events: 10,
-        visible: 7,
-        latency,
-        endedBy: 'completed',
-      }),
-    ).toBe('3 events never became visible.');
+  const passing = {
+    surface: 'webview',
+    events: 10,
+    visible: 10,
+    latency,
+    endedBy: 'completed',
+  } as const;
+
+  it('accepts a complete run in which every event became visible with a latency', () => {
+    expect(checkSurfaceResult(passing, 10)).toBeUndefined();
   });
 
-  it('accepts a run in which every event became visible', () => {
-    expect(
-      checkSurfaceResult({
-        surface: 'webview',
-        events: 10,
-        visible: 10,
-        latency,
-        endedBy: 'completed',
-      }),
-    ).toBeUndefined();
+  it('fails a run in which the surface returned nothing', () => {
+    expect(checkSurfaceResult(undefined, 10)).toBe('The surface returned no result.');
+  });
+
+  it('fails a run whose stream did not complete', () => {
+    expect(checkSurfaceResult({ ...passing, endedBy: 'failed' }, 10)).toBe(
+      'The stream ended failed instead of completed.',
+    );
+  });
+
+  it('fails a run with a different number of events than the server sends', () => {
+    expect(checkSurfaceResult({ ...passing, events: 9, visible: 9 }, 10)).toBe(
+      'Expected 10 events, got 9.',
+    );
+  });
+
+  it('fails a run in which events never became visible', () => {
+    expect(checkSurfaceResult({ ...passing, visible: 7 }, 10)).toBe(
+      '3 events never became visible.',
+    );
+  });
+
+  it('fails a run in which visible events have no latency', () => {
+    expect(checkSurfaceResult({ ...passing, latency: { ...latency, count: 8 } }, 10)).toBe(
+      '2 visible events have no latency.',
+    );
   });
 });

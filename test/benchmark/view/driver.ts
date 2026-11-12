@@ -93,15 +93,10 @@ async function streamMode(
       .edit((builder) => {
         builder.insert(end, text);
       })
-      .then(
-        () => {
-          typing.record(performance.now() - started);
-          typingBusy = false;
-        },
-        () => {
-          typingBusy = false;
-        },
-      );
+      .then(() => {
+        typing.record(performance.now() - started);
+        typingBusy = false;
+      });
   }, 100);
   const baseline = process.memoryUsage();
   const memory = {

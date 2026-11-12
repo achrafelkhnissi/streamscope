@@ -1,4 +1,5 @@
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import {
   closeSync,
   existsSync,
@@ -9,17 +10,30 @@ import {
   realpathSync,
   rmSync,
   writeFileSync,
+  writeSync,
 } from 'node:fs';
 import type * as http from 'node:http';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { downloadAndUnzipVSCode } from '@vscode/test-electron';
 import { benchmarkEnvironment } from '../../../src/benchmark/contract';
-import { startHttpServer } from '../../support/servers';
+import { startHttpServer, type LocalServer } from '../../support/servers';
 import { startStreamServer } from '../../support/stream-server';
-import { captureScreenshot, freePort } from './devtools';
+import { captureScreenshot } from './devtools';
+import {
+  checkSurfaceName,
+  devToolsPort,
+  screenshotName,
+  vscodeArguments,
+  vscodeEnvironment,
+} from './launch';
 import { sampleProcesses, summariseProcessSamples, type ProcessSample } from './processes';
-import { checkSurfaceResult, readDriverResult, type ViewBenchmarkResult } from './results';
+import {
+  checkSurfaceResult,
+  expectedEvents,
+  readDriverResult,
+  type ViewBenchmarkResult,
+} from './results';
 
 export interface ViewBenchmarkOptions {
   surface: string;
@@ -34,7 +48,6 @@ const walkthroughStream = { rate: 20, seconds: 120, eventBytes: 256 };
 const walkthroughTimeoutSeconds = 300;
 const extraSeconds = 180;
 const sampleMs = 5000;
-const screenshotName = /^[a-z0-9-]+$/;
 
 const settings = {
   'workbench.startupEditor': 'none',
@@ -60,19 +73,29 @@ function killGroup(pid: number): void {
   }
 }
 
-function screenshotHandler(port: number, directory: string, saved: string[]): http.RequestListener {
+function screenshotHandler(
+  token: string,
+  port: () => number | undefined,
+  directory: string,
+  saved: string[],
+): http.RequestListener {
   return (request, response) => {
-    const url = new URL(request.url ?? '/', 'http://127.0.0.1');
-    const name = url.searchParams.get('name') ?? '';
-    if (url.pathname !== '/screenshot' || !screenshotName.test(name)) {
-      response.writeHead(400).end('Expected /screenshot?name=<lowercase-name>.');
+    const name = screenshotName(request.url, token);
+    if (name === undefined) {
+      response.writeHead(400).end('Expected /<token>/screenshot?name=<lowercase-name>.');
+      return;
+    }
+    const devTools = port();
+    if (devTools === undefined) {
+      response.writeHead(503).end('VS Code has not reported its DevTools port yet.');
       return;
     }
     const file = path.join(directory, `${name}.jpeg`);
-    captureScreenshot(port, file).then(
+    const relative = path.relative(process.cwd(), file);
+    captureScreenshot(devTools, file).then(
       () => {
-        saved.push(path.relative(process.cwd(), file));
-        response.writeHead(200).end(file);
+        saved.push(relative);
+        response.writeHead(200).end(relative);
       },
       (error: unknown) => {
         response.writeHead(500).end(error instanceof Error ? error.message : String(error));
@@ -84,6 +107,10 @@ function screenshotHandler(port: number, directory: string, saved: string[]): ht
 export async function runViewBenchmark(
   options: ViewBenchmarkOptions,
 ): Promise<ViewBenchmarkResult> {
+  const surfaceError = checkSurfaceName(options.surface);
+  if (surfaceError !== undefined) {
+    throw new Error(surfaceError);
+  }
   const root = process.cwd();
   const stream = options.walkthrough
     ? walkthroughStream
@@ -93,68 +120,91 @@ export async function runViewBenchmark(
     : options.seconds + extraSeconds;
   const outDirectory = path.join(root, 'out', 'benchmark');
   const screenshotDirectory = path.join(outDirectory, 'screenshots');
-  mkdirSync(screenshotDirectory, { recursive: true });
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-  const sandbox = realpathSync(mkdtempSync(path.join(tmpdir(), 'ssv-')));
-  const userDataDir = path.join(sandbox, 'ud');
-  const extensionsDir = path.join(sandbox, 'ext');
-  const workspace = path.join(sandbox, 'ws');
-  const driverOut = path.join(sandbox, 'driver.json');
-  for (const directory of [path.join(userDataDir, 'User'), extensionsDir, workspace]) {
-    mkdirSync(directory, { recursive: true });
-  }
-  writeFileSync(path.join(userDataDir, 'User', 'settings.json'), JSON.stringify(settings));
-  const port = await freePort();
-  const screenshots: string[] = [];
-  const streamServer = await startStreamServer();
-  const controlServer = await startHttpServer(
-    screenshotHandler(port, screenshotDirectory, screenshots),
-  );
-  const log = openSync(path.join(outDirectory, `view-${options.surface}-${stamp}.log`), 'w');
   const samples: ProcessSample[] = [];
+  const screenshots: string[] = [];
+  const token = randomBytes(16).toString('hex');
+  let sandbox: string | undefined;
+  let child: ChildProcess | undefined;
+  let log: number | undefined;
+  let streamServer: LocalServer | undefined;
+  let controlServer: LocalServer | undefined;
+  let devTools: number | undefined;
   let timeoutError: string | undefined;
+  const stopNow = (): void => {
+    if (child?.pid !== undefined) {
+      killGroup(child.pid);
+    }
+    if (sandbox !== undefined) {
+      rmSync(sandbox, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+    }
+  };
+  const onSignal = (signal: NodeJS.Signals): void => {
+    stopNow();
+    process.exit(signal === 'SIGINT' ? 130 : 143);
+  };
+  process.once('SIGINT', onSignal);
+  process.once('SIGTERM', onSignal);
   try {
+    mkdirSync(screenshotDirectory, { recursive: true });
+    sandbox = realpathSync(mkdtempSync(path.join(tmpdir(), 'ssv-')));
+    const userDataDir = path.join(sandbox, 'ud');
+    const extensionsDir = path.join(sandbox, 'ext');
+    const workspace = path.join(sandbox, 'ws');
+    const driverOut = path.join(sandbox, 'driver.json');
+    for (const directory of [path.join(userDataDir, 'User'), extensionsDir, workspace]) {
+      mkdirSync(directory, { recursive: true });
+    }
+    writeFileSync(path.join(userDataDir, 'User', 'settings.json'), JSON.stringify(settings));
+    log = openSync(path.join(outDirectory, `view-${options.surface}-${stamp}.log`), 'w');
+    const logFile = log;
+    streamServer = await startStreamServer();
+    if (options.walkthrough) {
+      controlServer = await startHttpServer(
+        screenshotHandler(token, () => devTools, screenshotDirectory, screenshots),
+      );
+    }
     const executable = await downloadAndUnzipVSCode('stable');
-    const args = [
-      '--no-sandbox',
-      '--disable-gpu-sandbox',
-      '--disable-updates',
-      '--skip-welcome',
-      '--skip-release-notes',
-      '--disable-extensions',
-      '--disable-workspace-trust',
-      `--remote-debugging-port=${String(port)}`,
-      '--disable-renderer-backgrounding',
-      '--disable-backgrounding-occluded-windows',
-      '--disable-background-timer-throttling',
-      `--user-data-dir=${userDataDir}`,
-      `--extensions-dir=${extensionsDir}`,
-      `--extensionDevelopmentPath=${root}`,
-      ...options.extensions.map(
-        (extension) => `--extensionDevelopmentPath=${path.resolve(root, extension)}`,
-      ),
-      `--extensionTestsPath=${path.join(outDirectory, 'view-driver.js')}`,
+    const args = vscodeArguments({
+      walkthrough: options.walkthrough,
+      platform: process.platform,
+      userDataDir,
+      extensionsDir,
+      developmentPaths: [root, ...options.extensions.map((folder) => path.resolve(root, folder))],
+      driver: path.join(outDirectory, 'view-driver.js'),
       workspace,
-    ];
-    const env: NodeJS.ProcessEnv = {
-      ...process.env,
+    });
+    const env = vscodeEnvironment(process.env, {
       [benchmarkEnvironment.enabled]: '1',
       [benchmarkEnvironment.mode]: options.walkthrough ? 'walkthrough' : 'stream',
       [benchmarkEnvironment.url]: `${streamServer.url}/stream?format=ndjson&rate=${String(stream.rate)}&seconds=${String(stream.seconds)}&size=${String(stream.eventBytes)}`,
       [benchmarkEnvironment.surface]: options.surface,
-      [benchmarkEnvironment.control]: controlServer.url,
+      [benchmarkEnvironment.control]:
+        controlServer === undefined ? '' : `${controlServer.url}/${token}`,
       [benchmarkEnvironment.out]: driverOut,
-    };
-    delete env.ELECTRON_RUN_AS_NODE;
-    const child = spawn(executable, args, { env, detached: true, stdio: ['ignore', log, log] });
-    const pid = child.pid;
+    });
+    const started = spawn(executable, args, {
+      env,
+      detached: true,
+      stdio: ['ignore', logFile, 'pipe'],
+    });
+    child = started;
+    const pid = started.pid;
     if (pid === undefined) {
       throw new Error(`VS Code did not start: ${executable}`);
     }
+    let stderr = '';
+    started.stderr?.on('data', (chunk: Buffer) => {
+      writeSync(logFile, chunk);
+      if (options.walkthrough && devTools === undefined) {
+        stderr += chunk.toString('utf8');
+        devTools = devToolsPort(stderr);
+      }
+    });
     const state = { exited: false };
     const exit = new Promise<void>((resolve, reject) => {
-      child.once('error', reject);
-      child.once('exit', () => {
+      started.once('error', reject);
+      started.once('exit', () => {
         state.exited = true;
         resolve();
       });
@@ -177,11 +227,12 @@ export async function runViewBenchmark(
       existsSync(driverOut) ? readFileSync(driverOut, 'utf8') : undefined,
       options.walkthrough ? 'walkthrough' : 'stream',
     );
-    const surfaceError =
-      driver.surface === undefined ? undefined : checkSurfaceResult(driver.surface);
+    const checkError = options.walkthrough
+      ? undefined
+      : checkSurfaceResult(driver.surface, expectedEvents(stream.rate, stream.seconds));
     const result: ViewBenchmarkResult = {
       ...driver,
-      error: timeoutError ?? driver.error ?? surfaceError,
+      error: timeoutError ?? driver.error ?? checkError,
       surfaceName: options.surface,
       rate: stream.rate,
       seconds: stream.seconds,
@@ -195,9 +246,13 @@ export async function runViewBenchmark(
     );
     return result;
   } finally {
-    closeSync(log);
-    await streamServer.close();
-    await controlServer.close();
-    rmSync(sandbox, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+    process.removeListener('SIGINT', onSignal);
+    process.removeListener('SIGTERM', onSignal);
+    if (log !== undefined) {
+      closeSync(log);
+    }
+    await streamServer?.close();
+    await controlServer?.close();
+    stopNow();
   }
 }
