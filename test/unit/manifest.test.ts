@@ -29,6 +29,8 @@ interface Manifest {
           type: string;
           pattern?: string;
           minimum?: number;
+          maximum?: number;
+          scope?: string;
           enum?: string[];
           items?: { type: string };
           markdownDescription?: string;
@@ -198,6 +200,7 @@ describe('extension manifest', () => {
     expect(properties['streamscope.stream.memoryEvents']).toMatchObject({
       type: 'integer',
       minimum: 100,
+      maximum: 1_000_000,
     });
     expect(properties['streamscope.stream.typeFields']).toMatchObject({
       type: 'array',
@@ -210,6 +213,24 @@ describe('extension manifest', () => {
     for (const name of names) {
       expect(properties[name]?.markdownDescription?.trim()).toBeTruthy();
     }
+  });
+
+  it('keeps a workspace from lifting the limits on memory and disk', () => {
+    const properties = manifest.contributes.configuration.properties;
+
+    expect(
+      Object.fromEntries(
+        Object.entries(properties)
+          .filter(([name]) => name.startsWith('streamscope.stream.'))
+          .map(([name, property]) => [name, property.scope]),
+      ),
+    ).toEqual({
+      'streamscope.stream.maxEventSize': 'resource',
+      'streamscope.stream.memoryEvents': 'resource',
+      'streamscope.stream.maxSpillSize': 'machine',
+      'streamscope.stream.maxTotalSpillSize': 'machine',
+      'streamscope.stream.typeFields': 'resource',
+    });
   });
 
   it('says that the spill size settings apply after a reload', () => {
@@ -245,7 +266,11 @@ describe('extension manifest', () => {
       untrustedWorkspaces: {
         supported: 'limited',
         description: expect.stringMatching(/\S/) as unknown,
-        restrictedConfigurations: ['streamscope.request.caFile'],
+        restrictedConfigurations: [
+          'streamscope.request.caFile',
+          'streamscope.stream.maxEventSize',
+          'streamscope.stream.memoryEvents',
+        ],
       },
       virtualWorkspaces: {
         supported: 'limited',

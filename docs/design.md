@@ -531,7 +531,7 @@ Nothing is written to the workspace except files the user asks to save.
 
 ### Workspace Trust
 
-`capabilities.untrustedWorkspaces: { supported: "limited", restrictedConfigurations: ["streamscope.request.caFile"] }` and `capabilities.virtualWorkspaces: { supported: "limited" }`. In a restricted workspace:
+`capabilities.untrustedWorkspaces: { supported: "limited", restrictedConfigurations: ["streamscope.request.caFile", "streamscope.stream.maxEventSize", "streamscope.stream.memoryEvents"] }` and `capabilities.virtualWorkspaces: { supported: "limited" }`. In a restricted workspace:
 
 | Feature                                                              | Trusted | Restricted                                                          |
 | -------------------------------------------------------------------- | ------- | ------------------------------------------------------------------- |

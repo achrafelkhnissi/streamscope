@@ -55,7 +55,9 @@
       "supported": "limited",
       "description": "In a restricted workspace Streamscope asks once before sending, never reads secrets, .env files, http-client.private.env.json, environments from your user settings, process environment variables or body files, ignores # @insecure, and uses only your own absolute streamscope.request.caFile.",
       "restrictedConfigurations": [
-        "streamscope.request.caFile"
+        "streamscope.request.caFile",
+        "streamscope.stream.maxEventSize",
+        "streamscope.stream.memoryEvents"
       ]
     },
     "virtualWorkspaces": {
@@ -220,33 +222,39 @@
         },
         "streamscope.stream.maxEventSize": {
           "type": "string",
+          "scope": "resource",
           "default": "16MiB",
           "pattern": "^\\d+(KiB|MiB|GiB)$",
           "patternErrorMessage": "Use a size such as 512KiB, 16MiB or 2GiB.",
-          "markdownDescription": "The largest single event to read. A larger event becomes an oversize event with a preview and the stream goes on. A size such as `512KiB`, `16MiB` or `2GiB`."
+          "markdownDescription": "The largest single event to read. A larger event becomes an oversize event with a preview and the stream goes on. A size such as `512KiB`, `16MiB` or `2GiB`, from `1KiB` to `256MiB`."
         },
         "streamscope.stream.memoryEvents": {
           "type": "integer",
+          "scope": "resource",
           "default": 10000,
           "minimum": 100,
-          "markdownDescription": "How many of the newest events of a streaming response stay in memory with their parsed values. Older events are read back from disk when you open them. At least 100."
+          "maximum": 1000000,
+          "markdownDescription": "How many of the newest events of a streaming response stay in memory with their parsed values. Older events are read back from disk when you open them. From 100 to 1000000."
         },
         "streamscope.stream.maxSpillSize": {
           "type": "string",
+          "scope": "machine",
           "default": "512MiB",
           "pattern": "^\\d+(KiB|MiB|GiB)$",
           "patternErrorMessage": "Use a size such as 512KiB, 16MiB or 2GiB.",
-          "markdownDescription": "The most raw data kept on disk for one streaming response. Past it the stream goes on, but its raw data is no longer saved. A size such as `512KiB`, `16MiB` or `2GiB`. A change applies after you reload the window."
+          "markdownDescription": "The most raw data kept on disk for one streaming response. Past it the stream goes on, but its raw data is no longer saved. A size such as `512KiB`, `16MiB` or `2GiB`, at least `1MiB`. A change applies after you reload the window."
         },
         "streamscope.stream.maxTotalSpillSize": {
           "type": "string",
+          "scope": "machine",
           "default": "2GiB",
           "pattern": "^\\d+(KiB|MiB|GiB)$",
           "patternErrorMessage": "Use a size such as 512KiB, 16MiB or 2GiB.",
-          "markdownDescription": "The most raw data kept on disk across all runs in the history. When it is reached, the oldest runs lose their raw data first. A size such as `512KiB`, `16MiB` or `2GiB`. A change applies after you reload the window."
+          "markdownDescription": "The most raw data kept on disk across all runs in the history. When it is reached, the oldest runs lose their raw data first. A size such as `512KiB`, `16MiB` or `2GiB`, at least `streamscope.stream.maxSpillSize`. A change applies after you reload the window."
         },
         "streamscope.stream.typeFields": {
           "type": "array",
+          "scope": "resource",
           "items": {
             "type": "string"
           },
@@ -255,7 +263,7 @@
             "event",
             "object"
           ],
-          "markdownDescription": "The JSON fields whose value labels an event, tried in order. With `type`, an event `{\"type\": \"RUN_STARTED\"}` is labelled `RUN_STARTED`. An SSE event name is used when none of them is present."
+          "markdownDescription": "The JSON fields whose value labels an event, tried in order. At least one, none empty. With `type`, an event `{\"type\": \"RUN_STARTED\"}` is labelled `RUN_STARTED`. An SSE event name is used when none of them is present."
         },
         "streamscope.view.default": {
           "type": "string",
