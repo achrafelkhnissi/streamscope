@@ -1,6 +1,6 @@
 # Response surface
 
-**Status:** Proposed (2026-11-12), awaiting the user's approval.
+**Status:** Accepted (2026-11-12). The response view is a webview panel, with documents for large content (see Decision).
 
 ## Context
 
@@ -130,6 +130,35 @@ The webview meets the latency and memory budgets with room to spare and stays fl
 
 What the webview gives up is mostly what VS Code provides free to documents: keyboard and screen reader support, Accessible View, find and copy. M6 has to build those, and the M11 accessibility pass has to check them.
 
+## Decision
+
+The user approved the webview, in this form:
+
+- **One panel per request is the only home of a response.** It opens when the response headers arrive, for every response. Streamscope cannot tell a stream from a normal response at that point: some servers label NDJSON as `application/json`, and it only shows as a stream when the second line arrives. The panel has all six tabs from the mockup: Events, Reply, Raw, Headers, Body, Checks.
+- **Documents are an overflow.** An **Open in Editor** action opens content beside the panel as a read-only editor tab, where VS Code's find, copy, keyboard and screen-reader support and large-file handling apply. It covers the Body, the Headers and a single event, and it is reachable from a button in the tab, an editor title action and the Command Palette. Above a size limit, the panel shows a preview and the action instead of the full content, so large bodies never pass through the webview.
+- **Each document has a Show Response action** back to the matching tab of the panel. A new run of the request closes the previous run's documents, as M2 does today.
+- **What M2 built stays:** the response file system, the off-thread formatter, the Headers renderer, Save Response and the 50 MB test. The 50 MB test moves to Open in Editor. M2's automatic opening of the Body document is retired.
+
+The reasons:
+
+- **A 50 MB body is a text editor's job.** Pretty-printed, it runs to millions of lines, far past the layout limit that stopped the prototype's list.
+  - Comparable extensions that draw everything in a webview limit large responses: Thunder Client stops displaying responses over 10 MB, and REST Client turns off colouring over 5 MB, with open reports of freezes.
+  - VS Code's editor already opens the 50 MB body without freezing.
+- **Accessibility.** Extensions cannot add Accessible View to a webview, so the editor is the best option for screen readers on large content.
+- **Precedent.** VS Code does the same: notebooks draw output in a webview and offer to open long output in a text editor, and the Markdown preview has Show Source.
+
+The main risk is two kinds of tabs. The overflow documents reduce it: they open only on request or for oversize content, carry clear names (for example "Response 3 · Body.json") and lead back to the panel. Click-to-capture (M8) gets one shared core behind both entry points.
+
+Questions for the M6 plan:
+
+- the size limits for a Body drawn in the panel (suggested: 1 MiB, the formatter's existing limit) and for an event shown inline (suggested: 64 KiB);
+- whether content over the limit opens in the editor automatically or through the button (suggested: the button);
+- whether a setting should always show the Body in an editor;
+- whether Headers starts as a panel tab (suggested) or a document;
+- whether click-to-capture from documents uses a hand-written JSON position scanner or the `jsonc-parser` package, which needs approval as a new dependency;
+- whether Save Stream is enough for searching all events in an editor, or an "Open Events in Editor" snapshot is needed;
+- that overflow documents, like M2's documents today, can be read by other extensions.
+
 ## Consequences for M6
 
 - **Surface:** one webview panel per response, laid out after the mockup, with the section 13 safeguards the prototype used, written out in full:
@@ -171,8 +200,4 @@ What the webview gives up is mostly what VS Code provides free to documents: key
 - **Not measured by the spike:**
   - memory at 1,000 events/s for 30 minutes, which is how section 3 says to check the memory budget (the spike ran at 500 events/s);
   - a native Events document appended to through `WorkspaceEdit` on an untitled document, instead of being re-served whole. Both native variants resent the whole text, so this third native approach was not tried.
-- **Not decided here:**
-  - whether non-streaming responses keep M2's Body and Headers documents or move into the panel;
-  - whether event detail can also open as a document, to get folding and find in large events.
-
-  The M6 plan proposes both.
+- **The panel and its overflow documents** follow the Decision section above. The webview may ask to open a document only by run and event index, checked against the message schema, and never sends a URI or path. The benchmark adds a check that opening a Body or event document mid-stream causes no extension host pause.
