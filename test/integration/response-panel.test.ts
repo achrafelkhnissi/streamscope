@@ -947,6 +947,40 @@ describe('the response panel', () => {
       );
     });
 
+    it('reopens a running run from history read-only after its panel was closed', async function () {
+      this.timeout(30_000);
+      const server = await streamServer();
+      const editor = await open('history-running-reopen.http', [
+        `GET ${server.url}/stream?rate=100&seconds=30&size=256`,
+      ]);
+      start();
+      const running = await waitForState(
+        (seen) => seen.status === 'receiving' && seen.rendered >= 5,
+        'five events were not drawn',
+      );
+      await until(() => panelTabs().length === 1, 'the stream has no panel tab');
+      await vscode.window.tabGroups.close(panelTabs());
+      await waitForState((seen) => !seen.visible, 'the panel did not close', 10_000, running.key);
+
+      await showHistory(running.run);
+      const reopened = await waitForState(
+        (seen) => seen.run === running.run && seen.visible && seen.rendered >= 5,
+        'the running run was not reopened',
+        10_000,
+        running.key,
+      );
+
+      assert.equal(reopened.readOnly, true);
+      assert.match(reopened.title ?? '', / · \d{2}:\d{2}:\d{2}$/);
+      assert.equal(reopened.status, 'receiving');
+      assert.equal(panelTabs().length, 1);
+      await vscode.commands.executeCommand('streamscope.stopRequest', editor.document.uri, 0);
+      await until(
+        async () => (await runStatus(running.run)) === 'cancelled',
+        'the run did not end cancelled',
+      );
+    });
+
     it('keeps a run that is still running while older runs are dropped', async function () {
       this.timeout(120_000);
       const server = await streamServer();

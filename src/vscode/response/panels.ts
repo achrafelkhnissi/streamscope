@@ -98,6 +98,10 @@ export class ResponsePanels implements vscode.Disposable {
     const key = run.snapshot().key;
     const existing = this.entries.get(key);
     if (existing?.run === run) {
+      if (existing.panel === undefined) {
+        existing.readOnly = options.readOnly;
+        existing.feed = this.feed(key, run, options.readOnly);
+      }
       if (options.reveal) {
         this.revealEntry(existing, true);
       }
