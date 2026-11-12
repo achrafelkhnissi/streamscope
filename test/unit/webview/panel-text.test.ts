@@ -82,6 +82,10 @@ describe('bodyNote', () => {
     expect(bodyNote({ kind: 'text', language: 'json', text: '{}' })).toBe('');
   });
 
+  it('says when the body can no longer be read', () => {
+    expect(bodyNote({ kind: 'unavailable' })).toBe('This body is no longer available.');
+  });
+
   it('points a stream to Events and Raw', () => {
     expect(bodyNote({ kind: 'stream' })).toBe(
       'This response is a stream. See Events and Raw, or save it.',

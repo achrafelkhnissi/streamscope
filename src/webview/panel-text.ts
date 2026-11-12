@@ -65,6 +65,8 @@ export function bodyNote(body: PanelBody): string {
   switch (body.kind) {
     case 'stream':
       return 'This response is a stream. See Events and Raw, or save it.';
+    case 'unavailable':
+      return 'This body is no longer available.';
     case 'preview':
       return `Showing the first ${plural(lineCount(body.text), 'line')} of a ${sizeText(body.totalBytes)} body.`;
     default:

@@ -35,6 +35,8 @@ export function snapshot(overrides: Partial<RunSnapshot> = {}): RunSnapshot {
     receivedBytes: 1229,
     body: new Uint8Array(1229),
     bodyKept: true,
+    bodyLength: overrides.body?.length ?? 1229,
+    bodySource: 'memory',
     stream: undefined,
     raw: new RawTail(1024),
     rawData: 'saved',

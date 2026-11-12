@@ -20,6 +20,7 @@ interface ResponseState {
   readOnly: boolean;
   released: boolean;
   title: string | undefined;
+  bodyText: string | undefined;
   statusBar: string | undefined;
 }
 
@@ -43,6 +44,10 @@ function showHistory(runId: number): Thenable<HistoryEntry[]> {
 
 function listHistory(): Thenable<HistoryEntry[]> {
   return showHistory(0);
+}
+
+function bodySource(run: number): Thenable<string | undefined> {
+  return vscode.commands.executeCommand<string | undefined>('streamscope.test.bodySource', run);
 }
 
 function newestEventInMemory(run: number): Thenable<boolean | undefined> {
@@ -745,13 +750,89 @@ describe('the response panel', () => {
       assert.ok(!list.some((item) => item.id === dropped), 'the oldest run is still listed');
       await vscode.commands.executeCommand('streamscope.showResponse', uri, 1);
       const gone = await waitForState(
-        (seen) => seen.released && seen.visible,
-        'the run that left history was not shown as released',
+        (seen) => seen.released && seen.visible && seen.body !== 'none',
+        'the run that left history was not shown as released with its body',
         10_000,
         kept.key,
       );
       assert.equal(gone.run, dropped);
       assert.equal(gone.status, 'completed');
+      assert.equal(gone.body, 'unavailable');
+      assert.equal(gone.bodyText, undefined);
+    });
+
+    describe('bodies of earlier runs', () => {
+      const json = { alpha: 1, beta: [1, 2, { gamma: 'synthetic' }] };
+
+      async function bodyServer(): Promise<LocalServer> {
+        const server = await startHttpServer((request, response) => {
+          if (request.url === '/json') {
+            response.writeHead(200, { 'Content-Type': 'application/json' });
+            response.end(JSON.stringify(json));
+            return;
+          }
+          response.end('ok');
+        });
+        servers.push(server);
+        return server;
+      }
+
+      async function sendAndCloseThePanel(uri: vscode.Uri, line: number): Promise<number> {
+        const run = await sendLine(uri, line);
+        const shown = await waitForState(
+          (seen) => seen.run === run && seen.status === 'completed' && seen.visible,
+          'the panel did not open',
+        );
+        await until(() => panelTabs().length === 1, 'the panel has no tab');
+        await vscode.window.tabGroups.close(panelTabs());
+        await until(
+          async () => (await responseState(shown.key)) === undefined,
+          'the panel did not close',
+        );
+        await until(
+          async () => (await bodySource(run)) === 'spill',
+          'the body of the run was not dropped from memory',
+        );
+        return run;
+      }
+
+      it('shows the Body of a run reopened after a newer run of another request', async () => {
+        const server = await bodyServer();
+        const editor = await open('history-body.http', [
+          '# @name json',
+          `GET ${server.url}/json`,
+          '',
+          '###',
+          '# @name other',
+          `GET ${server.url}/other`,
+        ]);
+        const uri = editor.document.uri;
+        const run = await sendAndCloseThePanel(uri, 1);
+        await sendLine(uri, 5);
+
+        await showHistory(run);
+        const reopened = await waitForState(
+          (seen) => seen.run === run && seen.visible && seen.body === 'text',
+          'the Body of the earlier run was not shown',
+        );
+
+        assert.equal(reopened.readOnly, true);
+        assert.equal(reopened.view, 'body');
+        assert.equal(reopened.bodyText, JSON.stringify(json, null, 2));
+        assert.equal(await bodySource(run), 'spill');
+      });
+
+      it('saves the body of a run whose bytes were dropped from its spill file', async () => {
+        const server = await bodyServer();
+        const editor = await open('history-save.http', [`GET ${server.url}/json`]);
+        await sendAndCloseThePanel(editor.document.uri, 0);
+        await vscode.window.showTextDocument(editor.document, vscode.ViewColumn.One);
+        const target = vscode.Uri.file(path.join(folder, 'saved-history-body.json'));
+
+        await vscode.commands.executeCommand('streamscope.saveResponse', target);
+
+        assert.equal(readFileSync(target.fsPath, 'utf8'), JSON.stringify(json));
+      });
     });
 
     it('keeps a run that is still running while older runs are dropped', async function () {

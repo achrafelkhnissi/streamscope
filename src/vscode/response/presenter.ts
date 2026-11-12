@@ -5,8 +5,15 @@ import {
   type EncodedBody,
 } from '../../response/format-off-thread';
 import { renderHeadersDocument } from '../../response/headers-document';
-import { bodyExtension, fileSafeName } from '../../response/labels';
-import { compactEventJson, eventNote, eventText } from '../../response/panel-content';
+import { bodyExtension, fileSafeName, noBodyMessage } from '../../response/labels';
+import {
+  compactEventJson,
+  eventNote,
+  eventText,
+  panelBody,
+  previewBody,
+} from '../../response/panel-content';
+import { panelLimits, type PanelBody } from '../../response/panel-protocol';
 import type { StreamEvent } from '../../events/model';
 import type { RunHandle, RunSnapshot } from '../../runs/run';
 import { responseScheme, type ResponseFileSystem } from './response-file-system';
@@ -129,6 +136,28 @@ export class ResponsePresenter {
     return documents.formatted;
   }
 
+  async panelBody(run: RunHandle): Promise<PanelBody | undefined> {
+    const snapshot = run.snapshot();
+    if (snapshot.bodySource === 'memory' || snapshot.head === undefined || !snapshot.bodyKept) {
+      const encoded = await this.body(run);
+      return encoded === undefined
+        ? undefined
+        : panelBody(encoded.content, encoded.languageId, snapshot.bodyLength);
+    }
+    const documents = this.documents.get(snapshot.key);
+    if (documents?.run !== run) {
+      return undefined;
+    }
+    const bytes = await run.readBody(panelLimits.inlineBodyBytes);
+    await this.dropStaleBody(documents, undefined);
+    if (documents.run !== run) {
+      return undefined;
+    }
+    return bytes === undefined
+      ? { kind: 'unavailable' }
+      : previewBody(bytes, contentType(snapshot), snapshot.bodyLength);
+  }
+
   async open(
     key: string,
     target: 'body' | 'headers',
@@ -155,7 +184,7 @@ export class ResponsePresenter {
       await this.show(documents.body, options);
       return;
     }
-    void vscode.window.showInformationMessage(this.noBodyMessage(snapshot));
+    void vscode.window.showInformationMessage(noBodyMessage(snapshot));
   }
 
   async openEvent(
@@ -234,16 +263,6 @@ export class ResponsePresenter {
     return documents;
   }
 
-  private noBodyMessage(snapshot: RunSnapshot): string {
-    if (!snapshot.bodyKept) {
-      return 'This response is a stream: see its events in the response panel, or save it.';
-    }
-    if (snapshot.status === 'sending' || snapshot.status === 'receiving') {
-      return 'The response body is still arriving.';
-    }
-    return 'This response has no body to open.';
-  }
-
   private async show(uri: vscode.Uri | undefined, options: vscode.TextDocumentShowOptions) {
     if (uri !== undefined) {
       await vscode.commands.executeCommand('vscode.open', uri, options);
@@ -285,10 +304,19 @@ export class ResponsePresenter {
       await this.dropStaleBody(documents, undefined);
       return undefined;
     }
+    const bytes =
+      snapshot.bodySource === 'memory' ? snapshot.body : await run.readBody(snapshot.bodyLength);
+    if (!current()) {
+      return undefined;
+    }
+    if (bytes === undefined) {
+      await this.dropStaleBody(documents, undefined);
+      return undefined;
+    }
     let encoded: EncodedBody;
     try {
       encoded = await formatBodyOffThread(
-        snapshot.body,
+        bytes,
         contentType(snapshot),
         this.workerFile,
         formatting.signal,
@@ -297,7 +325,7 @@ export class ResponsePresenter {
       if (!current()) {
         return undefined;
       }
-      encoded = { languageId: 'plaintext', binary: false, content: snapshot.body };
+      encoded = { languageId: 'plaintext', binary: false, content: bytes };
     }
     if (!current()) {
       return undefined;

@@ -19,6 +19,7 @@ function fakeRun(id: number): FakeRun {
     onUpdate: () => () => undefined,
     release: vi.fn(() => Promise.resolve()),
     compact: () => undefined,
+    readBody: () => Promise.resolve(undefined),
   };
 }
 

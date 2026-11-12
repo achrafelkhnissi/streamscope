@@ -1,6 +1,5 @@
 import { randomBytes } from 'node:crypto';
 import * as vscode from 'vscode';
-import { panelBody } from '../../response/panel-content';
 import { PanelFeed } from '../../response/panel-feed';
 import { panelHtml } from '../../response/panel-html';
 import { parsePanelMessage, type PanelBody, type PanelView } from '../../response/panel-protocol';
@@ -23,6 +22,7 @@ export interface ResponseState {
   readOnly: boolean;
   released: boolean;
   title: string | undefined;
+  bodyText: string | undefined;
 }
 
 export interface ResponsePanelsOptions {
@@ -67,6 +67,10 @@ function reportFailure(action: string): (error: unknown) => void {
     const reason = error instanceof Error ? error.message : String(error);
     void vscode.window.showErrorMessage(`Streamscope could not ${action}: ${reason}`);
   };
+}
+
+function bodyText(body: PanelBody): string | undefined {
+  return body.kind === 'text' || body.kind === 'preview' ? body.text : undefined;
 }
 
 function isRunning(run: RunHandle): boolean {
@@ -167,6 +171,7 @@ export class ResponsePanels implements vscode.Disposable {
       readOnly: entry.readOnly,
       released: snapshot.released,
       title: entry.panel?.title,
+      bodyText: bodyText(entry.feed.body),
     };
   }
 
@@ -403,14 +408,12 @@ export class ResponsePanels implements vscode.Disposable {
       return;
     }
     this.tick(entry);
-    const encoded = await this.options.presenter.body(run);
+    const body = await this.options.presenter.panelBody(run);
     if (entry.run !== run) {
       return;
     }
-    if (encoded !== undefined) {
-      entry.feed.setBody(
-        panelBody(encoded.content, encoded.languageId, run.snapshot().body.length),
-      );
+    if (body !== undefined) {
+      entry.feed.setBody(body);
     }
     if (entry.panel === undefined) {
       this.drop(entry);

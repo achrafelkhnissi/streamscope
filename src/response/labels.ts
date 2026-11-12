@@ -83,6 +83,19 @@ export function saveExtension(contentType: string | undefined, format?: StreamFo
   return saveExtensions[type] ?? (type.endsWith('+json') ? '.json' : '.bin');
 }
 
+export function noBodyMessage(run: RunSnapshot): string {
+  if (!run.bodyKept) {
+    return 'This response is a stream: see its events in the response panel, or save it.';
+  }
+  if (run.bodySource === 'gone') {
+    return 'This body is no longer available.';
+  }
+  if (run.status === 'sending' || run.status === 'receiving') {
+    return 'The response body is still arriving.';
+  }
+  return 'This response has no body to open.';
+}
+
 export function describeOutcome(run: RunSnapshot): string {
   return maskValues(outcomeText(run), run.sensitiveValues);
 }
@@ -99,7 +112,7 @@ function outcomeText(run: RunSnapshot): string {
   const events = eventCount(run);
   switch (run.status) {
     case 'completed':
-      return `${String(run.head?.status ?? '')} ${run.head?.statusText ?? ''} · ${events ?? formatBytes(run.body.length)} · ${formatDuration(run.elapsedMs)}`;
+      return `${String(run.head?.status ?? '')} ${run.head?.statusText ?? ''} · ${events ?? formatBytes(run.bodyLength)} · ${formatDuration(run.elapsedMs)}`;
     case 'failed':
       return `Failed: ${run.failure?.message ?? ''}`;
     case 'cancelled':

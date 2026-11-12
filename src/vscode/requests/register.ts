@@ -47,6 +47,8 @@ const noHistoryMessage = 'Send a request first: this session has no history yet.
 const noResponseMessage = 'Send the request first: there is no response yet.';
 const webviewPanelScheme = 'webview-panel';
 const localFolderMessage = 'Save the stream to a local folder.';
+const bodyMissingMessage =
+  'The body of this response was not kept, so it cannot be saved to a file.';
 const rawMissingMessages: Record<'unsaved' | 'unavailable', string> = {
   unsaved: 'The raw data of this stream was not saved, so it cannot be saved to a file.',
   unavailable: 'The raw data of this stream was removed, so it cannot be saved to a file.',
@@ -192,10 +194,11 @@ export function registerRequestFeatures(
   };
 
   const saveRun = async (
-    run: RunSnapshot,
+    handle: RunHandle,
     documentUri: vscode.Uri,
     destination: vscode.Uri | undefined,
   ): Promise<void> => {
+    const run = handle.snapshot();
     if (!run.head) {
       void vscode.window.showInformationMessage(noResponseMessage);
       return;
@@ -204,6 +207,10 @@ export function registerRequestFeatures(
     const missing = stream === undefined ? undefined : missingRaw(run);
     if (missing !== undefined) {
       void vscode.window.showErrorMessage(rawMissingMessages[missing]);
+      return;
+    }
+    if (stream === undefined && run.bodySource === 'gone') {
+      void vscode.window.showErrorMessage(bodyMissingMessage);
       return;
     }
     const chosen =
@@ -219,7 +226,12 @@ export function registerRequestFeatures(
       await saveStream(stream, chosen);
       return;
     }
-    await vscode.workspace.fs.writeFile(chosen, run.body);
+    const body = run.bodySource === 'memory' ? run.body : await handle.readBody(run.bodyLength);
+    if (body === undefined) {
+      void vscode.window.showErrorMessage(bodyMissingMessage);
+      return;
+    }
+    await vscode.workspace.fs.writeFile(chosen, body);
     vscode.window.setStatusBarMessage(`Saved ${path.basename(chosen.fsPath)}`, 3000);
   };
 
@@ -227,7 +239,7 @@ export function registerRequestFeatures(
     extensionUri: context.extensionUri,
     state: context.globalState,
     presenter,
-    save: (run, documentUri) => saveRun(run.snapshot(), documentUri, undefined),
+    save: (run, documentUri) => saveRun(run, documentUri, undefined),
   });
 
   const history = new RunHistory(historyLimit, (run) => !isActive(run) && !panels.isShown(run));
@@ -376,7 +388,7 @@ export function registerRequestFeatures(
       void vscode.window.showInformationMessage(noResponseMessage);
       return;
     }
-    await saveRun(run.snapshot(), documentUri, destination);
+    await saveRun(run, documentUri, destination);
   };
 
   const openDocument =
@@ -533,6 +545,9 @@ export function registerRequestFeatures(
         typeof id === 'number' ? statuses.get(id) : undefined,
       ),
       vscode.commands.registerCommand('streamscope.test.closeResponseTabs', closeResponseTabs),
+      vscode.commands.registerCommand('streamscope.test.bodySource', (id?: unknown) =>
+        typeof id === 'number' ? history.find(id)?.snapshot().bodySource : undefined,
+      ),
       vscode.commands.registerCommand('streamscope.test.newestEventInMemory', (id?: unknown) => {
         const store =
           typeof id === 'number' ? history.find(id)?.snapshot().stream?.store : undefined;

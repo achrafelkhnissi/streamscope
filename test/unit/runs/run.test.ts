@@ -5,6 +5,7 @@ import * as zlib from 'node:zlib';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { SpillFile } from '../../../src/events/spill';
 import { parseHttpFile } from '../../../src/http-file/parse';
+import { describeOutcome, formatBytes } from '../../../src/response/labels';
 import { requestKey, requestKeyDocument, startRun, type RunStatus } from '../../../src/runs/run';
 import type { Transport } from '../../../src/transport/model';
 import { createSelfSignedCertificate } from '../../support/certificate';
@@ -756,6 +757,176 @@ describe('startRun streaming', () => {
     expect(readdirSync(area.directory)).toEqual([]);
     expect(snapshot.stream?.write(new TextEncoder().encode('{"type":"LATE"}\n'))).toBe(true);
     expect(snapshot.stream?.store.count).toBe(count);
+  });
+});
+
+describe('compact and the body', () => {
+  const json = JSON.stringify({ items: Array.from({ length: 200 }, (_unused, id) => ({ id })) });
+
+  async function jsonServer(): Promise<LocalServer> {
+    return track(
+      startHttpServer((_request, response) => {
+        response.writeHead(200, { 'Content-Type': 'application/json' });
+        response.end(json);
+      }),
+    );
+  }
+
+  it('drops the body bytes of a finished run and keeps that it has a body', async () => {
+    const server = await jsonServer();
+    const run = startRun(runInput([`GET ${server.url}`]), dependencies);
+    const finished = await run.done;
+    expect(finished.body.length).toBe(json.length);
+    expect(finished.bodyLength).toBe(json.length);
+    expect(finished.bodySource).toBe('memory');
+
+    run.compact();
+    const compacted = run.snapshot();
+
+    expect(compacted.body.length).toBe(0);
+    expect(compacted.bodyKept).toBe(true);
+    expect(compacted.bodyLength).toBe(json.length);
+    expect(compacted.bodySource).toBe('spill');
+    expect(compacted.status).toBe('completed');
+    expect(compacted.receivedBytes).toBe(json.length);
+    await run.release();
+  });
+
+  it('reads the dropped body back from its spill file, whole or its first bytes', async () => {
+    const server = await jsonServer();
+    const run = startRun(runInput([`GET ${server.url}`]), dependencies);
+    await run.done;
+    run.compact();
+
+    const whole = await run.readBody(json.length);
+    const first = await run.readBody(20);
+
+    expect(Buffer.from(whole ?? []).toString()).toBe(json);
+    expect(Buffer.from(first ?? []).toString()).toBe(json.slice(0, 20));
+    await run.release();
+  });
+
+  it('reads a body that was never dropped from memory', async () => {
+    const server = await jsonServer();
+    const run = startRun(runInput([`GET ${server.url}`]), dependencies);
+    await run.done;
+
+    expect(Buffer.from((await run.readBody(json.length)) ?? []).toString()).toBe(json);
+    expect(Buffer.from((await run.readBody(5)) ?? []).toString()).toBe(json.slice(0, 5));
+    await run.release();
+  });
+
+  it('compacting twice changes nothing more', async () => {
+    const server = await jsonServer();
+    const run = startRun(runInput([`GET ${server.url}`]), dependencies);
+    await run.done;
+
+    run.compact();
+    run.compact();
+
+    expect(run.snapshot().bodyLength).toBe(json.length);
+    expect(Buffer.from((await run.readBody(json.length)) ?? []).toString()).toBe(json);
+    await run.release();
+  });
+
+  it('does not drop the body of a run that is still receiving it', async () => {
+    const server = await track(
+      startHttpServer((_request, response) => {
+        response.writeHead(200, { 'Content-Type': 'application/json' });
+        response.write(json.slice(0, 50));
+        setTimeout(() => response.end(json.slice(50)), 200);
+      }),
+    );
+    const run = startRun(runInput([`GET ${server.url}`]), dependencies);
+    await waitFor(() => run.snapshot().status === 'receiving', 3000);
+
+    run.compact();
+    const finished = await run.done;
+
+    expect(Buffer.from(finished.body).toString()).toBe(json);
+    expect(finished.bodySource).toBe('memory');
+    await run.release();
+  });
+
+  it('keeps an empty body as it is', async () => {
+    const server = await track(startHttpServer((_request, response) => response.end()));
+    const run = startRun(runInput([`GET ${server.url}`]), dependencies);
+    await run.done;
+
+    run.compact();
+
+    expect(run.snapshot().bodyLength).toBe(0);
+    expect(run.snapshot().bodySource).toBe('memory');
+    expect((await run.readBody(10))?.length).toBe(0);
+    await run.release();
+  });
+
+  it('says the body is gone when the run has no spill file', async () => {
+    const server = await jsonServer();
+    const run = startRun({ ...runInput([`GET ${server.url}`]), spill: undefined }, dependencies);
+    await run.done;
+
+    run.compact();
+
+    expect(run.snapshot().body.length).toBe(0);
+    expect(run.snapshot().bodyLength).toBe(json.length);
+    expect(run.snapshot().bodySource).toBe('gone');
+    expect(await run.readBody(json.length)).toBeUndefined();
+  });
+
+  it('says the body is gone once its spill file was evicted or the run released', async () => {
+    const server = await jsonServer();
+    const area = spillArea();
+    const files: SpillFile[] = [];
+    const create = area.create.bind(area);
+    vi.spyOn(area, 'create').mockImplementation(async () => {
+      const file = await create();
+      files.push(file);
+      return file;
+    });
+    const evicted = startRun(runInput([`GET ${server.url}`]), dependencies);
+    await evicted.done;
+    evicted.compact();
+    files[0]?.evict();
+    const released = startRun(runInput([`GET ${server.url}`]), dependencies);
+    await released.done;
+    released.compact();
+
+    await released.release();
+
+    expect(evicted.snapshot().bodySource).toBe('gone');
+    expect(await evicted.readBody(json.length)).toBeUndefined();
+    expect(released.snapshot().bodySource).toBe('gone');
+    expect(await released.readBody(json.length)).toBeUndefined();
+  });
+
+  it('keeps the size of the body in the outcome after the bytes are dropped', async () => {
+    const server = await jsonServer();
+    const run = startRun(runInput([`GET ${server.url}`]), dependencies);
+    await run.done;
+    const before = describeOutcome(run.snapshot());
+
+    run.compact();
+
+    expect(describeOutcome(run.snapshot())).toBe(before);
+    expect(before).toContain(formatBytes(json.length));
+    await run.release();
+  });
+
+  it('does not touch a run whose events are the response', async () => {
+    const server = await track(startStreamServer());
+    const run = startRun(
+      runInput([`GET ${server.url}/stream?rate=100&seconds=0.2&size=128`]),
+      dependencies,
+    );
+    await run.done;
+
+    run.compact();
+
+    expect(run.snapshot().bodyKept).toBe(false);
+    expect(run.snapshot().bodyLength).toBe(0);
+    expect(run.snapshot().body.length).toBe(0);
+    await run.release();
   });
 });
 

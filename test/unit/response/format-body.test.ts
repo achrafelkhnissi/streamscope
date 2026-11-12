@@ -98,6 +98,54 @@ describe('formatBody', () => {
   });
 });
 
+describe('formatBody of the beginning of a longer body', () => {
+  function beginning(text: string, contentType: string | undefined, totalBytes: number) {
+    return formatBody(encoder.encode(text), contentType, { totalBytes });
+  }
+
+  it('indents the beginning of a JSON body that was cut off', () => {
+    const cut = '{"items":[{"id":1,"name":"a"},{"id":2,"na';
+
+    expect(beginning(cut, 'application/json', 5_000_000)).toEqual({
+      languageId: 'json',
+      text: '{\n  "items": [\n    {\n      "id": 1,\n      "name": "a"\n    },\n    {\n      "id": 2,\n      "na',
+      binary: false,
+    });
+  });
+
+  it('indents the beginning of JSON sent as text/plain or without a type', () => {
+    expect(beginning('[1,2', undefined, 99).languageId).toBe('json');
+    expect(beginning('[1,2', 'text/plain', 99).text).toBe('[\n  1,\n  2');
+  });
+
+  it('still shows a body that is not JSON as it is', () => {
+    expect(beginning('<html><body>', 'text/html', 9_000_000)).toEqual({
+      languageId: 'html',
+      text: '<html><body>',
+      binary: false,
+    });
+    expect(beginning('plain', 'text/plain', 9_000_000).languageId).toBe('plaintext');
+  });
+
+  it('gives the size of the whole body for a binary one', () => {
+    const bytes = new Uint8Array(1000);
+
+    expect(formatBody(bytes, 'application/pdf', { totalBytes: 5_242_880 })).toEqual({
+      languageId: 'plaintext',
+      text: 'Binary body (5.0 MB). Use Save Response to keep it.',
+      binary: true,
+    });
+  });
+
+  it('is the same as formatting the whole body when the beginning is all of it', () => {
+    const body = '{"a":[1,2]}';
+
+    expect(beginning(body, 'application/json', body.length)).toEqual(
+      format(body, 'application/json'),
+    );
+  });
+});
+
 describe('formatBodyOffThread', () => {
   let folder = '';
   let workerFile = '';

@@ -21,6 +21,7 @@ import type { SystemContext } from '../variables/system';
 import type { BodyFileContext } from './body-files';
 import { buildOutgoingRequest, type BuildResult } from './build-request';
 import { parseDuration } from './duration';
+import { bodySourceOf, readBodyFromSpill, type BodySource } from './body-spill';
 import { RawTail } from './raw-tail';
 
 export type RunStatus = 'sending' | 'receiving' | 'completed' | 'failed' | 'cancelled' | 'blocked';
@@ -48,6 +49,8 @@ export interface RunSnapshot {
   receivedBytes: number;
   body: Uint8Array;
   bodyKept: boolean;
+  bodyLength: number;
+  bodySource: BodySource;
   stream: StreamSession | undefined;
   raw: RawTail;
   rawData: RawData;
@@ -94,10 +97,14 @@ export interface RunHandle {
   cancel(): void;
   onUpdate(listener: () => void): () => void;
   compact(): void;
+  readBody(maxBytes: number): Promise<Uint8Array | undefined>;
   release(): Promise<void>;
 }
 
-type RunState = Omit<RunSnapshot, 'elapsedMs' | 'receivedBytes' | 'rawData' | 'released'>;
+type RunState = Omit<
+  RunSnapshot,
+  'elapsedMs' | 'receivedBytes' | 'rawData' | 'released' | 'bodySource'
+>;
 
 const timeoutMessage = 'Expected a duration such as 500ms, 30s or 5m.';
 const rawTailChars = 2_097_152;
@@ -193,6 +200,7 @@ export function startRun(
   let cancelled = false;
   let tooLarge = false;
   let released = false;
+  let bodyDropped = false;
   let endedAt: number | undefined;
   let session: StreamSession | undefined;
   let spillFile: SpillFile | undefined;
@@ -210,6 +218,7 @@ export function startRun(
     wireBytes: 0,
     body: new Uint8Array(),
     bodyKept: true,
+    bodyLength: 0,
     stream: undefined,
     raw,
     failure: undefined,
@@ -223,6 +232,7 @@ export function startRun(
     receivedBytes: arrived,
     rawData: rawDataOf(spillFile, released),
     released,
+    bodySource: bodySourceOf(bodyDropped, spillFile, released, state.bodyLength),
   });
   const wasCancelled = (): boolean => cancelled;
   const update = (): void => {
@@ -260,6 +270,7 @@ export function startRun(
   };
   const finish = (changes: Partial<RunState>): RunSnapshot => {
     Object.assign(state, changes, { body: Buffer.concat(chunks) });
+    state.bodyLength = state.body.length;
     chunks.length = 0;
     endedAt = dependencies.clock();
     notify();
@@ -420,7 +431,15 @@ export function startRun(
     },
     compact: () => {
       session?.store.release();
+      if (endedAt !== undefined && state.bodyKept && state.body.length > 0) {
+        state.body = new Uint8Array();
+        bodyDropped = true;
+      }
     },
+    readBody: (maxBytes) =>
+      bodyDropped
+        ? readBodyFromSpill(spillFile, state.bodyLength, maxBytes)
+        : Promise.resolve(state.body.subarray(0, maxBytes)),
     release: async () => {
       released = true;
       cancel();

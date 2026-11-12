@@ -2,6 +2,7 @@ import type { JsonValue, StreamEvent } from '../events/model';
 import { maskValues } from '../masking/masking';
 import type { RawData, RunSnapshot } from '../runs/run';
 import { formatLabel } from '../streaming/detect';
+import { formatBody } from './format-body';
 import { formatBytes, formatDuration } from './labels';
 import { panelLimits, type PanelBody, type PanelStatus } from './panel-protocol';
 
@@ -23,6 +24,7 @@ const rawNotes: Record<RawData, string | undefined> = {
   unsaved: 'raw data not saved',
 };
 const decoder = new TextDecoder();
+const encoder = new TextEncoder();
 const { rawJSON } = JSON as unknown as { rawJSON: (text: string) => unknown };
 const indentUnit = '  ';
 const newline = 0x0a;
@@ -93,9 +95,14 @@ function characterStart(bytes: Uint8Array, at: number): number {
   return end;
 }
 
-export function panelBody(content: Uint8Array, language: string, totalBytes: number): PanelBody {
+export function panelBody(
+  content: Uint8Array,
+  language: string,
+  totalBytes: number,
+  partial = false,
+): PanelBody {
   const limit = panelLimits.inlineBodyBytes;
-  if (content.length <= limit) {
+  if (!partial && content.length <= limit) {
     return { kind: 'text', language, text: decoder.decode(content) };
   }
   let lines = 0;
@@ -109,6 +116,21 @@ export function panelBody(content: Uint8Array, language: string, totalBytes: num
     at = content.indexOf(newline, at + 1);
   }
   return { kind: 'preview', language, text: decoder.decode(content.subarray(0, end)), totalBytes };
+}
+
+export function previewBody(
+  bytes: Uint8Array,
+  contentType: string | undefined,
+  totalBytes: number,
+): PanelBody {
+  const partial = bytes.length < totalBytes;
+  const formatted = formatBody(bytes, contentType, partial ? { totalBytes } : undefined);
+  return panelBody(
+    encoder.encode(formatted.text),
+    formatted.languageId,
+    totalBytes,
+    partial && !formatted.binary,
+  );
 }
 
 class BoundedText {

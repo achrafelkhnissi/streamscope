@@ -52,6 +52,7 @@ export interface TextDelta {
 export type PanelBody =
   | { kind: 'none' }
   | { kind: 'stream' }
+  | { kind: 'unavailable' }
   | { kind: 'text'; language: string; text: string }
   | { kind: 'preview'; language: string; text: string; totalBytes: number };
 

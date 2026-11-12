@@ -8,6 +8,7 @@ import {
   eventText,
   panelBody,
   panelStatus,
+  previewBody,
 } from '../../../src/response/panel-content';
 import { panelLimits } from '../../../src/response/panel-protocol';
 import { snapshot } from './fixtures';
@@ -257,6 +258,60 @@ describe('panelBody', () => {
     expect(Buffer.byteLength(text)).toBeLessThanOrEqual(panelLimits.inlineBodyBytes);
     expect(Buffer.byteLength(text)).toBeGreaterThan(panelLimits.inlineBodyBytes - 4);
     expect(text).not.toContain('�');
+  });
+});
+
+describe('panelBody of the beginning of a body', () => {
+  it('shows a preview even when what was read is within the inline limit', () => {
+    const content = encoder.encode('{\n  "items": [\n    1,\n    2');
+
+    expect(panelBody(content, 'json', 4_000_000, true)).toEqual({
+      kind: 'preview',
+      language: 'json',
+      text: '{\n  "items": [\n    1,\n    2',
+      totalBytes: 4_000_000,
+    });
+  });
+
+  it('keeps showing a body that is whole in full', () => {
+    expect(panelBody(encoder.encode('{}'), 'json', 2, false)).toEqual({
+      kind: 'text',
+      language: 'json',
+      text: '{}',
+    });
+  });
+});
+
+describe('previewBody', () => {
+  it('formats a body that was read whole like the live body', () => {
+    const bytes = encoder.encode('{"a":[1,2]}');
+
+    expect(previewBody(bytes, 'application/json', bytes.length)).toEqual({
+      kind: 'text',
+      language: 'json',
+      text: '{\n  "a": [\n    1,\n    2\n  ]\n}',
+    });
+  });
+
+  it('previews the beginning of a longer body with the size of the whole', () => {
+    const beginning = encoder.encode('{"items":[{"id":1},{"id":2},{"i');
+
+    expect(previewBody(beginning, 'application/json', 9_000_000)).toEqual({
+      kind: 'preview',
+      language: 'json',
+      text: '{\n  "items": [\n    {\n      "id": 1\n    },\n    {\n      "id": 2\n    },\n    {\n      "i',
+      totalBytes: 9_000_000,
+    });
+  });
+
+  it('says a binary body is binary with its whole size', () => {
+    const beginning = new Uint8Array(100);
+
+    expect(previewBody(beginning, 'image/png', 3_145_728)).toEqual({
+      kind: 'text',
+      language: 'plaintext',
+      text: 'Binary body (3.0 MB). Use Save Response to keep it.',
+    });
   });
 });
 

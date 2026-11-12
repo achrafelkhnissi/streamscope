@@ -7,6 +7,7 @@ import {
   formatBytes,
   formatDuration,
   formatTimeOfDay,
+  noBodyMessage,
   requestLabel,
   saveExtension,
 } from '../../../src/response/labels';
@@ -92,6 +93,33 @@ describe('labels', () => {
     expect(formatTimeOfDay(new Date(2026, 10, 12, 9, 5, 7, 999).getTime())).toBe('09:05:07');
     expect(formatTimeOfDay(new Date(2026, 10, 12, 0, 0, 0).getTime())).toBe('00:00:00');
     expect(formatTimeOfDay(new Date(2026, 10, 12, 23, 59, 59).getTime())).toBe('23:59:59');
+  });
+
+  it('sizes a response by its body length even when the bytes were dropped', () => {
+    const dropped = snapshot({
+      body: new Uint8Array(),
+      bodyLength: 2048,
+      bodySource: 'spill',
+    });
+
+    expect(describeOutcome(dropped)).toBe('200 OK · 2.0 KB · 120 ms');
+  });
+
+  it('says why there is no body to open', () => {
+    const stream = { body: new Uint8Array(), bodyKept: false };
+
+    expect(noBodyMessage(snapshot({ ...stream }))).toBe(
+      'This response is a stream: see its events in the response panel, or save it.',
+    );
+    expect(noBodyMessage(snapshot({ status: 'receiving', head: undefined }))).toBe(
+      'The response body is still arriving.',
+    );
+    expect(noBodyMessage(snapshot({ body: new Uint8Array(), bodyLength: 0 }))).toBe(
+      'This response has no body to open.',
+    );
+    expect(
+      noBodyMessage(snapshot({ body: new Uint8Array(), bodyLength: 4096, bodySource: 'gone' })),
+    ).toBe('This body is no longer available.');
   });
 
   it('describes each outcome', () => {
