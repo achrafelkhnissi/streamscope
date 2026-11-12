@@ -1,9 +1,12 @@
 import { X509Certificate } from 'node:crypto';
 import * as http from 'node:http';
 import * as tls from 'node:tls';
+import { createParser, type EventSourceMessage } from 'eventsource-parser';
 import { describe, expect, it } from 'vitest';
 import { createSelfSignedCertificate, derInteger } from '../support/certificate';
+import { everySplit, randomSplits } from '../support/chunks';
 import { startHttpServer } from '../support/servers';
+import { streamFixtures } from '../support/stream-fixtures';
 
 function post(url: string, body: string): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -53,5 +56,70 @@ describe('test support', () => {
     await server.close();
 
     expect(server.sockets.closed).toBe(server.sockets.opened);
+  });
+
+  it('splits at every boundary and reassembles the input', () => {
+    const input = new Uint8Array([1, 2, 3, 4, 5]);
+    const chunkings = [...everySplit(input)];
+
+    expect(chunkings).toHaveLength(6);
+    for (const chunks of chunkings) {
+      expect([...Buffer.concat(chunks)]).toEqual([...input]);
+    }
+    expect(chunkings[0]?.map((chunk) => chunk.length)).toEqual([5]);
+    expect(chunkings.slice(1, 5).map((chunks) => chunks[0]?.length)).toEqual([1, 2, 3, 4]);
+    expect(chunkings[5]?.map((chunk) => chunk.length)).toEqual([1, 1, 1, 1, 1]);
+  });
+
+  it('random splits are reproducible and complete', () => {
+    const input = new Uint8Array(200).map((_, index) => index);
+    const first = randomSplits(input, 7, 20);
+    const second = randomSplits(input, 7, 20);
+
+    expect(first.map((chunks) => chunks.map((chunk) => chunk.length))).toEqual(
+      second.map((chunks) => chunks.map((chunk) => chunk.length)),
+    );
+    expect(first).toHaveLength(20);
+    for (const chunks of first) {
+      expect([...Buffer.concat(chunks)]).toEqual([...input]);
+      expect(chunks.every((chunk) => chunk.length > 0)).toBe(true);
+    }
+    expect(new Set(first.map((chunks) => chunks.length)).size).toBeGreaterThan(1);
+  });
+
+  it('loads every stream fixture', () => {
+    const byName = new Map(streamFixtures.map((fixture) => [fixture.name, fixture]));
+
+    expect([...byName.keys()].sort()).toEqual([
+      'ag-ui.ndjson',
+      'ag-ui.sse',
+      'anthropic.sse',
+      'edge-cases.ndjson',
+      'edge-cases.sse',
+      'invalid-utf8.ndjson',
+      'ollama.ndjson',
+      'openai-chat.sse',
+      'openai-responses.sse',
+    ]);
+    expect(Buffer.from(byName.get('ag-ui.sse')?.bytes ?? []).toString()).toContain('\r\n');
+    expect([...(byName.get('edge-cases.sse')?.bytes.subarray(0, 3) ?? [])]).toEqual([
+      0xef, 0xbb, 0xbf,
+    ]);
+  });
+
+  it('eventsource-parser parses the SSE fixtures', () => {
+    const fixture = streamFixtures.find((candidate) => candidate.name === 'openai-chat.sse');
+    const events: EventSourceMessage[] = [];
+    const parser = createParser({
+      onEvent: (event) => {
+        events.push(event);
+      },
+    });
+
+    parser.feed(new TextDecoder().decode(fixture?.bytes));
+    parser.reset({ consume: true });
+
+    expect(events).toHaveLength(4);
+    expect(events.at(-1)?.data).toBe('[DONE]');
   });
 });
