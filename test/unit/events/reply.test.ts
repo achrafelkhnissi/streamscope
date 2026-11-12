@@ -134,6 +134,37 @@ describe('ReplyAssembler', () => {
     expect(assembler.adapter).toBeUndefined();
   });
 
+  it('gives the reply text added since an offset', () => {
+    const assembler = new ReplyAssembler();
+    assembler.push(jsonEvent({ type: 'RUN_STARTED' }), 'ndjson');
+    assembler.push(jsonEvent({ type: 'TEXT_MESSAGE_CONTENT', delta: 'Hél' }, 2), 'ndjson');
+    assembler.push(jsonEvent({ type: 'TEXT_MESSAGE_CONTENT', delta: 'lo' }, 3), 'ndjson');
+
+    expect(assembler.size).toBe(5);
+    expect(assembler.since(0)).toBe('Héllo');
+    expect(assembler.since(2)).toBe('llo');
+    expect(assembler.since(5)).toBe('');
+    expect(assembler.since(9)).toBe('');
+
+    expect(assembler.text()).toBe('Héllo');
+    assembler.push(jsonEvent({ type: 'TEXT_MESSAGE_CONTENT', delta: ' 🚀' }, 4), 'ndjson');
+
+    expect(assembler.size).toBe(8);
+    expect(assembler.since(5)).toBe(' 🚀');
+    expect(assembler.since(4)).toBe('o 🚀');
+  });
+
+  it('counts only the text it kept when the limit cuts a character in two', () => {
+    const assembler = new ReplyAssembler(4);
+    assembler.push(jsonEvent({ type: 'RUN_STARTED' }), 'ndjson');
+    assembler.push(jsonEvent({ type: 'TEXT_MESSAGE_CONTENT', delta: 'abc🚀' }, 2), 'ndjson');
+
+    expect(assembler.text()).toBe('abc');
+    expect(assembler.size).toBe(3);
+    expect(assembler.since(1)).toBe('bc');
+    expect(assembler.truncated).toBe(true);
+  });
+
   it('stops at the length limit and marks the reply truncated', () => {
     const { bytes, contentType } = fixture('ag-ui.ndjson');
     const assembler = assemble(bytes, contentType, new ReplyAssembler(4));

@@ -120,6 +120,8 @@ describe('extension manifest', () => {
       'streamscope.saveResponse',
       'streamscope.showResponseHeaders',
       'streamscope.showResponseBody',
+      'streamscope.showResponse',
+      'streamscope.showResponseView',
       'streamscope.selectEnvironment',
       'streamscope.setSecret',
       'streamscope.clearSecret',
@@ -247,18 +249,53 @@ describe('extension manifest', () => {
     const palette = Object.fromEntries(
       manifest.contributes.menus.commandPalette?.map(({ command, when }) => [command, when]) ?? [],
     );
+    const anywhere =
+      "editorLangId == http || resourceScheme == streamscope-response || activeWebviewPanelId == 'streamscope.response'";
 
     expect(palette['streamscope.sendRequest']).toBe(
       'editorLangId == http && resourceScheme != streamscope-response',
     );
     expect(palette['streamscope.moveToSecretStorage']).toBe('false');
-    expect(palette['streamscope.saveResponse']).toBe(
-      'editorLangId == http || resourceScheme == streamscope-response',
-    );
-    expect(manifest.contributes.menus['editor/title']?.map(({ command }) => command)).toEqual([
+    for (const command of [
+      'streamscope.stopRequest',
+      'streamscope.saveResponse',
       'streamscope.showResponseHeaders',
       'streamscope.showResponseBody',
-      'streamscope.saveResponse',
+      'streamscope.showResponse',
+      'streamscope.showResponseView',
+    ]) {
+      expect(palette[command]).toBe(anywhere);
+    }
+  });
+
+  it('names the response commands after what they open', () => {
+    const titles = Object.fromEntries(
+      manifest.contributes.commands.map(({ command, title }) => [command, title]),
+    );
+
+    expect(titles['streamscope.showResponse']).toBe('Show Response');
+    expect(titles['streamscope.showResponseView']).toBe('Switch Response View…');
+    expect(titles['streamscope.showResponseBody']).toBe('Open Response Body in Editor');
+    expect(titles['streamscope.showResponseHeaders']).toBe('Open Response Headers in Editor');
+  });
+
+  it('puts Show Response on response documents and the run actions on the response panel', () => {
+    expect(
+      manifest.contributes.menus['editor/title']?.map(({ command, when }) => [command, when]),
+    ).toEqual([
+      ['streamscope.showResponse', 'resourceScheme == streamscope-response'],
+      [
+        'streamscope.showResponseHeaders',
+        'resourceScheme == streamscope-response && !(resourceFilename =~ /\\.headers\\.http$/)',
+      ],
+      [
+        'streamscope.showResponseBody',
+        'resourceScheme == streamscope-response && resourceFilename =~ /\\.headers\\.http$/',
+      ],
+      ['streamscope.saveResponse', 'resourceScheme == streamscope-response'],
+      ['streamscope.stopRequest', "activeWebviewPanelId == 'streamscope.response'"],
+      ['streamscope.saveResponse', "activeWebviewPanelId == 'streamscope.response'"],
+      ['streamscope.showResponseBody', "activeWebviewPanelId == 'streamscope.response'"],
     ]);
   });
 

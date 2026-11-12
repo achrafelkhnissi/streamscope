@@ -4,7 +4,6 @@ import { describeOutcome } from '../../response/labels';
 import type { RunRegistry } from '../../runs/registry';
 import { requestKey, type RunSnapshot } from '../../runs/run';
 import type { ParseCache } from '../language/parse-cache';
-import { preferredView, type ResponsePresenter } from '../response/presenter';
 
 function toRange(request: HttpRequest): vscode.Range {
   const { start, end } = request.requestLine.range;
@@ -24,7 +23,6 @@ export class RequestCodeLenses implements vscode.CodeLensProvider, vscode.Dispos
   constructor(
     private readonly cache: ParseCache,
     private readonly registry: RunRegistry,
-    private readonly presenter: ResponsePresenter,
   ) {
     this.unsubscribe = registry.onDidChange(() => {
       this.refresh();
@@ -72,7 +70,7 @@ export class RequestCodeLenses implements vscode.CodeLensProvider, vscode.Dispos
         command: 'streamscope.sendRequest',
         arguments: [document.uri, line],
       });
-      return run ? [send, this.outcome(range, run, document.uri)] : [send];
+      return run ? [send, this.outcome(range, run, document.uri, line)] : [send];
     });
   }
 
@@ -82,7 +80,12 @@ export class RequestCodeLenses implements vscode.CodeLensProvider, vscode.Dispos
     this.changed.dispose();
   }
 
-  private outcome(range: vscode.Range, run: RunSnapshot, documentUri: vscode.Uri): vscode.CodeLens {
+  private outcome(
+    range: vscode.Range,
+    run: RunSnapshot,
+    documentUri: vscode.Uri,
+    line: number,
+  ): vscode.CodeLens {
     const title = describeOutcome(run);
     const problem = run.problems[0];
     if (run.status === 'blocked' && problem) {
@@ -96,17 +99,10 @@ export class RequestCodeLenses implements vscode.CodeLensProvider, vscode.Dispos
         ],
       });
     }
-    const slot = this.presenter.slotForKey(run.key);
-    if (!slot || slot.run.id !== run.id) {
-      return new vscode.CodeLens(range, { title, command: '' });
-    }
     return new vscode.CodeLens(range, {
       title,
-      command: 'vscode.open',
-      arguments: [
-        preferredView(slot),
-        { viewColumn: vscode.ViewColumn.Beside, preserveFocus: true, preview: false },
-      ],
+      command: 'streamscope.showResponse',
+      arguments: [documentUri, line],
     });
   }
 }

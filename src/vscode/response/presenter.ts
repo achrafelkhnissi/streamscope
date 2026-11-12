@@ -2,17 +2,29 @@ import * as vscode from 'vscode';
 import { formatBodyOffThread, type EncodedBody } from '../../response/format-off-thread';
 import { renderHeadersDocument } from '../../response/headers-document';
 import { bodyExtension, fileSafeName } from '../../response/labels';
-import type { RunSnapshot } from '../../runs/run';
+import { eventText } from '../../response/panel-content';
+import type { RunHandle, RunSnapshot } from '../../runs/run';
 import { responseScheme, type ResponseFileSystem } from './response-file-system';
 
-export interface ResponseSlot {
-  key: string;
-  documentUri: vscode.Uri;
-  run: RunSnapshot;
-  bodyUri: vscode.Uri;
-  headersUri: vscode.Uri;
-  contentType: string | undefined;
+export type ResponseDocument =
+  { key: string; target: 'body' | 'headers' } | { key: string; target: 'event'; index: number };
+
+interface Documents {
+  number: number;
+  run: RunHandle | undefined;
+  documentUri: vscode.Uri | undefined;
+  base: string;
+  headers: vscode.Uri | undefined;
+  body: vscode.Uri | undefined;
+  staleBody: vscode.Uri | undefined;
+  events: Map<string, number>;
+  formatting: AbortController | undefined;
+  formatted: Promise<EncodedBody | undefined> | undefined;
 }
+
+const maxEventDocuments = 20;
+const eventDocumentGrowth = 8;
+const eventDocumentAllowance = 1_048_576;
 
 function contentType(run: RunSnapshot): string | undefined {
   return run.head?.headers.find(([name]) => name.toLowerCase() === 'content-type')?.[1];
@@ -22,25 +34,24 @@ function sameUri(a: vscode.Uri, b: vscode.Uri): boolean {
   return a.toString() === b.toString();
 }
 
-async function closeTabs(uri: vscode.Uri): Promise<void> {
+function responseUri(path: string): vscode.Uri {
+  return vscode.Uri.from({ scheme: responseScheme, path });
+}
+
+async function closeTabs(uris: readonly vscode.Uri[]): Promise<void> {
+  const wanted = new Set(uris.map((uri) => uri.toString()));
   const tabs = vscode.window.tabGroups.all
     .flatMap((group) => group.tabs)
-    .filter((tab) => tab.input instanceof vscode.TabInputText && sameUri(tab.input.uri, uri));
+    .filter(
+      (tab) => tab.input instanceof vscode.TabInputText && wanted.has(tab.input.uri.toString()),
+    );
   if (tabs.length > 0) {
     await vscode.window.tabGroups.close(tabs, true);
   }
 }
 
-export function preferredView(slot: ResponseSlot): vscode.Uri {
-  return slot.run.status !== 'failed' && slot.run.head && slot.run.body.length > 0
-    ? slot.bodyUri
-    : slot.headersUri;
-}
-
 export class ResponsePresenter {
-  private readonly slots = new Map<string, ResponseSlot>();
-  private readonly numbers = new Map<string, number>();
-  private readonly formatting = new Map<string, AbortController>();
+  private readonly documents = new Map<string, Documents>();
   private nextNumber = 1;
 
   constructor(
@@ -48,73 +59,230 @@ export class ResponsePresenter {
     private readonly workerFile: string,
   ) {}
 
-  slotForKey(key: string): ResponseSlot | undefined {
-    return this.slots.get(key);
+  run(key: string): RunHandle | undefined {
+    return this.documents.get(key)?.run;
   }
 
-  slotForUri(uri: vscode.Uri): ResponseSlot | undefined {
-    return [...this.slots.values()].find(
-      (slot) => sameUri(slot.bodyUri, uri) || sameUri(slot.headersUri, uri),
-    );
+  documentUri(key: string): vscode.Uri | undefined {
+    return this.documents.get(key)?.documentUri;
   }
 
-  async show(run: RunSnapshot, documentUri: vscode.Uri, isCurrent: () => boolean): Promise<void> {
-    const number = this.numbers.get(run.key) ?? this.nextNumber++;
-    this.numbers.set(run.key, number);
-    const base = `/${String(number)}/${fileSafeName(run.label)}`;
-    const type = contentType(run);
-    this.formatting.get(run.key)?.abort();
-    const formatting = new AbortController();
-    this.formatting.set(run.key, formatting);
-    const stale = (): boolean => formatting.signal.aborted || !isCurrent();
-    const encoded = await this.encode(run, type, formatting.signal);
-    if (stale()) {
+  documentFor(uri: vscode.Uri): ResponseDocument | undefined {
+    for (const [key, documents] of this.documents) {
+      const body = documents.body ?? documents.staleBody;
+      if (body !== undefined && sameUri(body, uri)) {
+        return { key, target: 'body' };
+      }
+      if (documents.headers !== undefined && sameUri(documents.headers, uri)) {
+        return { key, target: 'headers' };
+      }
+      const index = documents.events.get(uri.path);
+      if (index !== undefined) {
+        return { key, target: 'event', index };
+      }
+    }
+    return undefined;
+  }
+
+  attach(run: RunHandle, documentUri: vscode.Uri): void {
+    const snapshot = run.snapshot();
+    const documents = this.documents.get(snapshot.key) ?? this.create(snapshot.key);
+    if (documents.run === run) {
       return;
     }
-    const slot: ResponseSlot = {
-      key: run.key,
-      documentUri,
-      run,
-      contentType: type,
-      bodyUri: vscode.Uri.from({
-        scheme: responseScheme,
-        path: base + bodyExtension(encoded.languageId),
-      }),
-      headersUri: vscode.Uri.from({ scheme: responseScheme, path: `${base}.headers.http` }),
+    documents.formatting?.abort();
+    documents.formatting = undefined;
+    documents.formatted = undefined;
+    documents.run = run;
+    documents.documentUri = documentUri;
+    documents.base = `/${String(documents.number)}/${fileSafeName(snapshot.label)}`;
+    const headers = responseUri(`${documents.base}.headers.http`);
+    const stale = [...documents.events.keys()].map(responseUri);
+    if (documents.headers !== undefined && !sameUri(documents.headers, headers)) {
+      stale.push(documents.headers);
+    }
+    documents.events.clear();
+    documents.headers = headers;
+    documents.staleBody = documents.body ?? documents.staleBody;
+    documents.body = undefined;
+    this.files.write(headers, new TextEncoder().encode(renderHeadersDocument(snapshot)));
+    void this.discard(documents, stale);
+  }
+
+  body(run: RunHandle): Promise<EncodedBody | undefined> {
+    const documents = this.documents.get(run.snapshot().key);
+    if (documents?.run !== run) {
+      return Promise.resolve(undefined);
+    }
+    documents.formatted ??= this.format(documents, run);
+    return documents.formatted;
+  }
+
+  async open(
+    key: string,
+    target: 'body' | 'headers',
+    options: vscode.TextDocumentShowOptions,
+  ): Promise<void> {
+    const documents = this.documents.get(key);
+    const run = documents?.run;
+    if (documents === undefined || run === undefined) {
+      void vscode.window.showInformationMessage(
+        'Send the request first: there is no response yet.',
+      );
+      return;
+    }
+    if (target === 'headers') {
+      await this.show(documents.headers, options);
+      return;
+    }
+    const snapshot = run.snapshot();
+    const finished = snapshot.status !== 'sending' && snapshot.status !== 'receiving';
+    if (documents.body === undefined && finished) {
+      await this.body(run);
+    }
+    if (documents.body !== undefined) {
+      await this.show(documents.body, options);
+      return;
+    }
+    void vscode.window.showInformationMessage(this.noBodyMessage(snapshot));
+  }
+
+  async openEvent(
+    run: RunHandle,
+    index: number,
+    options: vscode.TextDocumentShowOptions,
+  ): Promise<void> {
+    const snapshot = run.snapshot();
+    const documents = this.documents.get(snapshot.key);
+    const store = snapshot.stream?.store;
+    const event = await store?.read(index);
+    if (documents?.run !== run) {
+      return;
+    }
+    if (event === undefined) {
+      void vscode.window.showInformationMessage(`Event ${String(index)} is no longer available.`);
+      return;
+    }
+    const extension = event.kind === 'json' ? '.json' : '.txt';
+    const uri = responseUri(`${documents.base}/event-${String(index)}${extension}`);
+    const limit = event.length * eventDocumentGrowth + eventDocumentAllowance;
+    this.files.write(uri, new TextEncoder().encode(eventText(event, limit).text));
+    documents.events.delete(uri.path);
+    documents.events.set(uri.path, index);
+    const dropped: vscode.Uri[] = [];
+    for (const path of documents.events.keys()) {
+      if (documents.events.size - dropped.length <= maxEventDocuments) {
+        break;
+      }
+      dropped.push(responseUri(path));
+    }
+    for (const uri of dropped) {
+      documents.events.delete(uri.path);
+    }
+    await this.show(uri, options);
+    await this.discard(documents, dropped);
+  }
+
+  private create(key: string): Documents {
+    const documents: Documents = {
+      number: this.nextNumber++,
+      run: undefined,
+      documentUri: undefined,
+      base: '',
+      headers: undefined,
+      body: undefined,
+      staleBody: undefined,
+      events: new Map(),
+      formatting: undefined,
+      formatted: undefined,
     };
-    const previous = this.slots.get(run.key);
-    for (const uri of [previous?.bodyUri, previous?.headersUri]) {
-      if (uri && !sameUri(uri, slot.bodyUri) && !sameUri(uri, slot.headersUri)) {
-        await closeTabs(uri);
-        if (stale()) {
-          return;
-        }
+    this.documents.set(key, documents);
+    return documents;
+  }
+
+  private noBodyMessage(snapshot: RunSnapshot): string {
+    if (!snapshot.bodyKept) {
+      return 'This response is a stream: see its events in the response panel, or save it.';
+    }
+    if (snapshot.status === 'sending' || snapshot.status === 'receiving') {
+      return 'The response body is still arriving.';
+    }
+    return 'This response has no body to open.';
+  }
+
+  private async show(uri: vscode.Uri | undefined, options: vscode.TextDocumentShowOptions) {
+    if (uri !== undefined) {
+      await vscode.commands.executeCommand('vscode.open', uri, options);
+    }
+  }
+
+  private async discard(documents: Documents, uris: readonly vscode.Uri[]): Promise<void> {
+    if (uris.length === 0) {
+      return;
+    }
+    await closeTabs(uris);
+    for (const uri of uris) {
+      const owned =
+        documents.events.has(uri.path) ||
+        (documents.headers !== undefined && sameUri(documents.headers, uri)) ||
+        (documents.body !== undefined && sameUri(documents.body, uri));
+      if (!owned) {
         this.files.remove(uri);
       }
     }
-    this.formatting.delete(run.key);
-    this.files.write(slot.headersUri, new TextEncoder().encode(renderHeadersDocument(run)));
-    this.files.write(slot.bodyUri, encoded.content);
-    this.slots.set(run.key, slot);
-    await vscode.commands.executeCommand('vscode.open', preferredView(slot), {
-      viewColumn: vscode.ViewColumn.Beside,
-      preserveFocus: true,
-      preview: false,
-    });
   }
 
-  private async encode(
-    run: RunSnapshot,
-    type: string | undefined,
-    signal: AbortSignal,
-  ): Promise<EncodedBody> {
-    if (!run.head) {
-      return { languageId: 'plaintext', binary: false, content: new Uint8Array() };
+  private async format(documents: Documents, run: RunHandle): Promise<EncodedBody | undefined> {
+    await run.done;
+    const formatting = new AbortController();
+    const current = (): boolean => documents.run === run && !formatting.signal.aborted;
+    if (!current()) {
+      return undefined;
     }
+    documents.formatting = formatting;
+    const snapshot = run.snapshot();
+    if (documents.headers !== undefined) {
+      this.files.write(
+        documents.headers,
+        new TextEncoder().encode(renderHeadersDocument(snapshot)),
+      );
+    }
+    if (snapshot.head === undefined || !snapshot.bodyKept) {
+      await this.dropStaleBody(documents, undefined);
+      return undefined;
+    }
+    let encoded: EncodedBody;
     try {
-      return await formatBodyOffThread(run.body, type, this.workerFile, signal);
+      encoded = await formatBodyOffThread(
+        snapshot.body,
+        contentType(snapshot),
+        this.workerFile,
+        formatting.signal,
+      );
     } catch {
-      return { languageId: 'plaintext', binary: false, content: run.body };
+      if (!current()) {
+        return undefined;
+      }
+      encoded = { languageId: 'plaintext', binary: false, content: snapshot.body };
+    }
+    if (!current()) {
+      return undefined;
+    }
+    const body = responseUri(documents.base + bodyExtension(encoded.languageId));
+    await this.dropStaleBody(documents, body);
+    if (!current()) {
+      return undefined;
+    }
+    this.files.write(body, encoded.content);
+    documents.body = body;
+    return encoded;
+  }
+
+  private async dropStaleBody(documents: Documents, replacement: vscode.Uri | undefined) {
+    const stale = documents.staleBody;
+    documents.staleBody = undefined;
+    if (stale !== undefined && (replacement === undefined || !sameUri(stale, replacement))) {
+      await this.discard(documents, [stale]);
     }
   }
 }

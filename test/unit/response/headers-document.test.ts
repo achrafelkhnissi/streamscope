@@ -72,6 +72,7 @@ describe('renderHeadersDocument', () => {
       sent: { method: 'GET', url: 'http://127.0.0.1:9/', headers: [['Host', '127.0.0.1:9']] },
       timing: { totalMs: 3 },
       wireBytes: 0,
+      receivedBytes: 0,
       body: new Uint8Array(),
     });
 
@@ -90,6 +91,14 @@ describe('renderHeadersDocument', () => {
         '',
       ].join('\n'),
     );
+  });
+
+  it('counts the bytes a stream received although it keeps no body', () => {
+    const rendered = renderHeadersDocument(
+      snapshot({ bodyKept: false, body: new Uint8Array(), receivedBytes: 2048, wireBytes: 900 }),
+    );
+
+    expect(rendered).toContain('\nReceived 2.0 KB (900 B on the wire)\n');
   });
 
   it('renders a run that failed after its head with the failure first', () => {

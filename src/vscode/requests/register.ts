@@ -4,8 +4,9 @@ import { SpillArea } from '../../events/spill';
 import type { HttpFile, HttpRequest } from '../../http-file/model';
 import { fileSafeName, requestLabel, saveExtension } from '../../response/labels';
 import type { BodyFileContext } from '../../runs/body-files';
+import { panelViews, type PanelView } from '../../response/panel-protocol';
 import { RunRegistry } from '../../runs/registry';
-import { requestKey, type RunDependencies, type RunSnapshot } from '../../runs/run';
+import { requestKey, type RunDependencies, type RunSnapshot, type RunStatus } from '../../runs/run';
 import { defaultSpillLimits } from '../../streaming/limits';
 import { NodeTransport } from '../../transport/node-transport';
 import { confirmOnce } from '../../runs/confirm-once';
@@ -13,7 +14,8 @@ import type { EnvironmentStore } from '../environments/environment-store';
 import type { ParseCache } from '../language/parse-cache';
 import { httpSelector } from '../language/register';
 import { logRunEnd, logRunStart } from '../log';
-import { ResponsePresenter, type ResponseSlot } from '../response/presenter';
+import { ResponsePanels } from '../response/panels';
+import { ResponsePresenter } from '../response/presenter';
 import { ResponseFileSystem, responseScheme } from '../response/response-file-system';
 import { RequestCodeLenses } from './code-lens';
 import type { SecretStore } from '../secrets/secret-store';
@@ -30,6 +32,23 @@ interface Target {
 
 const sendableSchemes: ReadonlySet<string> = new Set(['file', 'untitled']);
 const noResponseMessage = 'Send the request first: there is no response yet.';
+const webviewPanelScheme = 'webview-panel';
+const viewTitles: Record<PanelView, string> = {
+  events: 'Events',
+  reply: 'Reply',
+  raw: 'Raw',
+  headers: 'Headers',
+  body: 'Body',
+  checks: 'Checks',
+};
+
+function editorUri(value: unknown): vscode.Uri | undefined {
+  return value instanceof vscode.Uri && value.scheme !== webviewPanelScheme ? value : undefined;
+}
+
+function isPanelView(value: unknown): value is PanelView {
+  return typeof value === 'string' && panelViews.some((view) => view === value);
+}
 
 function bodyFiles(uri: vscode.Uri): Omit<BodyFileContext, 'restricted'> {
   if (uri.scheme !== 'file') {
@@ -42,11 +61,12 @@ function bodyFiles(uri: vscode.Uri): Omit<BodyFileContext, 'restricted'> {
   };
 }
 
-function defaultSaveUri(slot: ResponseSlot): vscode.Uri | undefined {
-  const name = fileSafeName(slot.run.label) + saveExtension(slot.contentType);
+function defaultSaveUri(run: RunSnapshot, documentUri: vscode.Uri): vscode.Uri | undefined {
+  const type = run.head?.headers.find(([name]) => name.toLowerCase() === 'content-type')?.[1];
+  const name = fileSafeName(run.label) + saveExtension(type);
   const folder =
-    slot.documentUri.scheme === 'file'
-      ? vscode.Uri.file(path.dirname(slot.documentUri.fsPath))
+    documentUri.scheme === 'file'
+      ? vscode.Uri.file(path.dirname(documentUri.fsPath))
       : vscode.workspace.workspaceFolders?.[0]?.uri;
   return folder ? vscode.Uri.joinPath(folder, name) : undefined;
 }
@@ -118,7 +138,36 @@ export function registerRequestFeatures(
     clock: () => performance.now(),
   };
   const registry = new RunRegistry(dependencies);
-  const lenses = new RequestCodeLenses(cache, registry, presenter);
+  const lenses = new RequestCodeLenses(cache, registry);
+
+  const saveRun = async (
+    run: RunSnapshot,
+    documentUri: vscode.Uri,
+    destination: vscode.Uri | undefined,
+  ): Promise<void> => {
+    if (!run.head) {
+      void vscode.window.showInformationMessage(noResponseMessage);
+      return;
+    }
+    const chosen =
+      destination ??
+      (await vscode.window.showSaveDialog({
+        defaultUri: defaultSaveUri(run, documentUri),
+        saveLabel: 'Save Response',
+      }));
+    if (!chosen) {
+      return;
+    }
+    await vscode.workspace.fs.writeFile(chosen, run.body);
+    vscode.window.setStatusBarMessage(`Saved ${path.basename(chosen.fsPath)}`, 3000);
+  };
+
+  const panels = new ResponsePanels({
+    extensionUri: context.extensionUri,
+    state: context.globalState,
+    presenter,
+    save: (run, documentUri) => saveRun(run.snapshot(), documentUri, undefined),
+  });
 
   const target = async (uri?: vscode.Uri, line?: number): Promise<Target | undefined> => {
     const editor = vscode.window.activeTextEditor;
@@ -137,13 +186,32 @@ export function registerRequestFeatures(
       : undefined;
   };
 
-  const activeSlot = async (): Promise<ResponseSlot | undefined> => {
-    const uri = vscode.window.activeTextEditor?.document.uri;
+  const responseKey = async (argument?: unknown, line?: unknown): Promise<string | undefined> => {
+    const uri = editorUri(argument);
     if (uri?.scheme === responseScheme) {
-      return presenter.slotForUri(uri);
+      return presenter.documentFor(uri)?.key;
     }
-    const found = await target();
-    return found ? presenter.slotForKey(found.key) : undefined;
+    if (uri !== undefined) {
+      return (await target(uri, typeof line === 'number' ? line : undefined))?.key;
+    }
+    const active = vscode.window.activeTextEditor?.document.uri;
+    if (active?.scheme === responseScheme) {
+      return presenter.documentFor(active)?.key;
+    }
+    return panels.active() ?? (await target())?.key;
+  };
+
+  const showPanel = (key: string): boolean => {
+    if (panels.reveal(key)) {
+      return true;
+    }
+    const run = presenter.run(key);
+    const documentUri = presenter.documentUri(key);
+    if (run === undefined || documentUri === undefined) {
+      return false;
+    }
+    panels.show(run, documentUri, { reveal: true, readOnly: false });
+    return panels.reveal(key);
   };
 
   const sendRequest = async (uri?: vscode.Uri, line?: number): Promise<void> => {
@@ -172,7 +240,7 @@ export function registerRequestFeatures(
     const restricted = !vscode.workspace.isTrusted;
     const area = await spill;
     logRunStart(log, request.requestLine.method, request.requestLine.url);
-    const run = await registry.start({
+    const handle = registry.start({
       key,
       label: requestLabel(request),
       file,
@@ -184,77 +252,127 @@ export function registerRequestFeatures(
       confirmSend: restricted ? confirmRestrictedSend : undefined,
       spill: area,
       limits: limits.limits,
-    }).done;
+    });
+    const shown = (): boolean => presenter.run(key) === handle;
+    const showRun = (): void => {
+      if (!shown() && registry.latest(key) === handle) {
+        panels.show(handle, document.uri, { reveal: true, readOnly: false });
+      }
+    };
+    const stopWatching = handle.onUpdate(() => {
+      if (handle.snapshot().status === 'receiving') {
+        showRun();
+        stopWatching();
+      }
+    });
+    const run = await handle.done;
+    stopWatching();
     logRunEnd(log, run);
-    if (registry.latest(key)?.id !== run.id) {
+    if (registry.latest(key) !== handle) {
       return;
     }
     if (run.status === 'blocked') {
       void showBlocked(document, run);
       return;
     }
-    await presenter.show(run, document.uri, () => registry.latest(key)?.id === run.id);
+    if (run.head !== undefined || run.status === 'failed') {
+      showRun();
+    }
+    if (shown()) {
+      await presenter.body(handle);
+    }
     lenses.refresh();
   };
 
-  const stopRequest = async (uri?: vscode.Uri, line?: number): Promise<void> => {
-    const active = vscode.window.activeTextEditor?.document.uri;
-    const key =
-      !uri && active?.scheme === responseScheme
-        ? presenter.slotForUri(active)?.key
-        : (await target(uri, line))?.key;
+  const stopRequest = async (uri?: unknown, line?: unknown): Promise<void> => {
+    const key = await responseKey(uri, line);
     if (key === undefined || !registry.cancel(key)) {
       void vscode.window.showInformationMessage('This request is not running.');
     }
   };
 
-  const responseSource = (argument: unknown): vscode.Uri | undefined =>
-    argument instanceof vscode.Uri && argument.scheme === responseScheme ? argument : undefined;
-
   const saveResponse = async (first?: unknown, second?: unknown): Promise<void> => {
-    const source = responseSource(first);
-    const slot = source ? presenter.slotForUri(source) : await activeSlot();
-    const destination = source ? second : first;
-    if (!slot?.run.head) {
+    const source = editorUri(first)?.scheme === responseScheme ? editorUri(first) : undefined;
+    const destination = editorUri(source ? second : first);
+    const key = source ? presenter.documentFor(source)?.key : await responseKey();
+    const run = key === undefined ? undefined : presenter.run(key);
+    const documentUri = key === undefined ? undefined : presenter.documentUri(key);
+    if (run === undefined || documentUri === undefined) {
       void vscode.window.showInformationMessage(noResponseMessage);
       return;
     }
-    const chosen =
-      destination instanceof vscode.Uri
-        ? destination
-        : await vscode.window.showSaveDialog({
-            defaultUri: defaultSaveUri(slot),
-            saveLabel: 'Save Response',
-          });
-    if (!chosen) {
-      return;
-    }
-    await vscode.workspace.fs.writeFile(chosen, slot.run.body);
-    vscode.window.setStatusBarMessage(`Saved ${path.basename(chosen.fsPath)}`, 3000);
+    await saveRun(run.snapshot(), documentUri, destination);
   };
 
-  const showView =
-    (pick: (slot: ResponseSlot) => vscode.Uri) =>
+  const openDocument =
+    (documentTarget: 'body' | 'headers') =>
     async (argument?: unknown): Promise<void> => {
-      const source = responseSource(argument);
-      const slot = source ? presenter.slotForUri(source) : await activeSlot();
-      if (!slot) {
+      const editor = vscode.window.activeTextEditor;
+      const fromDocument =
+        editorUri(argument)?.scheme === responseScheme ||
+        editor?.document.uri.scheme === responseScheme;
+      const key = await responseKey(argument);
+      if (key === undefined) {
         void vscode.window.showInformationMessage(noResponseMessage);
         return;
       }
-      const fromResponse = vscode.window.activeTextEditor?.document.uri.scheme === responseScheme;
-      await vscode.commands.executeCommand(
-        'vscode.open',
-        pick(slot),
-        fromResponse
+      await presenter.open(
+        key,
+        documentTarget,
+        fromDocument
           ? { preview: false }
-          : { viewColumn: vscode.ViewColumn.Beside, preserveFocus: true, preview: false },
+          : {
+              viewColumn: panels.columnBeside(key),
+              preserveFocus: editor !== undefined,
+              preview: false,
+            },
       );
     };
+
+  const showResponse = async (argument?: unknown, line?: unknown): Promise<void> => {
+    const uri = editorUri(argument) ?? vscode.window.activeTextEditor?.document.uri;
+    const document = uri?.scheme === responseScheme ? presenter.documentFor(uri) : undefined;
+    const key = document?.key ?? (await responseKey(argument, line));
+    if (key === undefined || !showPanel(key)) {
+      void vscode.window.showInformationMessage(noResponseMessage);
+      return;
+    }
+    if (document?.target === 'event') {
+      panels.expand(key, document.index);
+    } else if (document !== undefined) {
+      panels.selectView(key, document.target);
+    }
+  };
+
+  const showResponseView = async (view?: unknown): Promise<void> => {
+    const key = await responseKey();
+    const run = key === undefined ? undefined : presenter.run(key);
+    if (key === undefined || run === undefined) {
+      void vscode.window.showInformationMessage(noResponseMessage);
+      return;
+    }
+    const hasReply = run.snapshot().stream?.reply.adapter !== undefined;
+    const chosen = isPanelView(view)
+      ? view
+      : (
+          await vscode.window.showQuickPick(
+            panelViews
+              .filter((name) => name !== 'reply' || hasReply)
+              .map((name) => ({ label: viewTitles[name], view: name })),
+            { placeHolder: 'Switch the response view' },
+          )
+        )?.view;
+    if (chosen === undefined) {
+      return;
+    }
+    showPanel(key);
+    panels.selectView(key, chosen);
+  };
 
   context.subscriptions.push(
     files,
     lenses,
+    panels,
     {
       dispose: () => {
         registry.dispose();
@@ -278,13 +396,26 @@ export function registerRequestFeatures(
     vscode.commands.registerCommand('streamscope.sendRequest', sendRequest),
     vscode.commands.registerCommand('streamscope.stopRequest', stopRequest),
     vscode.commands.registerCommand('streamscope.saveResponse', saveResponse),
-    vscode.commands.registerCommand(
-      'streamscope.showResponseHeaders',
-      showView((slot) => slot.headersUri),
-    ),
-    vscode.commands.registerCommand(
-      'streamscope.showResponseBody',
-      showView((slot) => slot.bodyUri),
-    ),
+    vscode.commands.registerCommand('streamscope.showResponse', showResponse),
+    vscode.commands.registerCommand('streamscope.showResponseView', showResponseView),
+    vscode.commands.registerCommand('streamscope.showResponseHeaders', openDocument('headers')),
+    vscode.commands.registerCommand('streamscope.showResponseBody', openDocument('body')),
   );
+
+  if (context.extensionMode === vscode.ExtensionMode.Test) {
+    const statuses = new Map<number, RunStatus>();
+    const stopTracking = registry.onDidChange((snapshot) => {
+      statuses.set(snapshot.id, snapshot.status);
+    });
+    context.subscriptions.push(
+      { dispose: stopTracking },
+      vscode.commands.registerCommand('streamscope.test.responseState', async (key?: unknown) => {
+        const chosen = typeof key === 'string' ? key : await responseKey();
+        return chosen === undefined ? undefined : panels.state(chosen);
+      }),
+      vscode.commands.registerCommand('streamscope.test.runStatus', (id?: unknown) =>
+        typeof id === 'number' ? statuses.get(id) : undefined,
+      ),
+    );
+  }
 }

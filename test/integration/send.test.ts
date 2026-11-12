@@ -60,6 +60,10 @@ function send(): Thenable<unknown> {
   return vscode.commands.executeCommand('streamscope.sendRequest');
 }
 
+function showBody(): Thenable<unknown> {
+  return vscode.commands.executeCommand('streamscope.showResponseBody');
+}
+
 describe('sending requests', () => {
   let folder = '';
   const servers: LocalServer[] = [];
@@ -98,6 +102,8 @@ describe('sending requests', () => {
     await open('pretty.http', [`GET ${server.url}/items`]);
 
     await send();
+    assert.deepEqual(responseTabs(), []);
+    await showBody();
 
     const body = responseTabs().find((uri) => uri.path.endsWith('.json'));
     assert.ok(body, 'the body document is not open');
@@ -195,6 +201,7 @@ describe('sending requests', () => {
     await open('resend.http', [`GET ${server.url}/count`]);
 
     await send();
+    await showBody();
     await send();
 
     const bodies = responseTabs().filter((uri) => uri.path.endsWith('.json'));
@@ -228,6 +235,7 @@ describe('sending requests', () => {
     const target = vscode.Uri.file(path.join(folder, 'from-title.json'));
 
     await send();
+    await showBody();
     const body = responseTabs().find((uri) => uri.path.endsWith('.json'));
     assert.ok(body);
     await vscode.commands.executeCommand('streamscope.saveResponse', body, target);
@@ -258,6 +266,7 @@ describe('sending requests', () => {
     }
     const second = send();
     await Promise.all([first, second]);
+    await showBody();
 
     const body = responseTabs().find((uri) => uri.path.endsWith('.json'));
     assert.ok(body);

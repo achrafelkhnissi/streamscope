@@ -106,6 +106,10 @@ export class ReplyAssembler {
     return this.cut;
   }
 
+  get size(): number {
+    return this.length;
+  }
+
   push(event: StreamEvent, format: StreamFormat): void {
     if (event.kind !== 'json' || this.cut) {
       return;
@@ -121,8 +125,9 @@ export class ReplyAssembler {
       this.length += text.length;
       return;
     }
-    this.parts.push(text.slice(0, room).replace(trailingHighSurrogate, ''));
-    this.length = this.maxLength;
+    const kept = text.slice(0, room).replace(trailingHighSurrogate, '');
+    this.parts.push(kept);
+    this.length += kept.length;
     this.cut = true;
   }
 
@@ -130,5 +135,17 @@ export class ReplyAssembler {
     const joined = this.parts.join('');
     this.parts.splice(0, this.parts.length, joined);
     return joined;
+  }
+
+  since(offset: number): string {
+    const count = Math.max(0, this.length - offset);
+    let wanted = count;
+    let first = this.parts.length;
+    while (wanted > 0 && first > 0) {
+      first -= 1;
+      wanted -= this.parts[first]?.length ?? 0;
+    }
+    const joined = this.parts.slice(first).join('');
+    return joined.slice(joined.length - count);
   }
 }

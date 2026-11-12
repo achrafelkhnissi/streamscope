@@ -88,15 +88,26 @@
       },
       {
         "command": "streamscope.showResponseHeaders",
-        "title": "Show Response Headers",
+        "title": "Open Response Headers in Editor",
         "category": "Streamscope",
         "icon": "$(list-flat)"
       },
       {
         "command": "streamscope.showResponseBody",
-        "title": "Show Response Body",
+        "title": "Open Response Body in Editor",
         "category": "Streamscope",
         "icon": "$(file-code)"
+      },
+      {
+        "command": "streamscope.showResponse",
+        "title": "Show Response",
+        "category": "Streamscope",
+        "icon": "$(open-preview)"
+      },
+      {
+        "command": "streamscope.showResponseView",
+        "title": "Switch Response View…",
+        "category": "Streamscope"
       },
       {
         "command": "streamscope.selectEnvironment",
@@ -149,19 +160,27 @@
         },
         {
           "command": "streamscope.stopRequest",
-          "when": "editorLangId == http || resourceScheme == streamscope-response"
+          "when": "editorLangId == http || resourceScheme == streamscope-response || activeWebviewPanelId == 'streamscope.response'"
         },
         {
           "command": "streamscope.saveResponse",
-          "when": "editorLangId == http || resourceScheme == streamscope-response"
+          "when": "editorLangId == http || resourceScheme == streamscope-response || activeWebviewPanelId == 'streamscope.response'"
         },
         {
           "command": "streamscope.showResponseHeaders",
-          "when": "editorLangId == http || resourceScheme == streamscope-response"
+          "when": "editorLangId == http || resourceScheme == streamscope-response || activeWebviewPanelId == 'streamscope.response'"
         },
         {
           "command": "streamscope.showResponseBody",
-          "when": "editorLangId == http || resourceScheme == streamscope-response"
+          "when": "editorLangId == http || resourceScheme == streamscope-response || activeWebviewPanelId == 'streamscope.response'"
+        },
+        {
+          "command": "streamscope.showResponse",
+          "when": "editorLangId == http || resourceScheme == streamscope-response || activeWebviewPanelId == 'streamscope.response'"
+        },
+        {
+          "command": "streamscope.showResponseView",
+          "when": "editorLangId == http || resourceScheme == streamscope-response || activeWebviewPanelId == 'streamscope.response'"
         },
         {
           "command": "streamscope.moveToSecretStorage",
@@ -169,6 +188,11 @@
         }
       ],
       "editor/title": [
+        {
+          "command": "streamscope.showResponse",
+          "when": "resourceScheme == streamscope-response",
+          "group": "navigation@0"
+        },
         {
           "command": "streamscope.showResponseHeaders",
           "when": "resourceScheme == streamscope-response && !(resourceFilename =~ /\\.headers\\.http$/)",
@@ -183,6 +207,21 @@
           "command": "streamscope.saveResponse",
           "when": "resourceScheme == streamscope-response",
           "group": "navigation@2"
+        },
+        {
+          "command": "streamscope.stopRequest",
+          "when": "activeWebviewPanelId == 'streamscope.response'",
+          "group": "navigation@1"
+        },
+        {
+          "command": "streamscope.saveResponse",
+          "when": "activeWebviewPanelId == 'streamscope.response'",
+          "group": "navigation@2"
+        },
+        {
+          "command": "streamscope.showResponseBody",
+          "when": "activeWebviewPanelId == 'streamscope.response'",
+          "group": "navigation@3"
         }
       ]
     },

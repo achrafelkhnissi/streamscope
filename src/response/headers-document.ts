@@ -72,7 +72,7 @@ export function renderHeadersDocument(run: RunSnapshot): string {
     sections.push([
       '### Timing',
       timingLine(run.timing),
-      `Received ${formatBytes(run.body.length)} (${formatBytes(run.wireBytes)} on the wire)`,
+      `Received ${formatBytes(run.receivedBytes)} (${formatBytes(run.wireBytes)} on the wire)`,
     ]);
   }
   return maskValues(

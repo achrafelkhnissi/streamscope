@@ -669,6 +669,49 @@ describe('startRun streaming', () => {
     expect((await run.done).status).toBe('cancelled');
   });
 
+  it('counts the response bytes received while they arrive', async () => {
+    const server = await track(startStreamServer());
+    const run = startRun(
+      runInput([`GET ${server.url}/stream?rate=100&seconds=0.3&size=256`]),
+      dependencies,
+    );
+    const seen: number[] = [];
+    run.onUpdate(() => seen.push(run.snapshot().receivedBytes));
+
+    const snapshot = await run.done;
+
+    expect(snapshot.receivedBytes).toBe(32 * 256);
+    expect(seen.some((bytes) => bytes > 0 && bytes < 32 * 256)).toBe(true);
+  });
+
+  it('says whether the raw data of a run is saved', async () => {
+    const server = await track(startStreamServer());
+    const url = `GET ${server.url}/stream?rate=100&seconds=0.1&size=256`;
+    const area = spillArea();
+    const create = area.create.bind(area);
+
+    const saved = await startRun(runInput([url]), dependencies).done;
+    const unsaved = await startRun({ ...runInput([url]), spill: undefined }, dependencies).done;
+    const spy = vi.spyOn(area, 'create');
+    spy.mockImplementationOnce(async () => {
+      const file = await create();
+      vi.spyOn(file, 'capped', 'get').mockReturnValue(true);
+      return file;
+    });
+    const stopped = await startRun(runInput([url]), dependencies).done;
+    spy.mockImplementationOnce(async () => {
+      const file = await create();
+      vi.spyOn(file, 'evicted', 'get').mockReturnValue(true);
+      return file;
+    });
+    const removed = await startRun(runInput([url]), dependencies).done;
+
+    expect(saved.rawData).toBe('saved');
+    expect(unsaved.rawData).toBe('unsaved');
+    expect(stopped.rawData).toBe('stopped');
+    expect(removed.rawData).toBe('removed');
+  });
+
   it('keeps a bounded raw tail of a long stream', async () => {
     const server = await track(startStreamServer());
 

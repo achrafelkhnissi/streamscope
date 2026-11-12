@@ -73,4 +73,49 @@ describe('RawTail', () => {
     }
     expect(tail.generation).toBeGreaterThan(100);
   });
+
+  it('gives the text appended since an offset while it still holds it', () => {
+    const tail = new RawTail(64);
+
+    tail.push(encoder.encode('first\n'));
+    const mark = tail.total;
+    tail.push(encoder.encode('second\n'));
+    tail.push(encoder.encode('thi'));
+    tail.push(encoder.encode('rd'));
+
+    expect(mark).toBe(6);
+    expect(tail.total).toBe(18);
+    expect(tail.since(mark)).toBe('second\nthird');
+    expect(tail.since(mark + 3)).toBe('ond\nthird');
+    expect(tail.since(0)).toBe(tail.text);
+    expect(tail.since(tail.total)).toBe('');
+  });
+
+  it('gives nothing for an offset the tail no longer holds', () => {
+    const tail = new RawTail(16);
+
+    for (let line = 0; line < 5; line += 1) {
+      tail.push(encoder.encode('aaaa\n'));
+    }
+
+    expect(tail.total).toBe(25);
+    expect(tail.trimmed).toBe(true);
+    expect(tail.since(0)).toBeUndefined();
+    expect(tail.since(tail.total - tail.text.length)).toBe(tail.text);
+    expect(tail.since(tail.total - tail.text.length - 1)).toBeUndefined();
+  });
+
+  it('counts the total in characters across a character split between chunks', () => {
+    const tail = new RawTail(64);
+    const emoji = encoder.encode('🙂');
+
+    tail.push(emoji.subarray(0, 2));
+    const mark = tail.total;
+    tail.push(emoji.subarray(2));
+    tail.push(encoder.encode('x'));
+
+    expect(mark).toBe(0);
+    expect(tail.since(mark)).toBe('🙂x');
+    expect(tail.total).toBe(3);
+  });
 });
