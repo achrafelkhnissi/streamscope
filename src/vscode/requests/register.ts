@@ -7,6 +7,7 @@ import type { BodyFileContext } from '../../runs/body-files';
 import { RunRegistry } from '../../runs/registry';
 import { requestKey, type RunDependencies, type RunSnapshot } from '../../runs/run';
 import { NodeTransport } from '../../transport/node-transport';
+import type { EnvironmentStore } from '../environments/environment-store';
 import type { ParseCache } from '../language/parse-cache';
 import { httpSelector } from '../language/register';
 import { logRunEnd, logRunStart } from '../log';
@@ -66,6 +67,7 @@ export function registerRequestFeatures(
   context: vscode.ExtensionContext,
   log: vscode.LogOutputChannel,
   cache: ParseCache,
+  environments: EnvironmentStore,
 ): void {
   const files = new ResponseFileSystem();
   const presenter = new ResponsePresenter(
@@ -125,6 +127,7 @@ export function registerRequestFeatures(
       return;
     }
     const { document, file, request, key } = found;
+    const { catalog, privateFileIgnored } = await environments.catalogFor(document.uri);
     logRunStart(log, request.requestLine.method, request.requestLine.url);
     const run = await registry.start({
       key,
@@ -132,15 +135,15 @@ export function registerRequestFeatures(
       file,
       request,
       bodyFiles: bodyFiles(document.uri),
-      settings: settings.settings,
+      settings: { ...settings.settings, insecureEnvironment: catalog.insecure },
       variables: {
-        environmentName: undefined,
-        environment: new Map(),
-        shared: new Map(),
+        environmentName: catalog.active,
+        environment: catalog.variables,
+        shared: catalog.shared,
         secrets: new Map(),
         dotenv: { kind: 'missing' },
         processEnv: {},
-        privateFileIgnored: false,
+        privateFileIgnored,
       },
       restricted: false,
       confirmSend: undefined,

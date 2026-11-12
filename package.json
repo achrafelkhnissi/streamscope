@@ -83,6 +83,12 @@
         "icon": "$(file-code)"
       },
       {
+        "command": "streamscope.selectEnvironment",
+        "title": "Select Environment",
+        "category": "Streamscope",
+        "icon": "$(server-environment)"
+      },
+      {
         "command": "streamscope.showLog",
         "title": "Show Log",
         "category": "Streamscope"

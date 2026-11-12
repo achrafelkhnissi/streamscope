@@ -102,6 +102,7 @@ describe('extension manifest', () => {
       'streamscope.saveResponse',
       'streamscope.showResponseHeaders',
       'streamscope.showResponseBody',
+      'streamscope.selectEnvironment',
       'streamscope.showLog',
     ]);
   });
