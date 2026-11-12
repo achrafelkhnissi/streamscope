@@ -148,6 +148,79 @@ describe('EventStore', () => {
     await area.dispose();
   });
 
+  it('releases in-memory events but keeps the index', async () => {
+    const area = await SpillArea.open(root);
+    const file = await area.create();
+    const events = store({ spill: file });
+    const appended = spillLines(file, 3);
+    for (const event of appended) {
+      events.append(event);
+    }
+    const summaries = [1, 2, 3].map((index) => events.summary(index));
+
+    events.release();
+
+    expect(events.inMemory(1)).toBeUndefined();
+    expect(events.inMemory(2)).toBeUndefined();
+    expect(events.inMemory(3)).toBeUndefined();
+    expect(events.count).toBe(3);
+    expect([1, 2, 3].map((index) => events.summary(index))).toEqual(summaries);
+    expect(await events.read(1)).toEqual(appended[0]);
+    expect(await events.read(3)).toEqual(appended[2]);
+    await area.dispose();
+  });
+
+  it('counts only the events kept after a release against the byte budget', () => {
+    const events = store({ memoryEvents: 100, memoryBytes: 20 });
+    for (let index = 1; index <= 3; index += 1) {
+      events.append(event(index));
+    }
+
+    events.release();
+    for (let index = 4; index <= 6; index += 1) {
+      events.append(event(index));
+    }
+
+    expect(events.inMemory(3)).toBeUndefined();
+    expect(events.inMemory(4)).toEqual(event(4));
+    expect(events.inMemory(5)).toEqual(event(5));
+    expect(events.inMemory(6)).toEqual(event(6));
+    expect(events.count).toBe(6);
+  });
+
+  it('keeps holding the newest events by count after a release', () => {
+    const events = store({ memoryEvents: 2 });
+    events.append(event(1));
+    events.append(event(2));
+
+    events.release();
+    for (let index = 3; index <= 6; index += 1) {
+      events.append(event(index));
+    }
+
+    expect(events.inMemory(4)).toBeUndefined();
+    expect(events.inMemory(5)).toEqual(event(5));
+    expect(events.inMemory(6)).toEqual(event(6));
+  });
+
+  it('releases a store without a spill file and an empty store', async () => {
+    const empty = store();
+    empty.release();
+    empty.append(event(1));
+
+    expect(empty.inMemory(1)).toEqual(event(1));
+
+    const withoutSpill = store();
+    withoutSpill.append(event(1));
+    withoutSpill.append(event(2));
+    withoutSpill.release();
+    withoutSpill.release();
+
+    expect(withoutSpill.count).toBe(2);
+    expect(withoutSpill.summary(2)?.label).toBe('t-2');
+    expect(await withoutSpill.read(1)).toBeUndefined();
+  });
+
   it('stops interning labels after 4,096 distinct ones', async () => {
     const area = await SpillArea.open(root);
     const file = await area.create();

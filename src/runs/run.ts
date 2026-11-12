@@ -87,6 +87,7 @@ export interface RunHandle {
   snapshot(): RunSnapshot;
   cancel(): void;
   onUpdate(listener: () => void): () => void;
+  compact(): void;
   release(): Promise<void>;
 }
 
@@ -389,6 +390,9 @@ export function startRun(
       return () => {
         listeners.delete(listener);
       };
+    },
+    compact: () => {
+      session?.store.release();
     },
     release: async () => {
       cancel();

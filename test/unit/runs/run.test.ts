@@ -434,6 +434,62 @@ describe('startRun streaming', () => {
     await run.release();
   });
 
+  it('a compacted run reads its events from the spill file', async () => {
+    const server = await track(startStreamServer());
+    const run = startRun(
+      runInput([`GET ${server.url}/stream?rate=100&seconds=0.3&size=256`]),
+      dependencies,
+    );
+    const snapshot = await run.done;
+    const store = snapshot.stream?.store;
+    const before = await store?.read(2);
+
+    run.compact();
+
+    expect(store?.count).toBe(32);
+    expect(store?.inMemory(2)).toBeUndefined();
+    expect(store?.inMemory(32)).toBeUndefined();
+    expect(before?.value).toBeDefined();
+    expect(await store?.read(2)).toEqual(before);
+    expect((await store?.read(32))?.label).toBe('RUN_FINISHED');
+    await run.release();
+  });
+
+  it('compacting a run that has no session yet does nothing', async () => {
+    const server = await track(startStreamServer());
+    const run = startRun(
+      runInput([`GET ${server.url}/stream?rate=100&seconds=0.3&size=256`]),
+      dependencies,
+    );
+
+    run.compact();
+    const snapshot = await run.done;
+
+    expect(snapshot.status).toBe('completed');
+    expect(snapshot.stream?.store.count).toBe(32);
+    expect(snapshot.stream?.store.inMemory(32)).toBeDefined();
+    await run.release();
+  });
+
+  it('keeps holding new events of a run compacted while it streams', async () => {
+    const server = await track(startStreamServer());
+    const run = startRun(
+      runInput([`GET ${server.url}/stream?rate=50&seconds=30&size=256`]),
+      dependencies,
+    );
+    await waitFor(() => (run.snapshot().stream?.store.count ?? 0) >= 2, 3000);
+
+    run.compact();
+    const compactedAt = run.snapshot().stream?.store.count ?? 0;
+    await waitFor(() => (run.snapshot().stream?.store.count ?? 0) > compactedAt + 1, 3000);
+    const store = run.snapshot().stream?.store;
+    const newest = store?.count ?? 0;
+
+    expect(store?.inMemory(compactedAt)).toBeUndefined();
+    expect(store?.inMemory(newest)).toBeDefined();
+    await run.release();
+  });
+
   it('deletes the spill file of a run that never got headers', async () => {
     const server = await startHttpServer((_request, response) => response.end());
     await server.close();

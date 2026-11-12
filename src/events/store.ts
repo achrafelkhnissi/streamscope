@@ -139,6 +139,11 @@ export class EventStore {
     };
   }
 
+  release(): void {
+    this.ring.fill(undefined);
+    this.ringBytes = 0;
+  }
+
   private record(event: StreamEvent): void {
     const blockIndex = Math.floor((event.index - 1) / blockSize);
     const at = (event.index - 1) % blockSize;
