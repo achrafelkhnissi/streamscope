@@ -1,8 +1,9 @@
 import * as path from 'node:path';
 import * as vscode from 'vscode';
+import type { StreamSession } from '../../events/session';
 import { SpillArea } from '../../events/spill';
 import type { HttpFile, HttpRequest } from '../../http-file/model';
-import { fileSafeName, requestLabel, saveExtension } from '../../response/labels';
+import { fileSafeName, formatBytes, requestLabel, saveExtension } from '../../response/labels';
 import type { BodyFileContext } from '../../runs/body-files';
 import { panelViews, type PanelView } from '../../response/panel-protocol';
 import { RunRegistry } from '../../runs/registry';
@@ -33,6 +34,11 @@ interface Target {
 const sendableSchemes: ReadonlySet<string> = new Set(['file', 'untitled']);
 const noResponseMessage = 'Send the request first: there is no response yet.';
 const webviewPanelScheme = 'webview-panel';
+const localFolderMessage = 'Save the stream to a local folder.';
+const rawMissingMessages: Record<'unsaved' | 'unavailable', string> = {
+  unsaved: 'The raw data of this stream was not saved, so it cannot be saved to a file.',
+  unavailable: 'The raw data of this stream was removed, so it cannot be saved to a file.',
+};
 const viewTitles: Record<PanelView, string> = {
   events: 'Events',
   reply: 'Reply',
@@ -63,12 +69,23 @@ function bodyFiles(uri: vscode.Uri): Omit<BodyFileContext, 'restricted'> {
 
 function defaultSaveUri(run: RunSnapshot, documentUri: vscode.Uri): vscode.Uri | undefined {
   const type = run.head?.headers.find(([name]) => name.toLowerCase() === 'content-type')?.[1];
-  const name = fileSafeName(run.label) + saveExtension(type);
+  const name = fileSafeName(run.label) + saveExtension(type, run.stream?.format?.format);
   const folder =
     documentUri.scheme === 'file'
       ? vscode.Uri.file(path.dirname(documentUri.fsPath))
       : vscode.workspace.workspaceFolders?.[0]?.uri;
   return folder ? vscode.Uri.joinPath(folder, name) : undefined;
+}
+
+function streamToSave(run: RunSnapshot): StreamSession | undefined {
+  return !run.bodyKept || run.status === 'receiving' ? run.stream : undefined;
+}
+
+function missingRaw(run: RunSnapshot): 'unsaved' | 'unavailable' | undefined {
+  if (run.rawData === 'unsaved') {
+    return 'unsaved';
+  }
+  return run.rawData === 'removed' ? 'unavailable' : undefined;
 }
 
 async function openSpillArea(context: vscode.ExtensionContext): Promise<SpillArea | undefined> {
@@ -140,6 +157,23 @@ export function registerRequestFeatures(
   const registry = new RunRegistry(dependencies);
   const lenses = new RequestCodeLenses(cache, registry);
 
+  const saveStream = async (stream: StreamSession, chosen: vscode.Uri): Promise<void> => {
+    if (chosen.scheme !== 'file') {
+      void vscode.window.showErrorMessage(localFolderMessage);
+      return;
+    }
+    const copy = await stream.copyRaw(chosen.fsPath);
+    if (copy.result === 'complete') {
+      vscode.window.setStatusBarMessage(`Saved ${path.basename(chosen.fsPath)}`, 3000);
+    } else if (copy.result === 'capped') {
+      void vscode.window.showWarningMessage(
+        `Saved the first ${formatBytes(copy.bytes)} of the stream; the rest was not kept (streamscope.stream.maxSpillSize).`,
+      );
+    } else {
+      void vscode.window.showErrorMessage(rawMissingMessages[copy.result]);
+    }
+  };
+
   const saveRun = async (
     run: RunSnapshot,
     documentUri: vscode.Uri,
@@ -149,6 +183,12 @@ export function registerRequestFeatures(
       void vscode.window.showInformationMessage(noResponseMessage);
       return;
     }
+    const stream = streamToSave(run);
+    const missing = stream === undefined ? undefined : missingRaw(run);
+    if (missing !== undefined) {
+      void vscode.window.showErrorMessage(rawMissingMessages[missing]);
+      return;
+    }
     const chosen =
       destination ??
       (await vscode.window.showSaveDialog({
@@ -156,6 +196,10 @@ export function registerRequestFeatures(
         saveLabel: 'Save Response',
       }));
     if (!chosen) {
+      return;
+    }
+    if (stream !== undefined) {
+      await saveStream(stream, chosen);
       return;
     }
     await vscode.workspace.fs.writeFile(chosen, run.body);

@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -191,6 +191,57 @@ describe('StreamSession', () => {
       messageId: 'msg-1',
       delta: 'Héllo',
     });
+    state.session.dispose();
+    await area.dispose();
+  });
+
+  it('copies the raw bytes of a stream to a file', async () => {
+    vi.useRealTimers();
+    const area = await SpillArea.open(root);
+    const spill = await area.create();
+    const { bytes, contentType } = fixture('ag-ui.ndjson');
+    const state = harness({ contentType, spill });
+    for (const chunk of chunks(bytes, 5)) {
+      state.session.write(chunk);
+    }
+    state.session.end();
+    const destination = path.join(root, 'copy.ndjson');
+
+    expect(await state.session.copyRaw(destination)).toEqual({
+      result: 'complete',
+      bytes: bytes.length,
+    });
+
+    expect(Buffer.from(bytes).equals(readFileSync(destination))).toBe(true);
+    state.session.dispose();
+    await area.dispose();
+  });
+
+  it('says the raw bytes of a stream without a spill file were not saved', async () => {
+    const state = harness();
+    state.session.write(encoder.encode('{"type":"A"}\n'));
+    const destination = path.join(root, 'none.ndjson');
+
+    expect(await state.session.copyRaw(destination)).toEqual({ result: 'unsaved', bytes: 0 });
+
+    expect(existsSync(destination)).toBe(false);
+    state.session.dispose();
+  });
+
+  it('reports a capped copy with the size that was kept', async () => {
+    vi.useRealTimers();
+    const area = await SpillArea.open(root, { ...defaultSpillLimits, maxFileSize: 20 });
+    const spill = await area.create();
+    const state = harness({ spill });
+    for (const line of ['{"n":1}\n', '{"n":2}\n', '{"n":3}\n']) {
+      state.session.write(encoder.encode(line));
+    }
+    state.session.end();
+    const destination = path.join(root, 'capped.ndjson');
+
+    expect(await state.session.copyRaw(destination)).toEqual({ result: 'capped', bytes: 16 });
+
+    expect(readFileSync(destination, 'utf8')).toBe('{"n":1}\n{"n":2}\n');
     state.session.dispose();
     await area.dispose();
   });

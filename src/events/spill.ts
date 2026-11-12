@@ -7,6 +7,9 @@ import { defaultSpillLimits, type SpillLimits } from '../streaming/limits';
 
 const pidName = /^\d+$/;
 const stagingLimit = 64 * 1024;
+const copyChunkBytes = 1024 * 1024;
+
+export type SpillCopy = 'complete' | 'capped' | 'unavailable';
 
 function isRunning(pid: number): boolean {
   try {
@@ -184,30 +187,38 @@ export class SpillFile {
   }
 
   async read(offset: number, length: number): Promise<Uint8Array | undefined> {
-    const end = offset + length;
-    if (this.removed || end > this.saved) {
-      return undefined;
-    }
-    if (this.written < end) {
-      this.flush();
-      await new Promise<void>((resolve) => {
-        this.waiters.push({ until: end, resolve });
-      });
-    }
-    if (!this.holds(end)) {
-      return undefined;
-    }
-    this.reader ??= open(this.path, 'r').catch((error: unknown) => {
-      this.reader = undefined;
-      throw error;
-    });
-    const handle = await this.reader;
-    if (!this.holds(end)) {
+    if (this.removed || offset + length > this.saved) {
       return undefined;
     }
     const buffer = new Uint8Array(length);
-    const { bytesRead } = await handle.read(buffer, 0, length, offset);
-    return bytesRead === length ? buffer : undefined;
+    return (await this.readInto(buffer, offset)) ? buffer : undefined;
+  }
+
+  async copyTo(destination: string): Promise<SpillCopy> {
+    if (this.removed) {
+      return 'unavailable';
+    }
+    const end = this.saved;
+    const capped = this.isCapped;
+    const buffer = new Uint8Array(Math.min(copyChunkBytes, end));
+    const target = await open(destination, 'w');
+    let copied = false;
+    try {
+      for (let offset = 0; offset < end; offset += buffer.length) {
+        const chunk = buffer.subarray(0, Math.min(buffer.length, end - offset));
+        if (!(await this.readInto(chunk, offset))) {
+          return 'unavailable';
+        }
+        await target.writeFile(chunk);
+      }
+      copied = true;
+    } finally {
+      await target.close();
+      if (!copied) {
+        await rm(destination, { force: true });
+      }
+    }
+    return capped ? 'capped' : 'complete';
   }
 
   async finish(): Promise<void> {
@@ -277,6 +288,32 @@ export class SpillFile {
       () => undefined,
     );
     await rm(this.path, { force: true });
+  }
+
+  private async readInto(buffer: Uint8Array, offset: number): Promise<boolean> {
+    const end = offset + buffer.length;
+    if (this.removed || end > this.saved) {
+      return false;
+    }
+    if (this.written < end) {
+      this.flush();
+      await new Promise<void>((resolve) => {
+        this.waiters.push({ until: end, resolve });
+      });
+    }
+    if (!this.holds(end)) {
+      return false;
+    }
+    this.reader ??= open(this.path, 'r').catch((error: unknown) => {
+      this.reader = undefined;
+      throw error;
+    });
+    const handle = await this.reader;
+    if (!this.holds(end)) {
+      return false;
+    }
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, offset);
+    return bytesRead === buffer.length;
   }
 
   private holds(end: number): boolean {

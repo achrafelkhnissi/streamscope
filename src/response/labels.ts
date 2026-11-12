@@ -1,6 +1,7 @@
 import type { HttpRequest } from '../http-file/model';
 import { maskUrl, maskValues } from '../masking/masking';
 import type { RunSnapshot } from '../runs/run';
+import type { StreamFormat } from '../streaming/detect';
 import type { BodyLanguage } from './format-body';
 
 const units = ['KB', 'MB', 'GB'];
@@ -67,7 +68,10 @@ export function bodyExtension(languageId: BodyLanguage): string {
   return bodyExtensions[languageId];
 }
 
-export function saveExtension(contentType: string | undefined): string {
+export function saveExtension(contentType: string | undefined, format?: StreamFormat): string {
+  if (format === 'ndjson' || format === 'sse') {
+    return `.${format}`;
+  }
   const type = contentType?.split(';')[0]?.trim().toLowerCase() ?? '';
   return saveExtensions[type] ?? (type.endsWith('+json') ? '.json' : '.bin');
 }

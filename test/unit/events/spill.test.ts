@@ -4,16 +4,18 @@ import {
   mkdirSync,
   mkdtempSync,
   readdirSync,
+  readFileSync,
   rmSync,
   statSync,
   writeFileSync,
 } from 'node:fs';
 import { once } from 'node:events';
+import { open, type FileHandle } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SpillArea } from '../../../src/events/spill';
-import { retainedHeap } from '../../support/memory';
+import { collect, retainedHeap } from '../../support/memory';
 import { defaultSpillLimits, type SpillLimits } from '../../../src/streaming/limits';
 
 const encoder = new TextEncoder();
@@ -249,5 +251,195 @@ describe('SpillArea and SpillFile', () => {
     await area.dispose();
 
     expect(existsSync(area.directory)).toBe(false);
+  });
+
+  describe('copyTo', () => {
+    const chunkBytes = 1024 * 1024;
+
+    function pattern(length: number): Uint8Array {
+      const bytes = new Uint8Array(length);
+      for (let index = 0; index < length; index += 1) {
+        bytes[index] = (index * 31 + (index >> 8)) & 0xff;
+      }
+      return bytes;
+    }
+
+    it('copies a finished spill file in bounded reads', async () => {
+      const area = await SpillArea.open(root);
+      const file = await area.create();
+      const content = pattern(5 * chunkBytes + 7);
+      for (let start = 0; start < content.length; start += 300_000) {
+        file.append(content.subarray(start, start + 300_000));
+      }
+      await file.finish();
+      const destination = path.join(root, 'copy.bin');
+
+      expect(await file.copyTo(destination)).toBe('complete');
+
+      expect(Buffer.from(content).equals(readFileSync(destination))).toBe(true);
+      await area.dispose();
+    });
+
+    it('holds about one chunk of a large copy in memory', async () => {
+      const area = await SpillArea.open(root);
+      const file = await area.create();
+      const block = new Uint8Array(chunkBytes).fill(0x61);
+      const size = 128 * chunkBytes;
+      for (let index = 0; index < 128; index += 1) {
+        if (!file.append(block)) {
+          await new Promise<void>((resolve) => {
+            const stop = file.onDrain(() => {
+              stop();
+              resolve();
+            });
+          });
+        }
+      }
+      await file.finish();
+      collect();
+      const before = process.memoryUsage().arrayBuffers;
+      let peak = before;
+      const sampler = setInterval(() => {
+        peak = Math.max(peak, process.memoryUsage().arrayBuffers);
+      }, 1);
+      const destination = path.join(root, 'large.bin');
+
+      try {
+        expect(await file.copyTo(destination)).toBe('complete');
+      } finally {
+        clearInterval(sampler);
+      }
+
+      expect(statSync(destination).size).toBe(size);
+      expect(peak - before).toBeLessThan(4 * chunkBytes);
+      await area.dispose();
+    });
+
+    it('copies an empty file to an empty destination', async () => {
+      const area = await SpillArea.open(root);
+      const file = await area.create();
+      await file.finish();
+      const destination = path.join(root, 'empty.bin');
+
+      expect(await file.copyTo(destination)).toBe('complete');
+
+      expect(statSync(destination).size).toBe(0);
+      await area.dispose();
+    });
+
+    it('copies what a running file has written so far and keeps the file intact', async () => {
+      const baseline = fileHandles();
+      const area = await SpillArea.open(root);
+      const file = await area.create();
+      file.append(encoder.encode('{"n":1}\n'));
+      file.append(encoder.encode('{"n":2}\n'));
+      const first = path.join(root, 'first.ndjson');
+
+      expect(await file.copyTo(first)).toBe('complete');
+
+      expect(readFileSync(first, 'utf8')).toBe('{"n":1}\n{"n":2}\n');
+      file.append(encoder.encode('{"n":3}\n'));
+      await file.finish();
+      const second = path.join(root, 'second.ndjson');
+      expect(await file.copyTo(second)).toBe('complete');
+      expect(readFileSync(second, 'utf8')).toBe('{"n":1}\n{"n":2}\n{"n":3}\n');
+      expect(readFileSync(file.path, 'utf8')).toBe('{"n":1}\n{"n":2}\n{"n":3}\n');
+      expect(file.savedBytes).toBe(24);
+      await area.dispose();
+      expect(fileHandles()).toBe(baseline);
+    });
+
+    it('reports a capped copy', async () => {
+      const area = await SpillArea.open(root, limits({ maxFileSize: 10 }));
+      const file = await area.create();
+      for (const chunk of ['abcd', 'efgh', 'ijkl']) {
+        file.append(encoder.encode(chunk));
+      }
+      await file.finish();
+      const destination = path.join(root, 'capped.bin');
+
+      expect(await file.copyTo(destination)).toBe('capped');
+
+      expect(readFileSync(destination, 'utf8')).toBe('abcdefgh');
+      await area.dispose();
+    });
+
+    it('reports an evicted file as unavailable and leaves the destination alone', async () => {
+      const area = await SpillArea.open(root, limits({ maxTotalSize: 16 }));
+      const oldest = await area.create();
+      const newest = await area.create();
+      oldest.append(encoder.encode('0123456789'));
+      await oldest.finish();
+      newest.append(encoder.encode('abcdefghij'));
+      const destination = path.join(root, 'evicted.bin');
+      writeFileSync(destination, 'earlier');
+
+      expect(oldest.evicted).toBe(true);
+      expect(await oldest.copyTo(destination)).toBe('unavailable');
+
+      expect(readFileSync(destination, 'utf8')).toBe('earlier');
+      await area.dispose();
+    });
+
+    it('reports a deleted file as unavailable', async () => {
+      const area = await SpillArea.open(root);
+      const file = await area.create();
+      file.append(encoder.encode('synthetic'));
+      await file.delete();
+      const destination = path.join(root, 'deleted.bin');
+
+      expect(await file.copyTo(destination)).toBe('unavailable');
+
+      expect(existsSync(destination)).toBe(false);
+      await area.dispose();
+    });
+
+    it('removes the partial destination when the file is evicted during the copy', async () => {
+      const baseline = fileHandles();
+      const area = await SpillArea.open(root);
+      const file = await area.create();
+      file.append(pattern(3 * chunkBytes));
+      await file.finish();
+      const probe = await open(path.join(root, 'probe.bin'), 'w');
+      const prototype = Object.getPrototypeOf(probe) as FileHandle;
+      await probe.close();
+      const writeFile = Reflect.get(prototype, 'writeFile') as (
+        this: FileHandle,
+        data: Uint8Array,
+      ) => Promise<void>;
+      const spy = vi.spyOn(prototype, 'writeFile').mockImplementation(function (
+        this: FileHandle,
+        data,
+      ) {
+        file.evict();
+        return writeFile.call(this, data as Uint8Array);
+      });
+      const destination = path.join(root, 'partial.bin');
+
+      try {
+        expect(await file.copyTo(destination)).toBe('unavailable');
+      } finally {
+        spy.mockRestore();
+      }
+
+      expect(existsSync(destination)).toBe(false);
+      await area.dispose();
+      expect(fileHandles()).toBe(baseline);
+    });
+
+    it('rejects when the destination cannot be written and keeps the file intact', async () => {
+      const baseline = fileHandles();
+      const area = await SpillArea.open(root);
+      const file = await area.create();
+      file.append(encoder.encode('synthetic'));
+      await file.finish();
+
+      await expect(file.copyTo(path.join(root, 'missing', 'copy.bin'))).rejects.toThrow();
+
+      expect(text(await file.read(0, 9))).toBe('synthetic');
+      expect(await file.copyTo(path.join(root, 'copy.bin'))).toBe('complete');
+      await area.dispose();
+      expect(fileHandles()).toBe(baseline);
+    });
   });
 });

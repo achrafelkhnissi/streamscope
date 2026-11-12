@@ -1,5 +1,5 @@
 import * as assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
@@ -286,6 +286,53 @@ describe('the response panel', () => {
     );
 
     assert.equal(state.events, 5);
+  });
+
+  it('saves a stream as .ndjson with every event', async () => {
+    const server = await streamServer();
+    await open('save-stream.http', [`GET ${server.url}/stream?rate=100&seconds=0.3&size=256`]);
+
+    await send();
+    const done = await waitForState(
+      (seen) => seen.status === 'completed' && seen.rendered === seen.events,
+      'the stream did not complete',
+    );
+    const target = vscode.Uri.file(path.join(folder, 'saved-stream.ndjson'));
+    await vscode.commands.executeCommand('streamscope.saveResponse', target);
+
+    const lines = readFileSync(target.fsPath, 'utf8').split('\n');
+    assert.equal(lines.pop(), '');
+    assert.equal(lines.length, done.events);
+    const events = lines.map((line) => JSON.parse(line) as { type: string });
+    assert.equal(events[0]?.type, 'RUN_STARTED');
+    assert.equal(events.at(-1)?.type, 'RUN_FINISHED');
+  });
+
+  it('saves the events a running stream has received so far', async function () {
+    this.timeout(30_000);
+    const server = await streamServer();
+    await open('save-running.http', [`GET ${server.url}/stream?rate=100&seconds=30&size=256`]);
+
+    start();
+    await waitForState((seen) => seen.rendered >= 10, 'ten events were not drawn');
+    const partial = vscode.Uri.file(path.join(folder, 'saved-running.ndjson'));
+    await vscode.commands.executeCommand('streamscope.saveResponse', partial);
+    const savedAt = (await responseState())?.events ?? 0;
+    await waitForState((seen) => seen.events >= savedAt + 3, 'the stream did not go on');
+    await vscode.commands.executeCommand('streamscope.stopRequest');
+    await waitForState((seen) => seen.status === 'cancelled', 'the run did not end cancelled');
+    const final = vscode.Uri.file(path.join(folder, 'saved-stopped.ndjson'));
+    await vscode.commands.executeCommand('streamscope.saveResponse', final);
+
+    const early = readFileSync(partial.fsPath, 'utf8');
+    const later = readFileSync(final.fsPath, 'utf8');
+    const complete = early.split('\n').slice(0, -1);
+    assert.ok(complete.length >= 10);
+    for (const line of complete) {
+      JSON.parse(line);
+    }
+    assert.ok(later.startsWith(early));
+    assert.ok(later.length > early.length);
   });
 
   it('a large body shows a preview and opens in the editor', async function () {

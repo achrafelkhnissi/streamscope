@@ -77,6 +77,20 @@ describe('labels', () => {
     expect(saveExtension(undefined)).toBe('.bin');
   });
 
+  it('saves event streams as .ndjson or .sse whatever the content type says', () => {
+    expect(saveExtension('application/json', 'ndjson')).toBe('.ndjson');
+    expect(saveExtension('application/x-ndjson', 'ndjson')).toBe('.ndjson');
+    expect(saveExtension('text/event-stream', 'sse')).toBe('.sse');
+    expect(saveExtension(undefined, 'sse')).toBe('.sse');
+  });
+
+  it('keeps the content type extension for the other stream formats', () => {
+    expect(saveExtension('application/json', 'json')).toBe('.json');
+    expect(saveExtension('text/plain', 'text')).toBe('.txt');
+    expect(saveExtension('application/x-unknown', 'raw')).toBe('.bin');
+    expect(saveExtension('application/json', undefined)).toBe('.json');
+  });
+
   it('formats sizes 1024-based', () => {
     expect(formatBytes(512)).toBe('512 B');
     expect(formatBytes(1229)).toBe('1.2 KB');
