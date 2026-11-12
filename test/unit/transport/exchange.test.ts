@@ -385,18 +385,23 @@ function pieces(): Buffer[] {
   return Array.from({ length: pieceCount }, (_, index) => Buffer.alloc(pieceSize, index));
 }
 
-function holdingFirstChunk(): { sink: CollectingSink; release: () => void } {
+function gate(): { promise: Promise<void>; release: () => void } {
   let release: () => void = () => undefined;
-  const gate = new Promise<void>((resolve) => {
+  const promise = new Promise<void>((resolve) => {
     release = resolve;
   });
-  const sink = collector(() => (sink.chunks.length === 1 ? gate : undefined));
   return {
-    sink,
+    promise,
     release: () => {
       release();
     },
   };
+}
+
+function holdingFirstChunk(): { sink: CollectingSink; release: () => void } {
+  const held = gate();
+  const sink = collector(() => (sink.chunks.length === 1 ? held.promise : undefined));
+  return { sink, release: held.release };
 }
 
 function idle(ms: number): Promise<void> {
@@ -482,6 +487,76 @@ describe('NodeTransport sink backpressure', () => {
 
     expect(outcome.kind).toBe('completed');
     expect(outcome.decodedBytes).toBe(pieceSize * pieceCount);
+  });
+
+  it('completes a plain response only after the sink settles its last write', async () => {
+    const server = await http((_request, response) => {
+      response.end('hello');
+    });
+    const { sink, release } = holdingFirstChunk();
+    let finished = false;
+
+    const sending = send({ url: server.url }, {}, sink).then((result) => {
+      finished = true;
+      return result;
+    });
+    await idle(200);
+    expect(sink.body()).toBe('hello');
+    expect(finished).toBe(false);
+    release();
+    const { outcome } = await sending;
+
+    expect(outcome.kind).toBe('completed');
+    expect(outcome.decodedBytes).toBe(5);
+  });
+
+  it('cancels while the sink still holds the last write of a finished response', async () => {
+    const server = await http((_request, response) => {
+      response.end('hello');
+    });
+    const { sink } = holdingFirstChunk();
+    const controller = new AbortController();
+
+    const sending = send({ url: server.url }, {}, sink, controller.signal);
+    await waitFor(() => sink.chunks.length === 1);
+    await idle(100);
+    controller.abort();
+    const { outcome } = await sending;
+
+    expect(outcome.kind).toBe('cancelled');
+  });
+
+  it('completes a compressed response only after the sink settles its last write', async () => {
+    const decoded = Buffer.alloc(pieceSize * pieceCount, 'a');
+    const server = await http((_request, response) => {
+      response.writeHead(200, { 'Content-Encoding': 'gzip' });
+      response.end(gzipSync(decoded));
+    });
+    const first = gate();
+    const last = gate();
+    let received = 0;
+    const sink = collector((chunk) => {
+      received += chunk.length;
+      if (received === chunk.length) {
+        return first.promise;
+      }
+      return received === decoded.length ? last.promise : undefined;
+    });
+    let finished = false;
+
+    const sending = send({ url: server.url }, {}, sink).then((result) => {
+      finished = true;
+      return result;
+    });
+    await idle(200);
+    first.release();
+    await waitFor(() => received === decoded.length);
+    await idle(200);
+    expect(finished).toBe(false);
+    last.release();
+    const { outcome } = await sending;
+
+    expect(outcome.kind).toBe('completed');
   });
 
   it('cancels a response while the sink waits', async () => {
