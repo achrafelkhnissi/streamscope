@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { isSensitiveHeader, maskedValue, maskHeaders, maskUrl } from '../../../src/masking/masking';
+import {
+  isSensitiveHeader,
+  looksLikeCredential,
+  maskedValue,
+  maskHeaders,
+  maskUrl,
+  maskValues,
+} from '../../../src/masking/masking';
 
 describe('masking', () => {
   it('masks sensitive header values in any letter case and keeps names and order', () => {
@@ -96,5 +103,33 @@ describe('masking', () => {
       ['Link', '<https://••••••@files.example.test/b>; rel="next"'],
       ['X-Trace', 'plain'],
     ]);
+  });
+
+  it('recognises credential names in any casing and separator style', () => {
+    for (const name of [
+      'token',
+      'accessToken',
+      'ACCESS_TOKEN',
+      'api-key',
+      'apiKey',
+      'clientSecret',
+      'db.password',
+      'Bearer',
+    ]) {
+      expect(looksLikeCredential(name), name).toBe(true);
+    }
+    for (const name of ['host', 'baseUrl', 'userId', 'keyboard']) {
+      expect(looksLikeCredential(name), name).toBe(false);
+    }
+  });
+
+  it('masks every occurrence of every value, longest first', () => {
+    expect(
+      maskValues('a=synthetic-token-2;b=synthetic-token', ['synthetic-token', 'synthetic-token-2']),
+    ).toBe('a=••••••;b=••••••');
+  });
+
+  it('ignores empty values', () => {
+    expect(maskValues('abc', [''])).toBe('abc');
   });
 });

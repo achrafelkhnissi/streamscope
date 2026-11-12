@@ -39,3 +39,18 @@ export function maskUrl(url: string): string {
     .replace(urlUserInfoPattern, `$1${maskedValue}@`)
     .replace(embeddedUserInfoPattern, `$1${maskedValue}@`);
 }
+
+const credentialWords = ['token', 'bearer', 'apikey', 'secret', 'password'];
+const nameSeparators = /[-_.\s]/g;
+
+export function looksLikeCredential(name: string): boolean {
+  const normalized = name.toLowerCase().replace(nameSeparators, '');
+  return credentialWords.some((word) => normalized.includes(word));
+}
+
+export function maskValues(text: string, values: readonly string[]): string {
+  return [...values]
+    .filter((value) => value !== '')
+    .sort((a, b) => b.length - a.length)
+    .reduce((masked, value) => masked.split(value).join(maskedValue), text);
+}
