@@ -10,7 +10,7 @@ import { resolveRequest } from '../../../src/variables/resolve';
 let root = '';
 
 beforeEach(() => {
-  root = realpathSync(mkdtempSync(path.join(tmpdir(), 'streamscope-build-')));
+  root = realpathSync.native(mkdtempSync(path.join(tmpdir(), 'streamscope-build-')));
 });
 
 afterEach(() => {

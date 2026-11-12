@@ -10,7 +10,7 @@ let documentDir = '';
 let outside = '';
 
 beforeEach(() => {
-  base = realpathSync(mkdtempSync(path.join(tmpdir(), 'streamscope-body-')));
+  base = realpathSync.native(mkdtempSync(path.join(tmpdir(), 'streamscope-body-')));
   root = path.join(base, 'workspace');
   documentDir = path.join(root, 'requests');
   outside = path.join(base, 'outside');

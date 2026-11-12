@@ -217,7 +217,7 @@ describe('startRun', () => {
   it.skipIf(process.platform === 'win32')(
     'fails with body-file when a body file cannot be read',
     async () => {
-      const folder = realpathSync(mkdtempSync(path.join(tmpdir(), 'streamscope-run-')));
+      const folder = realpathSync.native(mkdtempSync(path.join(tmpdir(), 'streamscope-run-')));
       const file = path.join(folder, 'locked.json');
       writeFileSync(file, '{}');
       chmodSync(file, 0);
