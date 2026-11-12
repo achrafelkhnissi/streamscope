@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
+import { removeTemporaryFolder } from './temporary-folder';
 
 const extensionId = 'achrafelkhnissi.streamscope';
 
@@ -37,7 +38,7 @@ describe('http language features', () => {
   });
 
   after(() => {
-    rmSync(folder, { recursive: true, force: true });
+    removeTemporaryFolder(folder);
   });
 
   async function open(name: string, content: string): Promise<vscode.TextDocument> {

@@ -133,7 +133,13 @@ export class EnvironmentStore implements vscode.Disposable {
     uri: vscode.Uri,
     origin: EnvironmentOrigin,
   ): Promise<EnvironmentLayer | undefined> {
-    const stat = await vscode.workspace.fs.stat(uri);
+    let stat: vscode.FileStat;
+    try {
+      stat = await vscode.workspace.fs.stat(uri);
+    } catch {
+      this.cache.delete(uri.toString());
+      return undefined;
+    }
     const version = `${String(stat.mtime)}:${String(stat.size)}`;
     const cached = this.cache.get(uri.toString());
     if (cached?.version === version) {
