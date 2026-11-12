@@ -18,6 +18,7 @@ Cover, for every parser or framer:
 - Multi-line SSE `data:` fields, `event`, `id` and `retry` handling as defined by the WHATWG server-sent events specification.
 - Malformed JSON lines: reported with their position, skipped, and the stream continues.
 - Lines or events over the size limit: reported and resynchronised at the next terminator.
+- Every limit the module enforces (bytes held, events or labels retained) is pinned by a test that feeds past it and checks what was dropped.
 - Event order is preserved, and nothing is emitted after cancellation.
 
 Use only synthetic data (for example `{"type":"RUN_STARTED","threadId":"thread-1"}`). Never copy content from real API responses or private files.
