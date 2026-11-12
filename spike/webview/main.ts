@@ -17,6 +17,7 @@ declare function acquireVsCodeApi(): VsCodeApi;
 const api = acquireVsCodeApi();
 const rowHeight = 22;
 const margin = 40;
+const maxScrollPixels = 8_000_000;
 const rawLineLimit = 2000;
 const views: readonly ViewName[] = ['events', 'reply', 'raw', 'headers', 'body', 'checks'];
 const states: Record<UpdateMessage['state'], string> = {
@@ -69,6 +70,29 @@ function top(index: number): number {
   return expanded !== undefined && index > expanded.index ? base + expanded.height : base;
 }
 
+function virtualHeight(): number {
+  return count * rowHeight + (expanded?.height ?? 0);
+}
+
+function scrollRatio(): number {
+  const height = virtualHeight();
+  const space = Math.min(height, maxScrollPixels);
+  const client = list.clientHeight;
+  return height <= maxScrollPixels || space <= client ? 1 : (height - client) / (space - client);
+}
+
+function virtualScrollTop(): number {
+  return list.scrollTop * scrollRatio();
+}
+
+function setVirtualScrollTop(offset: number): void {
+  list.scrollTop = offset / scrollRatio();
+}
+
+function onScreen(offset: number): string {
+  return `${String(list.scrollTop + offset - virtualScrollTop())}px`;
+}
+
 function indexAt(offset: number): number {
   if (expanded !== undefined && offset > top(expanded.index) + rowHeight) {
     return Math.floor((offset - expanded.height) / rowHeight) + 1;
@@ -119,11 +143,11 @@ function rowNode(row: Row): HTMLDivElement {
 
 function render(): void {
   renderQueued = false;
-  spacer.style.height = `${String(count * rowHeight + (expanded?.height ?? 0))}px`;
+  spacer.style.height = `${String(Math.min(virtualHeight(), maxScrollPixels))}px`;
   if (following) {
     list.scrollTop = list.scrollHeight;
   }
-  const first = Math.max(1, Math.min(count, indexAt(list.scrollTop)));
+  const first = Math.max(1, Math.min(count, indexAt(virtualScrollTop())));
   const last = Math.min(count, first + Math.ceil(list.clientHeight / rowHeight));
   const from = Math.max(1, first - margin);
   const to = Math.min(count, last + margin);
@@ -144,11 +168,11 @@ function render(): void {
       rowNodes.set(index, node);
       list.append(node);
     }
-    node.style.top = `${String(top(index))}px`;
+    node.style.top = onScreen(top(index));
     node.setAttribute('aria-selected', String(index === selected));
   }
   if (expanded !== undefined) {
-    expanded.node.style.top = `${String(top(expanded.index) + rowHeight)}px`;
+    expanded.node.style.top = onScreen(top(expanded.index) + rowHeight);
   }
   for (const index of rows.keys()) {
     if (index < from - margin || index > to + margin) {
@@ -204,10 +228,11 @@ function showDetail(index: number, json: string): void {
 function reveal(index: number): void {
   following = false;
   const offset = top(index);
-  if (offset < list.scrollTop) {
-    list.scrollTop = offset;
-  } else if (offset + rowHeight > list.scrollTop + list.clientHeight) {
-    list.scrollTop = offset + rowHeight - list.clientHeight;
+  const scrolled = virtualScrollTop();
+  if (offset < scrolled) {
+    setVirtualScrollTop(offset);
+  } else if (offset + rowHeight > scrolled + list.clientHeight) {
+    setVirtualScrollTop(offset + rowHeight - list.clientHeight);
   }
 }
 
@@ -366,7 +391,7 @@ list.addEventListener('scroll', () => {
 });
 
 list.addEventListener('keydown', (event) => {
-  const current = selected ?? Math.min(count, indexAt(list.scrollTop));
+  const current = selected ?? Math.min(count, indexAt(virtualScrollTop()));
   const moves: Record<string, number> = {
     ArrowDown: current + 1,
     ArrowUp: current - 1,
