@@ -32,6 +32,7 @@ export function snapshot(overrides: Partial<RunSnapshot> = {}): RunSnapshot {
     body: new Uint8Array(1229),
     failure: undefined,
     problems: [],
+    sensitiveValues: [],
     ...overrides,
   };
 }

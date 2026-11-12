@@ -1,5 +1,5 @@
 import type * as vscode from 'vscode';
-import { maskHeaders, maskUrl } from '../masking/masking';
+import { maskHeaders, maskUrl, maskValues } from '../masking/masking';
 import { describeOutcome } from '../response/labels';
 import type { RunSnapshot } from '../runs/run';
 import type { Headers } from '../transport/model';
@@ -15,6 +15,7 @@ export function logRunStart(log: vscode.LogOutputChannel, method: string, url: s
 }
 
 export function logRunEnd(log: vscode.LogOutputChannel, run: RunSnapshot): void {
+  const masked = (text: string): string => maskValues(text, run.sensitiveValues);
   const line = `← ${describeOutcome(run)}`;
   if (run.status === 'failed' || run.status === 'blocked') {
     log.warn(line);
@@ -22,9 +23,9 @@ export function logRunEnd(log: vscode.LogOutputChannel, run: RunSnapshot): void 
     log.info(line);
   }
   if (run.sent) {
-    log.debug(`Request headers: ${headerList(run.sent.headers)}`);
+    log.debug(masked(`Request headers: ${headerList(run.sent.headers)}`));
   }
   if (run.head) {
-    log.debug(`Response headers: ${headerList(run.head.headers)}`);
+    log.debug(masked(`Response headers: ${headerList(run.head.headers)}`));
   }
 }

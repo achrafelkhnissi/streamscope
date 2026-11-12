@@ -8,6 +8,7 @@ const nativeRealpath = promisify(realpath.native);
 export interface BodyFileContext {
   documentDir: string | undefined;
   containmentRoot: string | undefined;
+  restricted: boolean;
 }
 
 type Located = { ok: true; path: string; size: number } | { ok: false; message: string };
@@ -24,7 +25,10 @@ function isInside(file: string, root: string): boolean {
   return file === root || file.startsWith(root.endsWith(path.sep) ? root : root + path.sep);
 }
 
-export async function locateBodyFile(file: string, context: BodyFileContext): Promise<Located> {
+export async function locateBodyFile(
+  file: string,
+  context: Pick<BodyFileContext, 'documentDir' | 'containmentRoot'>,
+): Promise<Located> {
   const { containmentRoot, documentDir } = context;
   if (containmentRoot === undefined) {
     return { ok: false, message: 'Save the .http file first: body files are read relative to it.' };

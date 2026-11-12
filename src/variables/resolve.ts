@@ -1,6 +1,9 @@
+import type { SourcedValue } from '../environments/model';
 import type { FileVariable, HttpFile, HttpRequest, Range } from '../http-file/model';
 import { scanReferences } from '../http-file/references';
-import { resolveSystemVariable, type SystemContext } from './system';
+import { looksLikeCredential } from '../masking/masking';
+import type { VariableSources } from './sources';
+import { resolveSystemVariable } from './system';
 
 export interface ResolutionProblem {
   message: string;
@@ -31,13 +34,14 @@ export interface VariableScope {
 }
 
 export type Resolution =
-  | { ok: true; request: ResolvedRequest; scope: VariableScope }
+  | { ok: true; request: ResolvedRequest; scope: VariableScope; sensitiveValues: string[] }
   | { ok: false; problems: ResolutionProblem[] };
 
 interface Failure {
   expression: string;
   message: string;
   range: Range | undefined;
+  inEnvironment: boolean;
 }
 
 type Evaluated = { ok: true; value: string } | { ok: false; failures: Failure[] };
@@ -50,8 +54,13 @@ interface Substituted {
 const escapePattern = /\\(.)/g;
 const escapes: Record<string, string> = { n: '\n', r: '\r', t: '\t' };
 const requestReferencePattern = /^[^.\s]+\.(?:request|response)\./;
+const sharedPattern = /^\$shared(?:\s+(\S+))?$/;
+const secretPattern = /^\$secret\s+([\w.-]+)$/;
+const dotenvPattern = /^\$dotenv\s+(%)?([\w.-]+)$/;
+const processEnvPattern = /^\$processEnv\s+(%)?(\w+)$/;
+const sharedName = '$shared';
 
-function unescape(value: string): string {
+export function unescapeFileVariable(value: string): string {
   return value.replace(escapePattern, (_, character: string) => escapes[character] ?? character);
 }
 
@@ -88,13 +97,30 @@ function substitute(text: string, evaluate: (expression: string) => Evaluated): 
   return { text: result + text.slice(from), failures };
 }
 
+function failure(expression: string, message: string): Evaluated {
+  return { ok: false, failures: [{ expression, message, range: undefined, inEnvironment: false }] };
+}
+
+function lookedUp(written: string, indirect: boolean, name: string, kind: string): string {
+  return indirect ? `the ${kind} named by ${quoted(written)}` : name;
+}
+
+function formatProblem(expression: string, format: string): Evaluated {
+  return failure(
+    expression,
+    `${quoted(expression)} does not match the expected format \`${format}\`.`,
+  );
+}
+
 class Scope implements VariableScope {
+  readonly sensitive = new Set<string>();
+  readonly missingSecrets: string[] = [];
   private readonly variables = new Map<string, FileVariable>();
   private readonly cache = new Map<string, Evaluated>();
 
   constructor(
     file: HttpFile,
-    private readonly context: SystemContext,
+    private readonly sources: VariableSources,
   ) {
     for (const variable of file.fileVariables) {
       this.variables.set(variable.name, variable);
@@ -111,58 +137,265 @@ class Scope implements VariableScope {
       ? { ok: true, text: substituted.text }
       : {
           ok: false,
-          messages: [...new Set(substituted.failures.map((failure) => failure.message))],
+          messages: [...new Set(substituted.failures.map((entry) => entry.message))],
         };
   }
 
   private evaluateWithin(expression: string, stack: readonly string[]): Evaluated {
+    switch (expression.split(/\s/, 1)[0]) {
+      case sharedName:
+        return this.sharedReference(expression, stack);
+      case '$secret':
+        return this.secret(expression);
+      case '$dotenv':
+        return this.dotenv(expression, stack);
+      case '$processEnv':
+        return this.processVariable(expression, stack);
+      default:
+        break;
+    }
     if (expression.startsWith('$')) {
-      const value = resolveSystemVariable(expression, this.context);
-      return value.ok
-        ? value
-        : { ok: false, failures: [{ expression, message: value.message, range: undefined }] };
+      const value = resolveSystemVariable(expression, this.sources.system);
+      return value.ok ? value : failure(expression, value.message);
     }
     const variable = this.variables.get(expression);
     if (variable) {
       return this.fileVariable(variable, stack);
     }
-    const message = requestReferencePattern.test(expression)
-      ? `Request references such as ${quoted(expression)} are not supported yet.`
-      : `${quoted(expression)} is not defined.`;
-    return { ok: false, failures: [{ expression, message, range: undefined }] };
+    const environment = this.sources.environment.get(expression);
+    if (environment) {
+      return this.sourcedVariable(expression, environment, 'environment', stack);
+    }
+    const shared = this.sources.shared.get(expression);
+    if (shared) {
+      return this.sourcedVariable(expression, shared, 'shared', stack);
+    }
+    return failure(
+      expression,
+      requestReferencePattern.test(expression)
+        ? `Request references such as ${quoted(expression)} are not supported yet.`
+        : this.undefinedMessage(expression),
+    );
+  }
+
+  private undefinedMessage(name: string): string {
+    const environment = this.sources.environmentName;
+    const where =
+      environment === undefined
+        ? `in this file or \`${sharedName}\` (no environment selected)`
+        : `in this file, the \`${environment}\` environment or \`${sharedName}\``;
+    const hint = this.sources.restricted
+      ? ' A restricted workspace does not read http-client.private.env.json or environments from your user settings.'
+      : '';
+    return `${quoted(name)} is not defined ${where}.${hint}`;
+  }
+
+  private sharedReference(expression: string, stack: readonly string[]): Evaluated {
+    const name = sharedPattern.exec(expression)?.[1];
+    if (name === undefined) {
+      return failure(
+        expression,
+        `${quoted(expression)} does not match the expected format \`${sharedName} <name>\`.`,
+      );
+    }
+    const shared = this.sources.shared.get(name);
+    return shared
+      ? this.sourcedVariable(name, shared, 'shared', stack)
+      : failure(expression, `${quoted(expression)} is not defined in \`${sharedName}\`.`);
+  }
+
+  private unavailable(expression: string): Evaluated {
+    return failure(
+      expression,
+      `${quoted(expression)} is not available in a restricted workspace. Trust the workspace to use it.`,
+    );
+  }
+
+  private sensitiveValue(value: string): Evaluated {
+    if (value !== '') {
+      this.sensitive.add(value);
+    }
+    return { ok: true, value };
+  }
+
+  private indirect(
+    name: string,
+    indirection: boolean,
+    stack: readonly string[],
+  ): { ok: true; value: string } | Evaluated {
+    if (!indirection) {
+      return { ok: true, value: name };
+    }
+    const environment = this.sources.environment.get(name);
+    if (environment) {
+      return this.sourcedVariable(name, environment, 'environment', stack);
+    }
+    const shared = this.sources.shared.get(name);
+    return shared ? this.sourcedVariable(name, shared, 'shared', stack) : { ok: true, value: name };
+  }
+
+  private secret(expression: string): Evaluated {
+    const name = secretPattern.exec(expression)?.[1];
+    if (name === undefined) {
+      return formatProblem(expression, '$secret <name>');
+    }
+    if (this.sources.restricted) {
+      return this.unavailable(expression);
+    }
+    const value = this.sources.secrets.get(name);
+    if (value === undefined) {
+      if (!this.missingSecrets.includes(name)) {
+        this.missingSecrets.push(name);
+      }
+      return failure(expression, `${quoted(expression)} has no stored value.`);
+    }
+    return this.sensitiveValue(value);
+  }
+
+  private dotenv(expression: string, stack: readonly string[]): Evaluated {
+    const match = dotenvPattern.exec(expression);
+    if (!match?.[2]) {
+      return formatProblem(expression, '$dotenv [%]<name>');
+    }
+    const dotenv = this.sources.dotenv;
+    if (this.sources.restricted || dotenv.kind === 'restricted') {
+      return this.unavailable(expression);
+    }
+    const name = this.indirect(match[2], match[1] !== undefined, stack);
+    if (!name.ok) {
+      return name;
+    }
+    if (dotenv.kind === 'missing') {
+      return failure(
+        expression,
+        `${quoted(expression)}: no .env file was found next to the .http file or above it in the workspace.`,
+      );
+    }
+    const value = dotenv.values.get(name.value);
+    if (value === undefined) {
+      return failure(
+        expression,
+        `${quoted(expression)}: ${lookedUp(match[2], match[1] !== undefined, name.value, 'key')} is not in ${dotenv.path}.`,
+      );
+    }
+    return looksLikeCredential(name.value) ? this.sensitiveValue(value) : { ok: true, value };
+  }
+
+  private processVariable(expression: string, stack: readonly string[]): Evaluated {
+    const match = processEnvPattern.exec(expression);
+    if (!match?.[2]) {
+      return formatProblem(expression, '$processEnv [%]<name>');
+    }
+    if (this.sources.restricted) {
+      return this.unavailable(expression);
+    }
+    const name = this.indirect(match[2], match[1] !== undefined, stack);
+    if (!name.ok) {
+      return name;
+    }
+    const value = this.sources.processEnv[name.value];
+    if (value === undefined) {
+      return failure(
+        expression,
+        `${quoted(expression)}: ${lookedUp(match[2], match[1] !== undefined, name.value, 'variable')} is not set in VS Code's environment.`,
+      );
+    }
+    return looksLikeCredential(name.value) ? this.sensitiveValue(value) : { ok: true, value };
+  }
+
+  private remember(name: string, evaluated: Evaluated): Evaluated {
+    if (evaluated.ok && looksLikeCredential(name) && evaluated.value !== '') {
+      this.sensitive.add(evaluated.value);
+    }
+    return evaluated;
+  }
+
+  private cycle(identity: string, stack: readonly string[]): string[] | undefined {
+    const start = stack.indexOf(identity);
+    return start === -1
+      ? undefined
+      : stack.slice(start).map((entry) => entry.slice(entry.indexOf(':') + 1));
   }
 
   private fileVariable(variable: FileVariable, stack: readonly string[]): Evaluated {
-    const cached = this.cache.get(variable.name);
+    const identity = `file:${variable.name}`;
+    const cached = this.cache.get(identity);
     if (cached) {
       return cached;
     }
-    const cycleStart = stack.indexOf(variable.name);
-    if (cycleStart !== -1) {
-      const names = stack.slice(cycleStart);
+    const names = this.cycle(identity, stack);
+    if (names) {
       const first = this.variables.get(names[0] ?? variable.name) ?? variable;
       return {
         ok: false,
         failures: [
-          { expression: variable.name, message: cycleMessage(names), range: first.valueRange },
+          {
+            expression: variable.name,
+            message: cycleMessage(names),
+            range: first.valueRange,
+            inEnvironment: false,
+          },
         ],
       };
     }
-    const inner = [...stack, variable.name];
-    const substituted = substitute(unescape(variable.value), (expression) =>
+    const inner = [...stack, identity];
+    const substituted = substitute(unescapeFileVariable(variable.value), (expression) =>
       this.evaluateWithin(expression, inner),
     );
-    const evaluated: Evaluated =
+    const evaluated = this.remember(
+      variable.name,
       substituted.failures.length === 0
         ? { ok: true, value: substituted.text }
         : {
             ok: false,
-            failures: substituted.failures.map((failure) => ({
-              ...failure,
-              range: failure.range ?? variable.valueRange,
+            failures: substituted.failures.map((entry) => ({
+              ...entry,
+              range: entry.range ?? variable.valueRange,
             })),
-          };
-    this.cache.set(variable.name, evaluated);
+          },
+    );
+    this.cache.set(identity, evaluated);
+    return evaluated;
+  }
+
+  private sourcedVariable(
+    name: string,
+    sourced: SourcedValue,
+    kind: 'environment' | 'shared',
+    stack: readonly string[],
+  ): Evaluated {
+    const identity = `${kind}:${name}`;
+    const cached = this.cache.get(identity);
+    if (cached) {
+      return cached;
+    }
+    const names = this.cycle(identity, stack);
+    if (names) {
+      return failure(names[0] ?? name, cycleMessage(names));
+    }
+    const inner = [...stack, identity];
+    const substituted = substitute(sourced.value, (expression) =>
+      this.evaluateWithin(expression, inner),
+    );
+    const evaluated = this.remember(
+      name,
+      substituted.failures.length === 0
+        ? { ok: true, value: substituted.text }
+        : {
+            ok: false,
+            failures: substituted.failures.map((entry) =>
+              entry.range !== undefined || entry.inEnvironment
+                ? { ...entry, expression: entry.range === undefined ? name : entry.expression }
+                : {
+                    ...entry,
+                    expression: name,
+                    message: `In ${quoted(name)} from ${sourced.origin}: ${entry.message}`,
+                    inEnvironment: true,
+                  },
+            ),
+          },
+    );
+    this.cache.set(identity, evaluated);
     return evaluated;
   }
 }
@@ -197,12 +430,12 @@ function urlRange(request: HttpRequest): Range {
   return first && last ? { start: first.start, end: last.end } : request.requestLine.range;
 }
 
-export function resolveRequest(
+function resolveInScope(
   file: HttpFile,
   request: HttpRequest,
-  context: SystemContext,
-): Resolution {
-  const scope = new Scope(file, context);
+  sources: VariableSources,
+): { resolution: Resolution; scope: Scope } {
+  const scope = new Scope(file, sources);
   const failures: Failure[] = [];
   const text = (value: string): string => {
     const substituted = substitute(value, (expression) => scope.evaluate(expression));
@@ -230,7 +463,39 @@ export function resolveRequest(
           },
     ),
   };
-  return failures.length === 0
-    ? { ok: true, request: resolved, scope }
-    : { ok: false, problems: locate(failures, request) };
+  return {
+    scope,
+    resolution:
+      failures.length === 0
+        ? { ok: true, request: resolved, scope, sensitiveValues: [...scope.sensitive] }
+        : { ok: false, problems: locate(failures, request) },
+  };
+}
+
+export function resolveRequest(
+  file: HttpFile,
+  request: HttpRequest,
+  sources: VariableSources,
+): Resolution {
+  return resolveInScope(file, request, sources).resolution;
+}
+
+export function missingSecrets(
+  file: HttpFile,
+  request: HttpRequest,
+  sources: VariableSources,
+): string[] {
+  return resolveInScope(file, request, sources).scope.missingSecrets;
+}
+
+export function evaluateExpression(
+  file: HttpFile,
+  expression: string,
+  sources: VariableSources,
+): { ok: true; value: string; sensitiveValues: string[] } | { ok: false; message: string } {
+  const scope = new Scope(file, sources);
+  const evaluated = scope.evaluate(expression);
+  return evaluated.ok
+    ? { ok: true, value: evaluated.value, sensitiveValues: [...scope.sensitive] }
+    : { ok: false, message: evaluated.failures[0]?.message ?? '' };
 }

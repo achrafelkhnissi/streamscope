@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { parseHttpFile } from '../../../src/http-file/parse';
 import { resolveRequest, type Resolution } from '../../../src/variables/resolve';
+import type { VariableSources } from '../../../src/variables/sources';
+import { sourced, testSources } from './sources';
 import type { SystemContext } from '../../../src/variables/system';
 
 function counter(): SystemContext {
@@ -15,13 +17,22 @@ function counter(): SystemContext {
   };
 }
 
+function resolveWith(sources: Partial<VariableSources>, ...lines: string[]): Resolution {
+  const file = parseHttpFile(lines.join('\n'));
+  const request = file.requests[0];
+  if (!request) {
+    throw new Error('expected a request');
+  }
+  return resolveRequest(file, request, testSources({ system: counter(), ...sources }));
+}
+
 function resolve(...lines: string[]): Resolution {
   const file = parseHttpFile(lines.join('\n'));
   const request = file.requests[0];
   if (!request) {
     throw new Error('expected a request');
   }
-  return resolveRequest(file, request, counter());
+  return resolveRequest(file, request, testSources({ system: counter() }));
 }
 
 function resolved(...lines: string[]) {
@@ -136,14 +147,23 @@ describe('resolveRequest', () => {
 
   it('reports an undefined variable at every place it is used', () => {
     expect(problems('GET https://{{host}}/items', 'X-Host: {{host}}')).toEqual([
-      { message: '`{{host}}` is not defined.', range: at(0, 12, 20) },
-      { message: '`{{host}}` is not defined.', range: at(1, 8, 16) },
+      {
+        message: '`{{host}}` is not defined in this file or `$shared` (no environment selected).',
+        range: at(0, 12, 20),
+      },
+      {
+        message: '`{{host}}` is not defined in this file or `$shared` (no environment selected).',
+        range: at(1, 8, 16),
+      },
     ]);
   });
 
   it('reports an undefined variable inside a file variable at its value', () => {
     expect(problems('@base = https://{{host}}', 'GET {{base}}/items', 'X-Base: {{base}}')).toEqual([
-      { message: '`{{host}}` is not defined.', range: at(0, 8, 24) },
+      {
+        message: '`{{host}}` is not defined in this file or `$shared` (no environment selected).',
+        range: at(0, 8, 24),
+      },
     ]);
   });
 
@@ -170,8 +190,8 @@ describe('resolveRequest', () => {
   });
 
   it('reports system variable problems where they are used', () => {
-    expect(problems('GET https://api.example.test/{{$processEnv HOME}}')).toEqual([
-      { message: '`{{$processEnv HOME}}` is not supported yet.', range: at(0, 29, 49) },
+    expect(problems('GET https://api.example.test/{{$aadToken}}')).toEqual([
+      { message: '`{{$aadToken}}` is not supported yet.', range: at(0, 29, 42) },
     ]);
   });
 
@@ -203,7 +223,126 @@ describe('resolveRequest', () => {
     });
     expect(scope.resolveText('{{missing}}')).toEqual({
       ok: false,
-      messages: ['`{{missing}}` is not defined.'],
+      messages: [
+        '`{{missing}}` is not defined in this file or `$shared` (no environment selected).',
+      ],
     });
+  });
+
+  it('prefers a file variable over the environment and the environment over $shared', () => {
+    const result = resolveWith(
+      {
+        environmentName: 'dev',
+        environment: sourced({ a: 'environment', b: 'environment' }, 'dev environment (settings)'),
+        shared: sourced({ a: 'shared', b: 'shared', c: 'shared' }, '$shared (settings)'),
+      },
+      '@a = file',
+      'GET https://api.example.test/{{a}}/{{b}}/{{c}}',
+    );
+
+    expect(result.ok && result.request.url).toBe(
+      'https://api.example.test/file/environment/shared',
+    );
+  });
+
+  it('resolves environment values that reference other variables and $shared', () => {
+    const result = resolveWith(
+      {
+        environmentName: 'dev',
+        environment: sourced(
+          { base: 'environment', path: '{{$shared base}}/x', other: '{{base}}-2' },
+          'dev environment (settings)',
+        ),
+        shared: sourced({ base: 'shared' }, '$shared (settings)'),
+      },
+      'GET https://api.example.test/{{path}}/{{other}}',
+    );
+
+    expect(result.ok && result.request.url).toBe('https://api.example.test/shared/x/environment-2');
+  });
+
+  it('reports a cycle across file and environment variables', () => {
+    const result = resolveWith(
+      {
+        environmentName: 'dev',
+        environment: sourced({ b: '{{a}}' }, 'dev environment (settings)'),
+      },
+      '@a = {{b}}',
+      'GET https://api.example.test/{{a}}',
+    );
+
+    expect(!result.ok && result.problems).toEqual([
+      { message: '`{{a}}` and `{{b}}` refer to each other.', range: at(0, 5, 10) },
+    ]);
+  });
+
+  it('names the environment and $shared when a variable is undefined', () => {
+    const withEnvironment = resolveWith(
+      { environmentName: 'dev' },
+      'GET https://api.example.test/{{host}}',
+    );
+    const without = resolveWith({}, 'GET https://api.example.test/{{host}}');
+
+    expect(!withEnvironment.ok && withEnvironment.problems[0]?.message).toBe(
+      '`{{host}}` is not defined in this file, the `dev` environment or `$shared`.',
+    );
+    expect(!without.ok && without.problems[0]?.message).toBe(
+      '`{{host}}` is not defined in this file or `$shared` (no environment selected).',
+    );
+  });
+
+  it('reports a problem inside an environment value at the reference that used it', () => {
+    const result = resolveWith(
+      {
+        environmentName: 'dev',
+        environment: sourced({ token: '{{missing}}' }, 'dev environment (http-client.env.json)'),
+      },
+      'GET https://api.example.test/{{token}}',
+    );
+
+    expect(!result.ok && result.problems).toEqual([
+      {
+        message:
+          'In `{{token}}` from dev environment (http-client.env.json): `{{missing}}` is not defined in this file, the `dev` environment or `$shared`.',
+        range: at(0, 29, 38),
+      },
+    ]);
+  });
+
+  it('reports a $shared reference that $shared does not define', () => {
+    const result = resolveWith({}, 'GET https://api.example.test/{{$shared base}}');
+
+    expect(!result.ok && result.problems[0]?.message).toBe(
+      '`{{$shared base}}` is not defined in `$shared`.',
+    );
+  });
+
+  it('reports values from credential-named variables as sensitive', () => {
+    const result = resolveWith(
+      {
+        environmentName: 'dev',
+        environment: sourced(
+          { apiKey: 'synthetic-key', host: 'api.example.test' },
+          'dev environment (settings)',
+        ),
+      },
+      '@accessToken = synthetic-token',
+      'GET https://{{host}}/items',
+      'Authorization: Bearer {{accessToken}}',
+      'X-Key: {{apiKey}}',
+    );
+
+    expect(result.ok && result.sensitiveValues).toEqual(['synthetic-token', 'synthetic-key']);
+  });
+
+  it('adds the restricted-workspace hint to undefined variables', () => {
+    const result = resolveWith(
+      { environmentName: 'dev', restricted: true },
+      'GET https://api.example.test/{{token}}',
+    );
+
+    expect(!result.ok && result.problems[0]?.message).toBe(
+      '`{{token}}` is not defined in this file, the `dev` environment or `$shared`. A restricted workspace does not read http-client.private.env.json or environments from your user settings.',
+    );
   });
 });

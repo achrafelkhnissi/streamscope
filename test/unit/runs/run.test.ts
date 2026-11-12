@@ -58,7 +58,7 @@ describe('startRun', () => {
 
     expect(snapshot.status).toBe('blocked');
     expect(snapshot.problems.map((problem) => problem.message)).toEqual([
-      '`{{missing}}` is not defined.',
+      '`{{missing}}` is not defined in this file or `$shared` (no environment selected).',
     ]);
     expect(snapshot.sent).toBeUndefined();
     expect(server.sockets.opened).toBe(0);
@@ -237,6 +237,111 @@ describe('startRun', () => {
       }
     },
   );
+});
+
+describe('startRun with sources and trust', () => {
+  async function selfSigned(): Promise<LocalServer> {
+    return track(
+      startHttpsServer(createSelfSignedCertificate(['localhost', '127.0.0.1']), (_q, response) => {
+        response.end('secure');
+      }),
+    );
+  }
+
+  it('turns off TLS verification for an insecure environment only when trusted', async () => {
+    const server = await selfSigned();
+    const lines = [`GET ${server.url}/a`];
+
+    const trusted = await startRun(
+      runInput(lines, { settings: { insecureEnvironment: true } }),
+      dependencies,
+    ).done;
+    const restricted = await startRun(
+      runInput(lines, { settings: { insecureEnvironment: true }, restricted: true }),
+      dependencies,
+    ).done;
+
+    expect(trusted.status).toBe('completed');
+    expect(restricted.failure?.kind).toBe('tls');
+  });
+
+  it('ignores # @insecure in a restricted workspace', async () => {
+    const server = await selfSigned();
+
+    const snapshot = await startRun(
+      runInput(['# @insecure', `GET ${server.url}/a`], { restricted: true }),
+      dependencies,
+    ).done;
+
+    expect(snapshot.failure?.kind).toBe('tls');
+  });
+
+  it('asks before sending and cancels without connecting when declined', async () => {
+    const server = await track(startHttpServer((_request, response) => response.end('ok')));
+    const asked: string[] = [];
+
+    const declined = await startRun(
+      runInput([`GET ${server.url}`], {
+        confirmSend: () => {
+          asked.push('declined');
+          return Promise.resolve(false);
+        },
+      }),
+      dependencies,
+    ).done;
+    expect(declined.status).toBe('cancelled');
+    expect(server.sockets.opened).toBe(0);
+
+    const accepted = await startRun(
+      runInput([`GET ${server.url}`], {
+        confirmSend: () => {
+          asked.push('accepted');
+          return Promise.resolve(true);
+        },
+      }),
+      dependencies,
+    ).done;
+    expect(accepted.status).toBe('completed');
+    expect(asked).toEqual(['declined', 'accepted']);
+  });
+
+  it('does not ask before a request that is blocked anyway', async () => {
+    let asked = false;
+
+    const snapshot = await startRun(
+      runInput(['GET https://api.example.test/{{missing}}'], {
+        confirmSend: () => {
+          asked = true;
+          return Promise.resolve(true);
+        },
+      }),
+      dependencies,
+    ).done;
+
+    expect(snapshot.status).toBe('blocked');
+    expect(asked).toBe(false);
+  });
+
+  it('resolves from the run variables and records sensitive values', async () => {
+    const server = await track(startHttpServer((_request, response) => response.end('ok')));
+
+    const snapshot = await startRun(
+      runInput([`GET ${server.url}/{{path}}`, 'Authorization: Bearer {{$secret apiToken}}'], {
+        variables: {
+          environmentName: 'dev',
+          environment: new Map([
+            ['path', { value: 'items', origin: 'dev environment (settings)' }],
+          ]),
+          secrets: new Map([['apiToken', 'synthetic-token']]),
+        },
+      }),
+      dependencies,
+    ).done;
+
+    expect(snapshot.status).toBe('completed');
+    expect(server.requests[0]?.url).toBe('/items');
+    expect(snapshot.sensitiveValues).toEqual(['synthetic-token']);
+  });
 });
 
 describe('requestKey', () => {

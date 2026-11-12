@@ -398,6 +398,14 @@ Checks add `exists(x)` (true if `x` resolves), `before(a, b)` (first event match
 
 For `{{x}}` without a request prefix: latest capture named `x`, file variable `x`, active environment `x`, `$shared` `x`. For `{{name.x}}`: capture `x` of request `name`; if `name` is a request and `x` is `response`/`request`, the REST Client reference syntax applies. Hovering shows which one was used.
 
+Environment and `.env` details, settled in M3:
+
+- `$shared` is also read from `http-client*.env.json`, as Visual Studio does; without an active environment only `$shared` applies.
+- `{{$processEnv}}` and `{{$dotenv}}` never send an empty value. An unset process variable or a missing `.env` key blocks the request, where REST Client sends an empty string or only warns.
+- `.env.<environment>` and then `.env` are looked up from the `.http` file's folder upwards, stopping at the workspace folder (REST Client goes up to the filesystem root).
+- Environment files belong to their own workspace folder: a file outside every folder uses only its own folder's environment files.
+- Unresolved-variable diagnostics are warnings, because the value may come from an environment that is not selected; sending still blocks.
+
 ### Waiting
 
 `streamscope.capture.waitTimeout` (default 30 s). While waiting, the request shows "waiting for startRun › threadId" with a cancel action. If the producer has never run in this session, the request is blocked immediately with a quick fix "Run startRun".
@@ -504,20 +512,23 @@ Nothing is written to the workspace except files the user asks to save.
 
 ### Workspace Trust
 
-`capabilities.untrustedWorkspaces: { supported: "limited" }`. In a restricted workspace:
+`capabilities.untrustedWorkspaces: { supported: "limited", restrictedConfigurations: ["streamscope.request.caFile"] }` and `capabilities.virtualWorkspaces: { supported: "limited" }`. In a restricted workspace:
 
 | Feature                                                              | Trusted | Restricted                                                          |
 | -------------------------------------------------------------------- | ------- | ------------------------------------------------------------------- |
 | Editing, colouring, outline, diagnostics                             | Yes     | Yes                                                                 |
 | Sending a request by explicit click                                  | Yes     | Yes, after a one-time confirmation per session **(builder's call)** |
 | `{{$secret}}`, `.env`, `http-client.private.env.json`, `$processEnv` | Yes     | Not resolved (request blocked with an explanation)                  |
+| Environments from the user's own settings                            | Yes     | Not read (only workspace-level values)                              |
 | `< path` body files                                                  | Yes     | No                                                                  |
-| `# @insecure`, custom CA settings from the workspace                 | Yes     | Ignored                                                             |
+| `# @insecure`, custom CA settings from the workspace                 | Yes     | Ignored; a relative user `caFile` blocks the request                |
 | File runs from the Testing view                                      | Yes     | No                                                                  |
+
+The confirmation comes only for a request that would otherwise be sent, just before connecting, so a blocked request never asks; declining cancels it. Restricted mode is tested by `npm run test:restricted`, which opens a real untrusted folder because the standard test runner always disables Workspace Trust.
 
 ### Masking
 
-Masked in everything the extension itself writes (the request headers shown in Headers, the captured-values summary, hovers, inlay hints, log, history list, error messages): values from `{{$secret}}`, `secret` captures, environment values whose names look like credentials, and the headers `Authorization`, `Proxy-Authorization`, `Cookie`, `Set-Cookie`, `X-Api-Key`, `Api-Key` **(builder's call for the last two)**. The log channel never prints request or response bodies at the default level.
+Masked in everything the extension itself writes (the request headers shown in Headers, the captured-values summary, hovers, inlay hints, log, history list, error messages): values from `{{$secret}}`, `secret` captures, values of variables whose names look like credentials (file, environment, `$shared`, `.env` and process variables; FR-A4's rule), masked by value wherever they appear, and the headers `Authorization`, `Proxy-Authorization`, `Cookie`, `Set-Cookie`, `X-Api-Key`, `Api-Key` **(builder's call for the last two)**. The log channel never prints request or response bodies at the default level.
 
 Response content is not masked: Events, Reply, Body, Raw and saved responses show exactly what the server sent, even if it contains a token (Achraf's decision; Raw stays byte-exact and latency is unaffected).
 

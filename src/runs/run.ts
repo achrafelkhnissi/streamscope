@@ -12,6 +12,7 @@ import type {
   TransportOptions,
 } from '../transport/model';
 import { resolveRequest, type ResolutionProblem } from '../variables/resolve';
+import type { VariableSources } from '../variables/sources';
 import type { SystemContext } from '../variables/system';
 import type { BodyFileContext } from './body-files';
 import { buildOutgoingRequest, type BuildResult } from './build-request';
@@ -39,6 +40,7 @@ export interface RunSnapshot {
   body: Uint8Array;
   failure: RunFailure | undefined;
   problems: readonly ResolutionProblem[];
+  sensitiveValues: readonly string[];
 }
 
 export interface RequestSettings {
@@ -48,6 +50,7 @@ export interface RequestSettings {
   maxRedirects: number;
   ca: readonly string[] | undefined;
   maxBodyBytes: number;
+  insecureEnvironment: boolean;
 }
 
 export interface RunInput {
@@ -55,8 +58,11 @@ export interface RunInput {
   label: string;
   file: HttpFile;
   request: HttpRequest;
-  bodyFiles: BodyFileContext;
+  bodyFiles: Omit<BodyFileContext, 'restricted'>;
   settings: RequestSettings;
+  variables: Omit<VariableSources, 'system' | 'restricted'>;
+  restricted: boolean;
+  confirmSend: (() => Promise<boolean>) | undefined;
 }
 
 export interface RunDependencies {
@@ -118,6 +124,7 @@ export function startRun(
     body: new Uint8Array(),
     failure: undefined,
     problems: [],
+    sensitiveValues: [],
   };
 
   const snapshot = (): RunSnapshot => ({
@@ -179,14 +186,24 @@ export function startRun(
     if (wasCancelled()) {
       return finish({ status: 'cancelled' });
     }
-    const resolution = resolveRequest(input.file, request, dependencies.system);
+    const resolution = resolveRequest(input.file, request, {
+      ...input.variables,
+      system: dependencies.system,
+      restricted: input.restricted,
+    });
+    if (resolution.ok) {
+      state.sensitiveValues = resolution.sensitiveValues;
+    }
     const problems = [...timeoutProblems(), ...(resolution.ok ? [] : resolution.problems)];
     if (!resolution.ok || problems.length > 0) {
       return finish({ status: 'blocked', problems });
     }
     let built: BuildResult;
     try {
-      built = await buildOutgoingRequest(resolution.request, resolution.scope, input.bodyFiles);
+      built = await buildOutgoingRequest(resolution.request, resolution.scope, {
+        ...input.bodyFiles,
+        restricted: input.restricted,
+      });
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       return finish({
@@ -197,12 +214,16 @@ export function startRun(
     if (!built.ok) {
       return finish({ status: 'blocked', problems: built.problems });
     }
+    if (input.confirmSend && !(await input.confirmSend())) {
+      return finish({ status: 'cancelled' });
+    }
     if (wasCancelled()) {
       return finish({ status: 'cancelled' });
     }
     const timeout = lastDirective(request, 'timeout');
     const options: TransportOptions = {
-      rejectUnauthorized: !hasDirective(request, 'insecure'),
+      rejectUnauthorized:
+        input.restricted || !(hasDirective(request, 'insecure') || settings.insecureEnvironment),
       ca: settings.ca,
       connectTimeoutMs: settings.connectTimeoutMs,
       headersTimeoutMs: settings.headersTimeoutMs,

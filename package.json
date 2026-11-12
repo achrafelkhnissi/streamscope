@@ -50,6 +50,19 @@
     "CHANGELOG.md",
     "LICENSE"
   ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": "limited",
+      "description": "In a restricted workspace Streamscope asks once before sending, never reads secrets, .env files, http-client.private.env.json, environments from your user settings, process environment variables or body files, ignores # @insecure, and uses only your own absolute streamscope.request.caFile.",
+      "restrictedConfigurations": [
+        "streamscope.request.caFile"
+      ]
+    },
+    "virtualWorkspaces": {
+      "supported": "limited",
+      "description": "Streamscope sends requests only from local and untitled .http files."
+    }
+  },
   "contributes": {
     "commands": [
       {
@@ -81,6 +94,35 @@
         "title": "Show Response Body",
         "category": "Streamscope",
         "icon": "$(file-code)"
+      },
+      {
+        "command": "streamscope.selectEnvironment",
+        "title": "Select Environment",
+        "category": "Streamscope",
+        "icon": "$(server-environment)"
+      },
+      {
+        "command": "streamscope.setSecret",
+        "title": "Set Secret",
+        "category": "Streamscope",
+        "icon": "$(key)"
+      },
+      {
+        "command": "streamscope.clearSecret",
+        "title": "Clear Secret",
+        "category": "Streamscope",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "streamscope.listSecrets",
+        "title": "List Secrets",
+        "category": "Streamscope",
+        "icon": "$(list-unordered)"
+      },
+      {
+        "command": "streamscope.moveToSecretStorage",
+        "title": "Move to Secret Storage",
+        "category": "Streamscope"
       },
       {
         "command": "streamscope.showLog",
@@ -117,6 +159,10 @@
         {
           "command": "streamscope.showResponseBody",
           "when": "editorLangId == http || resourceScheme == streamscope-response"
+        },
+        {
+          "command": "streamscope.moveToSecretStorage",
+          "when": "false"
         }
       ],
       "editor/title": [
@@ -208,15 +254,16 @@
     "build:production": "node esbuild.mjs --production",
     "watch": "node esbuild.mjs --watch",
     "watch:types": "tsc --noEmit --watch --project tsconfig.json",
-    "typecheck": "tsc --noEmit --project tsconfig.json && tsc --noEmit --project test/unit/tsconfig.json && tsc --noEmit --project test/integration/tsconfig.json && tsc --noEmit --project test/vsix/tsconfig.json",
+    "typecheck": "tsc --noEmit --project tsconfig.json && tsc --noEmit --project test/unit/tsconfig.json && tsc --noEmit --project test/integration/tsconfig.json && tsc --noEmit --project test/vsix/tsconfig.json && tsc --noEmit --project test/restricted/tsconfig.json",
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test:unit": "vitest run",
     "test:unit:watch": "vitest",
     "test:coverage": "vitest run --coverage",
-    "compile:host-tests": "tsc --project test/integration/tsconfig.json && tsc --project test/vsix/tsconfig.json",
+    "compile:host-tests": "tsc --project test/integration/tsconfig.json && tsc --project test/vsix/tsconfig.json && tsc --project test/restricted/tsconfig.json",
     "test:integration": "npm run build && npm run compile:host-tests && vscode-test",
+    "test:restricted": "npm run build && npm run compile:host-tests && node scripts/run-restricted-tests.mjs",
     "test": "npm run test:unit && npm run test:integration",
     "check": "npm run typecheck && npm run lint && npm run format:check && npm run test:unit",
     "vscode:prepublish": "npm run build:production",

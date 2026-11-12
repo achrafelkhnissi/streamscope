@@ -23,7 +23,24 @@ Request directives:
 
 Settings: `streamscope.request.connectTimeout`, `streamscope.request.headersTimeout`, `streamscope.request.followRedirects`, `streamscope.request.maxRedirects`, `streamscope.request.caFile` (extra certificate authorities to trust) and `streamscope.codeLens.enabled`.
 
-Streamscope stays disabled in restricted mode until you trust the workspace.
+## Environments and secrets
+
+Variables come from, in order: file variables (`@name = value`), the active environment, then `$shared`.
+
+- **Environments** are read from REST Client's `rest-client.environmentVariables` setting, and from `http-client.env.json` and `http-client.private.env.json` next to the `.http` file or at the root of its workspace folder. For the same name, the private file wins over the public file, which wins over the setting. `$shared` values apply to every environment.
+- **Choose the environment** from the status bar or with **Streamscope: Select Environment**. The choice is remembered per workspace.
+- **`{{$secret name}}`** asks for the value once, keeps it in VS Code's secret storage for this workspace, and hides it everywhere Streamscope writes. Use **Set Secret**, **Clear Secret** and **List Secrets** to manage values, or the **Move to secret storage** quick fix on a line like `@apiToken = …`.
+- **`{{$dotenv name}}`** reads `.env.<environment>` or `.env` next to the file, or in a parent folder up to the workspace folder.
+- **`{{$processEnv name}}`** reads VS Code's own environment.
+- Both accept `%name`, which first looks up the real name in the environment.
+- A missing value never becomes an empty one: the request is not sent.
+- An environment can set `"streamscope.insecure": true` to skip TLS verification for its requests.
+
+Hover over `{{…}}` to see the value and where it comes from (secrets and credential-like values stay hidden). Completion offers variables after `{{` and directives after `# @`, and undefined variables get a warning.
+
+## Restricted workspaces
+
+In a workspace you have not trusted, Streamscope still colours, outlines and checks `.http` files. Before sending, it asks once per session. It never reads secrets, `.env` files, `http-client.private.env.json`, environments from your user settings, process variables or body files there, and ignores `# @insecure` and environment TLS opt-outs. It uses only your own `streamscope.request.caFile` setting, and only when it is an absolute path.
 
 ## Requirements
 

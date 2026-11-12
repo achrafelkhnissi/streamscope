@@ -6,6 +6,7 @@ import { parseHttpFile } from '../../../src/http-file/parse';
 import { buildOutgoingRequest, type BuildResult } from '../../../src/runs/build-request';
 import type { BodyPart } from '../../../src/transport/model';
 import { resolveRequest } from '../../../src/variables/resolve';
+import { testSources } from '../variables/sources';
 
 let root = '';
 
@@ -29,13 +30,14 @@ async function build(...lines: string[]): Promise<BuildResult> {
   if (!request) {
     throw new Error('expected a request');
   }
-  const resolution = resolveRequest(file, request, system);
+  const resolution = resolveRequest(file, request, testSources({ system }));
   if (!resolution.ok) {
     throw new Error(resolution.problems.map((problem) => problem.message).join('\n'));
   }
   return buildOutgoingRequest(resolution.request, resolution.scope, {
     documentDir: root,
     containmentRoot: root,
+    restricted: false,
   });
 }
 
@@ -229,7 +231,13 @@ describe('buildOutgoingRequest', () => {
 
     expect(await build('POST https://api.example.test/items', '', '<@ ./template.json')).toEqual({
       ok: false,
-      problems: [{ message: '`{{missing}}` is not defined.', range: at(2, 3, 18) }],
+      problems: [
+        {
+          message:
+            '`{{missing}}` is not defined in this file or `$shared` (no environment selected).',
+          range: at(2, 3, 18),
+        },
+      ],
     });
   });
 
@@ -239,6 +247,38 @@ describe('buildOutgoingRequest', () => {
     expect(await build('POST https://api.example.test/items', '', '<@klingon ./data.txt')).toEqual({
       ok: false,
       problems: [{ message: 'Unsupported encoding `klingon`.', range: at(2, 10, 20) }],
+    });
+  });
+
+  it('blocks body files in a restricted workspace', async () => {
+    writeFileSync(path.join(root, 'payload.json'), '{}');
+    const file = parseHttpFile(
+      ['POST https://api.example.test/items', '', '< ./payload.json'].join('\n'),
+    );
+    const request = file.requests[0];
+    if (!request) {
+      throw new Error('expected a request');
+    }
+    const resolution = resolveRequest(file, request, testSources({ system }));
+    if (!resolution.ok) {
+      throw new Error('expected a resolution');
+    }
+
+    expect(
+      await buildOutgoingRequest(resolution.request, resolution.scope, {
+        documentDir: root,
+        containmentRoot: root,
+        restricted: true,
+      }),
+    ).toEqual({
+      ok: false,
+      problems: [
+        {
+          message:
+            'Body files are not read in a restricted workspace. Trust the workspace to send them.',
+          range: at(2, 2, 16),
+        },
+      ],
     });
   });
 

@@ -32,9 +32,16 @@ function caBase(uri: vscode.Uri): string | undefined {
 async function customCertificates(
   uri: vscode.Uri,
   caFile: string,
+  restricted: boolean,
 ): Promise<{ ok: true; ca: string[] | undefined } | { ok: false; message: string }> {
   if (caFile.trim() === '') {
     return { ok: true, ca: undefined };
+  }
+  if (restricted && !path.isAbsolute(caFile)) {
+    return {
+      ok: false,
+      message: `streamscope.request.caFile is the relative path "${caFile}", which a restricted workspace does not resolve. Use an absolute path, or trust the workspace.`,
+    };
   }
   const base = caBase(uri);
   if (!path.isAbsolute(caFile) && base === undefined) {
@@ -55,7 +62,10 @@ async function customCertificates(
   }
 }
 
-export async function readRequestSettings(uri: vscode.Uri): Promise<SettingsResult> {
+export async function readRequestSettings(
+  uri: vscode.Uri,
+  restricted: boolean,
+): Promise<SettingsResult> {
   const configuration = vscode.workspace.getConfiguration('streamscope.request', uri);
   const connect = duration(configuration, 'connectTimeout', '30s');
   if (typeof connect === 'string') {
@@ -72,7 +82,7 @@ export async function readRequestSettings(uri: vscode.Uri): Promise<SettingsResu
       message: `streamscope.request.maxRedirects must be a whole number from 0 to 50, not ${String(maxRedirects)}.`,
     };
   }
-  const ca = await customCertificates(uri, configuration.get<string>('caFile', ''));
+  const ca = await customCertificates(uri, configuration.get<string>('caFile', ''), restricted);
   if (!ca.ok) {
     return ca;
   }
@@ -85,6 +95,7 @@ export async function readRequestSettings(uri: vscode.Uri): Promise<SettingsResu
       maxRedirects,
       ca: ca.ca,
       maxBodyBytes,
+      insecureEnvironment: false,
     },
   };
 }

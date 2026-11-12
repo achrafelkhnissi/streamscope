@@ -1,5 +1,5 @@
 import type { HttpRequest } from '../http-file/model';
-import { maskUrl } from '../masking/masking';
+import { maskUrl, maskValues } from '../masking/masking';
 import type { RunSnapshot } from '../runs/run';
 import type { BodyLanguage } from './format-body';
 
@@ -73,6 +73,10 @@ export function saveExtension(contentType: string | undefined): string {
 }
 
 export function describeOutcome(run: RunSnapshot): string {
+  return maskValues(outcomeText(run), run.sensitiveValues);
+}
+
+function outcomeText(run: RunSnapshot): string {
   switch (run.status) {
     case 'completed':
       return `${String(run.head?.status ?? '')} ${run.head?.statusText ?? ''} · ${formatBytes(run.body.length)} · ${formatDuration(run.elapsedMs)}`;

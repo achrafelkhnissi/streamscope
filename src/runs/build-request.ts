@@ -15,6 +15,8 @@ export type BuildResult =
 
 type FilePart = Extract<ResolvedBodyPart, { kind: 'file' }>;
 
+const restrictedBodyFileMessage =
+  'Body files are not read in a restricted workspace. Trust the workspace to send them.';
 const securePorts: ReadonlySet<string> = new Set(['443', '8443']);
 const hostPortPattern = /:(\d+)$/;
 
@@ -100,6 +102,10 @@ async function bodyParts(
         ? part.lines.map((line) => line + lineEnding).join('')
         : joinLines(part.lines, lineEnding, form) + (type === 'application/x-ndjson' ? '\n' : '');
       parts.push({ kind: 'bytes', bytes: Buffer.from(text, 'utf8') });
+      continue;
+    }
+    if (context.restricted) {
+      problems.push({ message: restrictedBodyFileMessage, range: part.pathRange });
       continue;
     }
     const built = await filePart(part, scope, context);

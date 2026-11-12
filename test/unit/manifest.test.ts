@@ -2,6 +2,8 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
 interface Manifest {
+  scripts: Record<string, string>;
+  capabilities: unknown;
   name: string;
   publisher: string;
   displayName: string;
@@ -102,6 +104,11 @@ describe('extension manifest', () => {
       'streamscope.saveResponse',
       'streamscope.showResponseHeaders',
       'streamscope.showResponseBody',
+      'streamscope.selectEnvironment',
+      'streamscope.setSecret',
+      'streamscope.clearSecret',
+      'streamscope.listSecrets',
+      'streamscope.moveToSecretStorage',
       'streamscope.showLog',
     ]);
   });
@@ -142,6 +149,7 @@ describe('extension manifest', () => {
     expect(palette['streamscope.sendRequest']).toBe(
       'editorLangId == http && resourceScheme != streamscope-response',
     );
+    expect(palette['streamscope.moveToSecretStorage']).toBe('false');
     expect(palette['streamscope.saveResponse']).toBe(
       'editorLangId == http || resourceScheme == streamscope-response',
     );
@@ -150,5 +158,22 @@ describe('extension manifest', () => {
       'streamscope.showResponseBody',
       'streamscope.saveResponse',
     ]);
+  });
+
+  it('declares limited support for restricted and virtual workspaces', () => {
+    expect(manifest.capabilities).toEqual({
+      untrustedWorkspaces: {
+        supported: 'limited',
+        description: expect.stringMatching(/\S/) as unknown,
+        restrictedConfigurations: ['streamscope.request.caFile'],
+      },
+      virtualWorkspaces: {
+        supported: 'limited',
+        description: expect.stringMatching(/\S/) as unknown,
+      },
+    });
+    expect(manifest.scripts['test:restricted']).toBe(
+      'npm run build && npm run compile:host-tests && node scripts/run-restricted-tests.mjs',
+    );
   });
 });

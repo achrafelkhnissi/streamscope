@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import type { HttpFile, HttpRequest } from '../../http-file/model';
@@ -7,13 +6,18 @@ import type { BodyFileContext } from '../../runs/body-files';
 import { RunRegistry } from '../../runs/registry';
 import { requestKey, type RunDependencies, type RunSnapshot } from '../../runs/run';
 import { NodeTransport } from '../../transport/node-transport';
+import { confirmOnce } from '../../runs/confirm-once';
+import type { EnvironmentStore } from '../environments/environment-store';
 import type { ParseCache } from '../language/parse-cache';
 import { httpSelector } from '../language/register';
 import { logRunEnd, logRunStart } from '../log';
 import { ResponsePresenter, type ResponseSlot } from '../response/presenter';
 import { ResponseFileSystem, responseScheme } from '../response/response-file-system';
 import { RequestCodeLenses } from './code-lens';
+import type { SecretStore } from '../secrets/secret-store';
+import { liveSystemContext } from '../system-context';
 import { readRequestSettings } from './settings';
+import { variablesFor } from './variables';
 
 interface Target {
   document: vscode.TextDocument;
@@ -25,7 +29,7 @@ interface Target {
 const sendableSchemes: ReadonlySet<string> = new Set(['file', 'untitled']);
 const noResponseMessage = 'Send the request first: there is no response yet.';
 
-function bodyFiles(uri: vscode.Uri): BodyFileContext {
+function bodyFiles(uri: vscode.Uri): Omit<BodyFileContext, 'restricted'> {
   if (uri.scheme !== 'file') {
     return { documentDir: undefined, containmentRoot: undefined };
   }
@@ -66,7 +70,21 @@ export function registerRequestFeatures(
   context: vscode.ExtensionContext,
   log: vscode.LogOutputChannel,
   cache: ParseCache,
+  environments: EnvironmentStore,
+  secrets: SecretStore,
 ): void {
+  const confirmRestrictedSend = confirmOnce(async () => {
+    const choice = await vscode.window.showWarningMessage(
+      'Send requests from this restricted workspace?',
+      {
+        modal: true,
+        detail:
+          'Streamscope does not read secrets, .env files, http-client.private.env.json, environments from your user settings, process variables or body files here, and ignores # @insecure.',
+      },
+      'Send',
+    );
+    return choice === 'Send';
+  });
   const files = new ResponseFileSystem();
   const presenter = new ResponsePresenter(
     files,
@@ -74,12 +92,7 @@ export function registerRequestFeatures(
   );
   const dependencies: RunDependencies = {
     transport: new NodeTransport(),
-    system: {
-      now: () => new Date(),
-      uuid: () => randomUUID(),
-      randomInt: (minInclusive, maxExclusive) =>
-        minInclusive + Math.floor(Math.random() * (maxExclusive - minInclusive)),
-    },
+    system: liveSystemContext,
     clock: () => performance.now(),
   };
   const registry = new RunRegistry(dependencies);
@@ -119,12 +132,17 @@ export function registerRequestFeatures(
       );
       return;
     }
-    const settings = await readRequestSettings(found.document.uri);
+    const settings = await readRequestSettings(found.document.uri, !vscode.workspace.isTrusted);
     if (!settings.ok) {
       void vscode.window.showErrorMessage(settings.message);
       return;
     }
     const { document, file, request, key } = found;
+    const prepared = await variablesFor(document, file, request, environments, secrets);
+    if (!prepared) {
+      return;
+    }
+    const restricted = !vscode.workspace.isTrusted;
     logRunStart(log, request.requestLine.method, request.requestLine.url);
     const run = await registry.start({
       key,
@@ -132,7 +150,10 @@ export function registerRequestFeatures(
       file,
       request,
       bodyFiles: bodyFiles(document.uri),
-      settings: settings.settings,
+      settings: { ...settings.settings, insecureEnvironment: prepared.insecureEnvironment },
+      variables: prepared.variables,
+      restricted,
+      confirmSend: restricted ? confirmRestrictedSend : undefined,
     }).done;
     logRunEnd(log, run);
     if (registry.latest(key)?.id !== run.id) {
