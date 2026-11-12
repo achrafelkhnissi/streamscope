@@ -1,3 +1,4 @@
+import { StreamSession } from '../../../src/events/session';
 import { RawTail } from '../../../src/runs/raw-tail';
 import type { RunSnapshot } from '../../../src/runs/run';
 
@@ -41,4 +42,19 @@ export function snapshot(overrides: Partial<RunSnapshot> = {}): RunSnapshot {
     sensitiveValues: [],
     ...overrides,
   };
+}
+
+export function streamOf(count: number): StreamSession {
+  const session = new StreamSession({
+    contentType: 'application/x-ndjson',
+    directive: undefined,
+    spill: undefined,
+    now: () => 0,
+    onUpdate: () => undefined,
+    onText: () => undefined,
+  });
+  session.write(new TextEncoder().encode('{"type":"TEXT_MESSAGE_CONTENT"}\n'.repeat(count)));
+  session.end();
+  session.dispose();
+  return session;
 }

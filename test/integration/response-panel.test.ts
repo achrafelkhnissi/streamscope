@@ -18,11 +18,13 @@ interface ResponseState {
   body: string;
   visible: boolean;
   readOnly: boolean;
+  statusBar: string | undefined;
 }
 
-function responseState(): Thenable<ResponseState | undefined> {
+function responseState(key?: string): Thenable<ResponseState | undefined> {
   return vscode.commands.executeCommand<ResponseState | undefined>(
     'streamscope.test.responseState',
+    key,
   );
 }
 
@@ -34,17 +36,58 @@ async function waitForState(
   check: (state: ResponseState) => boolean,
   what: string,
   timeoutMs = 10_000,
+  key?: string,
 ): Promise<ResponseState> {
   const deadline = Date.now() + timeoutMs;
   let last: ResponseState | undefined;
   while (Date.now() < deadline) {
-    last = await responseState();
+    last = await responseState(key);
     if (last !== undefined && check(last)) {
       return last;
     }
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
   throw new Error(`${what} within ${String(timeoutMs)} ms; last state ${JSON.stringify(last)}`);
+}
+
+async function until(
+  condition: () => boolean | Promise<boolean>,
+  what: string,
+  timeoutMs = 10_000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!(await condition())) {
+    if (Date.now() > deadline) {
+      throw new Error(`${what} within ${String(timeoutMs)} ms`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+}
+
+async function lenses(uri: vscode.Uri): Promise<[vscode.Command, vscode.Command]> {
+  const found = await vscode.commands.executeCommand<vscode.CodeLens[]>(
+    'vscode.executeCodeLensProvider',
+    uri,
+  );
+  const [first, second] = found.flatMap((lens) =>
+    lens.command === undefined ? [] : [lens.command],
+  );
+  if (first === undefined || second === undefined) {
+    throw new Error(`expected two lenses, found ${String(found.length)}`);
+  }
+  return [first, second];
+}
+
+function runLens(command: vscode.Command): Thenable<unknown> {
+  return vscode.commands.executeCommand(
+    command.command,
+    ...((command.arguments ?? []) as unknown[]),
+  );
+}
+
+function liveEvents(command: vscode.Command): number {
+  const match = /^Running · (\d+) events? · \d+(?:\.\d)? m?s$/.exec(command.title);
+  return match?.[1] === undefined ? -1 : Number(match[1]);
 }
 
 function panelTabs(): vscode.Tab[] {
@@ -333,6 +376,115 @@ describe('the response panel', () => {
     }
     assert.ok(later.startsWith(early));
     assert.ok(later.length > early.length);
+  });
+
+  it('shows Stop and the live event count in the CodeLens while streaming', async function () {
+    this.timeout(30_000);
+    const server = await streamServer();
+    const editor = await open('lens-live.http', [
+      `GET ${server.url}/stream?rate=100&seconds=30&size=256`,
+    ]);
+    const uri = editor.document.uri;
+
+    start();
+    await waitForState((seen) => seen.events >= 10, 'ten events were not received');
+    const [stop, outcome] = await lenses(uri);
+    assert.equal(stop.title, 'Stop');
+    assert.equal(stop.command, 'streamscope.stopRequest');
+    const first = liveEvents(outcome);
+    assert.ok(first >= 10, `the lens shows ${outcome.title}`);
+    await until(async () => {
+      const [, later] = await lenses(uri);
+      return liveEvents(later) >= first + 20;
+    }, 'the event count in the lens did not grow');
+
+    await runLens(stop);
+    await waitForState((seen) => seen.status === 'cancelled', 'the lens Stop did not end the run');
+    const [resend, ended] = await lenses(uri);
+    assert.equal(resend.title, 'Send Request');
+    assert.match(ended.title, /^Cancelled after /);
+  });
+
+  it('the outcome lens reveals the response panel', async () => {
+    const server = await startHttpServer((_request, response) => {
+      response.end('ok');
+    });
+    servers.push(server);
+    const editor = await open('lens-reveal.http', [`GET ${server.url}/reveal`]);
+
+    await send();
+    await waitForState((seen) => seen.status === 'completed' && seen.visible, 'no panel opened');
+    await vscode.window.tabGroups.close(panelTabs());
+    await until(() => panelTabs().length === 0, 'the panel did not close');
+    const [, outcome] = await lenses(editor.document.uri);
+    assert.match(outcome.title, /^200 OK · 2 B · /);
+
+    await runLens(outcome);
+
+    await waitForState((seen) => seen.visible, 'the outcome lens did not reveal the panel');
+    assert.equal(panelTabs().length, 1);
+  });
+
+  it('shows the running request in the status bar and stops it from there', async function () {
+    this.timeout(30_000);
+    const server = await streamServer();
+    await open('status-bar.http', [`GET ${server.url}/stream?rate=100&seconds=30&size=256`]);
+
+    start();
+    const running = await waitForState(
+      (seen) => / · \d+ events$/.test(seen.statusBar ?? ''),
+      'the status bar did not show the running stream with its events',
+    );
+    assert.match(
+      running.statusBar ?? '',
+      /^\$\(debug-stop\) GET http:\/\/127\.0\.0\.1:\d+\/stream\?/,
+    );
+
+    await vscode.commands.executeCommand('streamscope.stopRunningRequest');
+    const stopped = await waitForState(
+      (seen) => seen.status === 'cancelled' && seen.statusBar === undefined,
+      'the status bar did not stop the run and hide',
+    );
+
+    assert.ok(stopped.events > 0);
+  });
+
+  it('counts the running requests in the status bar and follows each one that stops', async function () {
+    this.timeout(30_000);
+    const server = await streamServer();
+    const url = `${server.url}/stream?rate=100&seconds=30&size=256`;
+    const editor = await open('status-bar-several.http', [
+      `GET ${url}&request=first`,
+      '',
+      '###',
+      '',
+      `GET ${url}&request=second`,
+    ]);
+    const uri = editor.document.uri;
+
+    sending.push(vscode.commands.executeCommand('streamscope.sendRequest', uri, 0));
+    sending.push(vscode.commands.executeCommand('streamscope.sendRequest', uri, 4));
+    const both = await waitForState(
+      (seen) => seen.statusBar === '$(debug-stop) 2 running',
+      'the status bar did not count both requests',
+    );
+
+    await vscode.commands.executeCommand('streamscope.stopRequest', uri, 0);
+    const left = await waitForState(
+      (seen) => seen.statusBar?.includes('request=second') === true,
+      'the status bar did not move to the request still running',
+      10_000,
+      both.key,
+    );
+    assert.match(left.statusBar ?? '', /^\$\(debug-stop\) GET .*request=second · /);
+
+    await vscode.commands.executeCommand('streamscope.stopRequest', uri, 4);
+    await waitForState(
+      (seen) => seen.statusBar === undefined,
+      'the status bar did not hide once nothing ran',
+      10_000,
+      both.key,
+    );
   });
 
   it('a large body shows a preview and opens in the editor', async function () {

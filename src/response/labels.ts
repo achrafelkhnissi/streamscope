@@ -80,7 +80,7 @@ export function describeOutcome(run: RunSnapshot): string {
   return maskValues(outcomeText(run), run.sensitiveValues);
 }
 
-function eventCount(run: RunSnapshot): string | undefined {
+export function eventCount(run: RunSnapshot): string | undefined {
   if (run.bodyKept || run.stream === undefined) {
     return undefined;
   }

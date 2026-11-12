@@ -45,6 +45,10 @@ export class RunRegistry {
     return [...this.runs.values()].some(isActive);
   }
 
+  running(): RunHandle[] {
+    return [...this.runs.values()].filter(isActive);
+  }
+
   onDidChange(listener: (snapshot: RunSnapshot) => void): () => void {
     this.listeners.add(listener);
     return () => {

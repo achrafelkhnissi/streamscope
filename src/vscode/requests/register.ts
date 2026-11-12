@@ -19,6 +19,7 @@ import { ResponsePanels } from '../response/panels';
 import { closeResponseTabs, ResponsePresenter } from '../response/presenter';
 import { ResponseFileSystem, responseScheme } from '../response/response-file-system';
 import { RequestCodeLenses } from './code-lens';
+import { RunStatusBar } from './status-bar';
 import type { SecretStore } from '../secrets/secret-store';
 import { liveSystemContext } from '../system-context';
 import { readRequestSettings, readSpillLimits, readStreamSettings } from './settings';
@@ -156,6 +157,7 @@ export function registerRequestFeatures(
   };
   const registry = new RunRegistry(dependencies);
   const lenses = new RequestCodeLenses(cache, registry);
+  const statusBar = new RunStatusBar(registry);
 
   const saveStream = async (stream: StreamSession, chosen: vscode.Uri): Promise<void> => {
     if (chosen.scheme !== 'file') {
@@ -416,6 +418,7 @@ export function registerRequestFeatures(
   context.subscriptions.push(
     files,
     lenses,
+    statusBar,
     panels,
     {
       dispose: () => {
@@ -457,7 +460,8 @@ export function registerRequestFeatures(
       { dispose: stopTracking },
       vscode.commands.registerCommand('streamscope.test.responseState', async (key?: unknown) => {
         const chosen = typeof key === 'string' ? key : await responseKey();
-        return chosen === undefined ? undefined : panels.state(chosen);
+        const state = chosen === undefined ? undefined : panels.state(chosen);
+        return state === undefined ? undefined : { ...state, statusBar: statusBar.text() };
       }),
       vscode.commands.registerCommand('streamscope.test.runStatus', (id?: unknown) =>
         typeof id === 'number' ? statuses.get(id) : undefined,

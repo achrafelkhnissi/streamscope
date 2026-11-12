@@ -67,6 +67,24 @@ describe('RunRegistry', () => {
     expect(runs.cancel('held')).toBe(false);
   });
 
+  it('lists the running requests, one per key, and drops them when they end', async () => {
+    const server = await holdingServer();
+    const runs = registry();
+    expect(runs.running()).toEqual([]);
+
+    const first = runs.start(runInput([`GET ${server.url}/hold`], { key: 'first' }));
+    const second = runs.start(runInput([`GET ${server.url}/hold`], { key: 'second' }));
+    const quick = runs.start(runInput([`GET ${server.url}/quick`], { key: 'quick' }));
+    await quick.done;
+
+    expect(runs.running()).toEqual([first, second]);
+    const replacing = runs.start(runInput([`GET ${server.url}/hold`], { key: 'first' }));
+    expect(runs.running()).toEqual([replacing, second]);
+    runs.cancel('second');
+    await second.done;
+    expect(runs.running()).toEqual([replacing]);
+  });
+
   it('notifies listeners on every status change', async () => {
     const server = await holdingServer();
     const runs = registry();

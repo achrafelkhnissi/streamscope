@@ -3,6 +3,7 @@ import type { HttpRequest } from '../../http-file/model';
 import { describeOutcome } from '../../response/labels';
 import type { RunRegistry } from '../../runs/registry';
 import { requestKey, type RunSnapshot } from '../../runs/run';
+import { LiveTicker } from '../../runs/ticker';
 import type { ParseCache } from '../language/parse-cache';
 
 function toRange(request: HttpRequest): vscode.Range {
@@ -17,29 +18,26 @@ function isActive(run: RunSnapshot): boolean {
 export class RequestCodeLenses implements vscode.CodeLensProvider, vscode.Disposable {
   private readonly changed = new vscode.EventEmitter<void>();
   readonly onDidChangeCodeLenses = this.changed.event;
-  private ticker: NodeJS.Timeout | undefined;
+  private readonly ticker: LiveTicker;
   private readonly unsubscribe: () => void;
 
   constructor(
     private readonly cache: ParseCache,
     private readonly registry: RunRegistry,
   ) {
+    this.ticker = new LiveTicker(
+      () => registry.isRunning(),
+      () => {
+        this.changed.fire();
+      },
+    );
     this.unsubscribe = registry.onDidChange(() => {
       this.refresh();
     });
   }
 
   refresh(): void {
-    this.changed.fire();
-    if (this.ticker === undefined && this.registry.isRunning()) {
-      this.ticker = setInterval(() => {
-        if (!this.registry.isRunning()) {
-          clearInterval(this.ticker);
-          this.ticker = undefined;
-        }
-        this.changed.fire();
-      }, 1000);
-    }
+    this.ticker.poke();
   }
 
   provideCodeLenses(document: vscode.TextDocument): vscode.CodeLens[] {
@@ -75,7 +73,7 @@ export class RequestCodeLenses implements vscode.CodeLensProvider, vscode.Dispos
   }
 
   dispose(): void {
-    clearInterval(this.ticker);
+    this.ticker.dispose();
     this.unsubscribe();
     this.changed.dispose();
   }

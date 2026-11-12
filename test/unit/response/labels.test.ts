@@ -1,5 +1,4 @@
 import { describe, expect, it } from 'vitest';
-import { StreamSession } from '../../../src/events/session';
 import { parseHttpFile } from '../../../src/http-file/parse';
 import {
   bodyExtension,
@@ -10,22 +9,7 @@ import {
   requestLabel,
   saveExtension,
 } from '../../../src/response/labels';
-import { snapshot } from './fixtures';
-
-function streamOf(count: number): StreamSession {
-  const session = new StreamSession({
-    contentType: 'application/x-ndjson',
-    directive: undefined,
-    spill: undefined,
-    now: () => 0,
-    onUpdate: () => undefined,
-    onText: () => undefined,
-  });
-  session.write(new TextEncoder().encode('{"type":"TEXT_MESSAGE_CONTENT"}\n'.repeat(count)));
-  session.end();
-  session.dispose();
-  return session;
-}
+import { snapshot, streamOf } from './fixtures';
 
 function requests(...lines: string[]) {
   return parseHttpFile(lines.join('\n')).requests;
