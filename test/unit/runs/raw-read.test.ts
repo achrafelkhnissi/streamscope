@@ -90,6 +90,16 @@ describe('reading the raw tail of a run back from its spill file', () => {
     await area.dispose();
   });
 
+  it('has nothing to read when the file fails under the read, as when eviction closes it', async () => {
+    const area = await SpillArea.open(root);
+    const file = await area.create();
+    await write(file, encoder.encode('data'));
+    vi.spyOn(file, 'read').mockRejectedValue(new Error('EBADF: bad file descriptor, read'));
+
+    expect(await readRawTail(file, false)).toBeUndefined();
+    await area.dispose();
+  });
+
   it('reads an empty file as empty text', async () => {
     const area = await SpillArea.open(root);
     const file = await area.create();

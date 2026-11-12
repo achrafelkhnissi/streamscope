@@ -34,7 +34,9 @@ export async function readBodyFromSpill(
   }
   const body = new Uint8Array(length);
   for (let offset = 0; offset < length; offset += chunkBytes) {
-    const piece = await file.read(offset, Math.min(chunkBytes, length - offset));
+    const piece = await file
+      .read(offset, Math.min(chunkBytes, length - offset))
+      .catch(() => undefined);
     if (piece === undefined) {
       return undefined;
     }

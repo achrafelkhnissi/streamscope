@@ -16,7 +16,7 @@ export async function readRawTail(
   }
   const saved = file.savedBytes;
   const start = Math.max(0, saved - maxBytes);
-  const bytes = await file.read(start, saved - start);
+  const bytes = await file.read(start, saved - start).catch(() => undefined);
   if (bytes === undefined) {
     return undefined;
   }

@@ -120,6 +120,9 @@ describe('labels', () => {
     expect(
       noBodyMessage(snapshot({ body: new Uint8Array(), bodyLength: 4096, bodySource: 'gone' })),
     ).toBe('This body is no longer available.');
+    expect(
+      noBodyMessage(snapshot({ body: new Uint8Array(), bodyLength: 4096, bodySource: 'spill' })),
+    ).toBe('This body is no longer available.');
   });
 
   it('describes each outcome', () => {

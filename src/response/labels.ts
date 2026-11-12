@@ -87,13 +87,12 @@ export function noBodyMessage(run: RunSnapshot): string {
   if (!run.bodyKept) {
     return 'This response is a stream: see its events in the response panel, or save it.';
   }
-  if (run.bodySource === 'gone') {
-    return 'This body is no longer available.';
-  }
   if (run.status === 'sending' || run.status === 'receiving') {
     return 'The response body is still arriving.';
   }
-  return 'This response has no body to open.';
+  return run.bodyLength > 0
+    ? 'This body is no longer available.'
+    : 'This response has no body to open.';
 }
 
 export function describeOutcome(run: RunSnapshot): string {

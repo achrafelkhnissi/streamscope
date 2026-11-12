@@ -4,6 +4,7 @@ import {
   workerThresholdBytes,
   type EncodedBody,
 } from '../../response/format-off-thread';
+import { CachedPromise } from '../../response/cached-promise';
 import { renderHeadersDocument } from '../../response/headers-document';
 import { bodyExtension, fileSafeName, noBodyMessage } from '../../response/labels';
 import {
@@ -31,7 +32,7 @@ interface Documents {
   staleBody: vscode.Uri | undefined;
   events: Map<string, number>;
   formatting: AbortController | undefined;
-  formatted: Promise<EncodedBody | undefined> | undefined;
+  formatted: CachedPromise<EncodedBody | undefined>;
 }
 
 const maxEventDocuments = 20;
@@ -110,7 +111,7 @@ export class ResponsePresenter {
     }
     documents.formatting?.abort();
     documents.formatting = undefined;
-    documents.formatted = undefined;
+    documents.formatted.clear();
     documents.run = run;
     documents.documentUri = documentUri;
     documents.base = `/${String(documents.number)}/${fileSafeName(snapshot.label)}`;
@@ -132,8 +133,7 @@ export class ResponsePresenter {
     if (documents?.run !== run) {
       return Promise.resolve(undefined);
     }
-    documents.formatted ??= this.format(documents, run);
-    return documents.formatted;
+    return documents.formatted.get(() => this.format(documents, run));
   }
 
   async panelBody(run: RunHandle): Promise<PanelBody | undefined> {
@@ -257,7 +257,7 @@ export class ResponsePresenter {
       staleBody: undefined,
       events: new Map(),
       formatting: undefined,
-      formatted: undefined,
+      formatted: new CachedPromise(),
     };
     this.documents.set(key, documents);
     return documents;

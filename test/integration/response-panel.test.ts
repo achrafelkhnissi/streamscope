@@ -879,7 +879,7 @@ describe('the response panel', () => {
         assert.equal(await bodySource(run), 'spill');
       });
 
-      it('saves the body of a run whose bytes were dropped from its spill file', async () => {
+      it('saves the body of a run from its spill file after the bytes were dropped from memory', async () => {
         const server = await bodyServer();
         const editor = await open('history-save.http', [`GET ${server.url}/json`]);
         await sendAndCloseThePanel(editor.document.uri, 0);

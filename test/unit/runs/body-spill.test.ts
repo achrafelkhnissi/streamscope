@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SpillArea, type SpillFile } from '../../../src/events/spill';
 import { bodySourceOf, readBodyFromSpill } from '../../../src/runs/body-spill';
 import { defaultSpillLimits, type SpillLimits } from '../../../src/streaming/limits';
@@ -105,6 +105,19 @@ describe('reading a body back from a spill file', () => {
     await file.delete();
 
     expect(await readBodyFromSpill(file, 1200, 1200)).toBeUndefined();
+    await area.dispose();
+  });
+
+  it('has nothing to read when the file fails under the read, as when eviction closes it', async () => {
+    const area = await SpillArea.open(root);
+    const file = await area.create();
+    await write(file, pattern(3_000_000));
+    const read = vi.spyOn(file, 'read');
+    read.mockResolvedValueOnce(new Uint8Array(1_048_576));
+    read.mockRejectedValueOnce(new Error('EBADF: bad file descriptor, read'));
+
+    expect(await readBodyFromSpill(file, 3_000_000, 3_000_000)).toBeUndefined();
+    expect(read).toHaveBeenCalledTimes(2);
     await area.dispose();
   });
 
