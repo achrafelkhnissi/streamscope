@@ -31,9 +31,10 @@ The product is **Streamscope** (`achrafelkhnissi.streamscope`, display name "Str
 | `src/events/`                      | Event model, labels, reply assembly, spill files, event store, update batching, stream sessions            |
 | `src/masking/`                     | Masking of secret headers, URL user info, credential names and sensitive values                            |
 | `src/coexistence/`                 | Detection of other extensions' Send CodeLens                                                               |
+| `src/benchmark/`                   | Latency histogram and the command contract between the view benchmark and a response view                  |
 | `src/vscode/`                      | VS Code wiring: language features, environments, secrets, requests, response view, log                     |
 | `test/support/`                    | Local HTTP, HTTPS, raw and stream servers, stream fixtures, a chunk splitter, a test certificate           |
-| `test/benchmark/`                  | Throughput and soak benchmarks for the streaming pipeline, run with `npm run bench`                        |
+| `test/benchmark/`                  | Throughput, soak and VS Code response view benchmarks, run with `npm run bench`                            |
 | `test/unit/`                       | Vitest tests for pure modules and the manifest                                                             |
 | `test/integration/`                | Mocha tests run by `@vscode/test-cli` inside the Extension Development Host, on VS Code stable and 1.101.0 |
 | `test/restricted/`                 | Checks run in a real restricted (untrusted) workspace built from `test/fixtures/restricted`                |
@@ -66,7 +67,7 @@ The product is **Streamscope** (`achrafelkhnissi.streamscope`, display name "Str
 | Quick gate           | `npm run check` (typecheck, lint, format check, unit tests)                              |
 | Package              | `npm run package` (VSIX in the project root), `npm run package:list` to see its contents |
 | Installed-VSIX check | `npm run verify:vsix`                                                                    |
-| Stream benchmarks    | `npm run bench -- throughput` or `npm run bench -- soak` (see `docs/benchmarks.md`)      |
+| Stream benchmarks    | `npm run bench -- throughput`, `soak` or `view` (see `docs/benchmarks.md`)               |
 
 ## Toolchain facts
 
