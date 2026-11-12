@@ -23,6 +23,7 @@ const rawNotes: Record<RawData, string | undefined> = {
   unsaved: 'raw data not saved',
 };
 const decoder = new TextDecoder();
+const { rawJSON } = JSON as unknown as { rawJSON: (text: string) => unknown };
 const indentUnit = '  ';
 const newline = 0x0a;
 const highSurrogateAtEnd = /[\uD800-\uDBFF]$/;
@@ -79,6 +80,7 @@ export function panelStatus(run: RunSnapshot): PanelStatus {
     warnings: stream?.warnings.length ?? 0,
     format: stream?.format === undefined ? undefined : formatLabel(stream.format),
     reply: stream?.reply.adapter !== undefined,
+    replyCut: stream?.reply.truncated ?? false,
   };
 }
 
@@ -205,6 +207,27 @@ export function eventText(
     };
   }
   return prettyJson(event.value, maxChars);
+}
+
+function keepLargeInteger(_key: string, value: unknown): unknown {
+  return typeof value === 'bigint' ? rawJSON(value.toString()) : value;
+}
+
+export function compactEventJson(value: JsonValue): string {
+  return JSON.stringify(value, keepLargeInteger);
+}
+
+export function eventNote(
+  event: StreamEvent,
+  index: number,
+  truncated: boolean,
+): string | undefined {
+  if (event.kind === 'oversize') {
+    return `Event ${String(index)} is larger than streamscope.stream.maxEventSize, so only its beginning was kept.`;
+  }
+  return truncated
+    ? `Event ${String(index)} is too large to show in full here; this is its beginning.`
+    : undefined;
 }
 
 export function capTail(text: string, maxBytes: number): { text: string; cut: boolean } {

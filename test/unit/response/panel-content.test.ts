@@ -1,7 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import type { JsonValue, StreamEvent } from '../../../src/events/model';
 import { StreamSession } from '../../../src/events/session';
-import { capTail, eventText, panelBody, panelStatus } from '../../../src/response/panel-content';
+import {
+  capTail,
+  compactEventJson,
+  eventNote,
+  eventText,
+  panelBody,
+  panelStatus,
+} from '../../../src/response/panel-content';
 import { panelLimits } from '../../../src/response/panel-protocol';
 import { snapshot } from './fixtures';
 
@@ -68,6 +75,7 @@ describe('panelStatus', () => {
       warnings: 0,
       format: 'NDJSON (server said application/x-ndjson)',
       reply: false,
+      replyCut: false,
     });
   });
 
@@ -80,6 +88,7 @@ describe('panelStatus', () => {
       warnings: 0,
       format: undefined,
       reply: false,
+      replyCut: false,
     });
   });
 
@@ -154,6 +163,20 @@ describe('panelStatus', () => {
 
     expect(status.reply).toBe(true);
     expect(status.warnings).toBe(1);
+  });
+
+  it('says when the reply was cut off', () => {
+    const text = lines(2, (index) =>
+      index === 0
+        ? { type: 'RUN_STARTED' }
+        : { type: 'TEXT_MESSAGE_CONTENT', messageId: 'm', delta: 'x'.repeat(1_048_577) },
+    );
+    const stream = session('application/x-ndjson', text);
+
+    const status = panelStatus(snapshot({ bodyKept: false, stream }));
+
+    expect(status.reply).toBe(true);
+    expect(status.replyCut).toBe(true);
   });
 
   it('masks sensitive values in the status text', () => {
@@ -269,6 +292,32 @@ describe('eventText', () => {
       text: 'x'.repeat(10),
       truncated: true,
     });
+  });
+});
+
+describe('compactEventJson', () => {
+  it('writes an event value as compact JSON with large integers exact', () => {
+    expect(compactEventJson({ id: 12345678901234567890n, list: [1, 'two', null] })).toBe(
+      '{"id":12345678901234567890,"list":[1,"two",null]}',
+    );
+  });
+});
+
+describe('eventNote', () => {
+  it('says nothing for an event shown in full', () => {
+    expect(eventNote(event({ type: 'A' }), 3, false)).toBeUndefined();
+  });
+
+  it('says when an event document is cut off', () => {
+    expect(eventNote(event({ type: 'A' }), 3, true)).toBe(
+      'Event 3 is too large to show in full here; this is its beginning.',
+    );
+  });
+
+  it('says when only the beginning of an oversize event was kept', () => {
+    expect(eventNote(event('{"type":"BIG",', { kind: 'oversize' }), 9, false)).toBe(
+      'Event 9 is larger than streamscope.stream.maxEventSize, so only its beginning was kept.',
+    );
   });
 });
 

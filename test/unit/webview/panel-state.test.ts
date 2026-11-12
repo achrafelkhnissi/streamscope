@@ -11,6 +11,7 @@ function status(overrides: Partial<PanelStatus> = {}): PanelStatus {
     warnings: 0,
     format: undefined,
     reply: false,
+    replyCut: false,
     ...overrides,
   };
 }

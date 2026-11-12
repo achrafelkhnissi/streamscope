@@ -163,6 +163,10 @@ describe('panelHtml', () => {
     expect(page).toContain('<span id="status"></span>');
   });
 
+  it('has a hidden note at the end of the Reply tab for a reply that was cut off', () => {
+    expect(html()).toContain('<pre id="reply"></pre><p id="reply-note" hidden></p>');
+  });
+
   it('says there are no checks for this request', () => {
     expect(html()).toContain('<p id="checks">No checks for this request.</p>');
   });

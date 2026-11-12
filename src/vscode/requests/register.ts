@@ -15,7 +15,7 @@ import type { ParseCache } from '../language/parse-cache';
 import { httpSelector } from '../language/register';
 import { logRunEnd, logRunStart } from '../log';
 import { ResponsePanels } from '../response/panels';
-import { ResponsePresenter } from '../response/presenter';
+import { closeResponseTabs, ResponsePresenter } from '../response/presenter';
 import { ResponseFileSystem, responseScheme } from '../response/response-file-system';
 import { RequestCodeLenses } from './code-lens';
 import type { SecretStore } from '../secrets/secret-store';
@@ -402,6 +402,8 @@ export function registerRequestFeatures(
     vscode.commands.registerCommand('streamscope.showResponseBody', openDocument('body')),
   );
 
+  void closeResponseTabs();
+
   if (context.extensionMode === vscode.ExtensionMode.Test) {
     const statuses = new Map<number, RunStatus>();
     const stopTracking = registry.onDidChange((snapshot) => {
@@ -416,6 +418,7 @@ export function registerRequestFeatures(
       vscode.commands.registerCommand('streamscope.test.runStatus', (id?: unknown) =>
         typeof id === 'number' ? statuses.get(id) : undefined,
       ),
+      vscode.commands.registerCommand('streamscope.test.closeResponseTabs', closeResponseTabs),
     );
   }
 }

@@ -1,3 +1,4 @@
+import type { StreamEvent } from '../events/model';
 import type { EventStore } from '../events/store';
 import type { RunHandle, RunSnapshot } from '../runs/run';
 import { classifyContentType } from '../streaming/detect';
@@ -15,9 +16,53 @@ import {
 import { capRows, capText, panelRow } from './panel-rows';
 
 export const rowCacheSize = 1000;
+export const readBackBytes = panelLimits.inlineEventBytes;
+export const readsInFlight = 16;
 
 const partBytes = panelLimits.messageBytes / 2;
 const unavailableEvent = 'This event is no longer available.';
+
+function readEvent(store: EventStore, index: number): Promise<StreamEvent | undefined> {
+  return store.read(index).catch(() => undefined);
+}
+
+class ReadQueue {
+  private running = 0;
+  private readonly waiting: (() => void)[] = [];
+
+  constructor(private readonly limit: number) {}
+
+  run<T>(task: () => Promise<T>, wanted: () => boolean): Promise<{ value: T } | undefined> {
+    return new Promise((resolve, reject) => {
+      this.waiting.push(() => {
+        if (!wanted()) {
+          resolve(undefined);
+          return;
+        }
+        this.running += 1;
+        void task()
+          .then((value) => {
+            resolve({ value });
+          }, reject)
+          .finally(() => {
+            this.running -= 1;
+            this.next();
+          });
+      });
+      this.next();
+    });
+  }
+
+  private next(): void {
+    while (this.running < this.limit) {
+      const start = this.waiting.shift();
+      if (start === undefined) {
+        return;
+      }
+      start();
+    }
+  }
+}
 
 export class RowCache {
   private readonly rows = new Map<number, PanelRow>();
@@ -70,6 +115,8 @@ export class PanelFeed {
   private live = false;
   private generation = 0;
   private windowRequest = 0;
+  private tailRequest = 0;
+  private readonly reads = new ReadQueue(readsInFlight);
   private requested: PanelView;
   private shown: PanelView;
   private picked = false;
@@ -238,12 +285,17 @@ export class PanelFeed {
     }
     const generation = this.generation;
     const request = this.windowRequest;
+    const wanted = (): boolean => generation === this.generation && request === this.windowRequest;
     const store = this.run.snapshot().stream?.store;
     if (store === undefined) {
       return;
     }
-    const rows = await this.readRows(store, start, end);
-    if (generation === this.generation && request === this.windowRequest) {
+    const reads: Promise<PanelRow>[] = [];
+    for (let index = start; index <= end; index += 1) {
+      reads.push(this.readRow(store, index, wanted));
+    }
+    const rows = await Promise.all(reads);
+    if (wanted()) {
       this.options.post({ type: 'rows', run: this.run.id, rows: capRows(rows, partBytes) });
     }
   }
@@ -253,7 +305,8 @@ export class PanelFeed {
       return;
     }
     const generation = this.generation;
-    const event = await this.run.snapshot().stream?.store.read(index);
+    const store = this.run.snapshot().stream?.store;
+    const event = store === undefined ? undefined : await readEvent(store, index);
     if (generation !== this.generation) {
       return;
     }
@@ -301,19 +354,13 @@ export class PanelFeed {
     const rows: PanelRow[] = [];
     const missing: number[] = [];
     for (let index = from; index <= count; index += 1) {
-      const cached = this.rows.get(index);
-      if (cached !== undefined) {
-        rows.push(cached);
-        continue;
-      }
-      const event = store.inMemory(index);
-      const row = panelRow(store, index, event);
-      if (event === undefined) {
+      const known = this.knownRow(store, index);
+      if (known === undefined) {
         missing.push(index);
+        rows.push(panelRow(store, index, undefined));
       } else {
-        this.rows.set(row);
+        rows.push(known);
       }
-      rows.push(row);
     }
     if (missing.length > 0) {
       void this.readBack(store, missing);
@@ -321,25 +368,46 @@ export class PanelFeed {
     return capRows(rows, partBytes);
   }
 
+  private knownRow(store: EventStore, index: number): PanelRow | undefined {
+    const cached = this.rows.get(index);
+    if (cached !== undefined) {
+      return cached;
+    }
+    const event = store.inMemory(index);
+    const length = store.summary(index)?.length;
+    if (event === undefined && length !== undefined && length <= readBackBytes) {
+      return undefined;
+    }
+    const row = panelRow(store, index, event);
+    this.rows.set(row);
+    return row;
+  }
+
   private async readBack(store: EventStore, indexes: readonly number[]): Promise<void> {
+    this.tailRequest += 1;
     const generation = this.generation;
-    const rows = await Promise.all(indexes.map((index) => this.readRow(store, index)));
-    if (generation === this.generation) {
+    const request = this.tailRequest;
+    const wanted = (): boolean => generation === this.generation && request === this.tailRequest;
+    const rows = await Promise.all(indexes.map((index) => this.readRow(store, index, wanted)));
+    if (wanted()) {
       this.options.post({ type: 'rows', run: this.run.id, rows: capRows(rows, partBytes) });
     }
   }
 
-  private async readRows(store: EventStore, start: number, end: number): Promise<PanelRow[]> {
-    const reads: Promise<PanelRow>[] = [];
-    for (let index = start; index <= end; index += 1) {
-      const cached = this.rows.get(index);
-      reads.push(cached === undefined ? this.readRow(store, index) : Promise.resolve(cached));
+  private async readRow(
+    store: EventStore,
+    index: number,
+    wanted: () => boolean,
+  ): Promise<PanelRow> {
+    const known = this.knownRow(store, index);
+    if (known !== undefined) {
+      return known;
     }
-    return Promise.all(reads);
-  }
-
-  private async readRow(store: EventStore, index: number): Promise<PanelRow> {
-    const row = panelRow(store, index, await store.read(index));
+    const read = await this.reads.run(() => readEvent(store, index), wanted);
+    if (read === undefined) {
+      return panelRow(store, index, undefined);
+    }
+    const row = panelRow(store, index, read.value);
     this.rows.set(row);
     return row;
   }

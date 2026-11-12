@@ -40,6 +40,7 @@ export interface PanelStatus {
   warnings: number;
   format: string | undefined;
   reply: boolean;
+  replyCut: boolean;
 }
 
 export interface TextDelta {
@@ -84,7 +85,7 @@ export type FromPanel =
   | { type: 'window'; run: number; start: number; end: number; following: boolean }
   | { type: 'rendered'; run: number; newest: number }
   | { type: 'detail'; run: number; index: number }
-  | { type: 'stop' }
+  | { type: 'stop'; run: number }
   | { type: 'save'; run: number }
   | { type: 'tab'; view: PanelView }
   | { type: 'open'; run: number; target: 'body' | 'headers' }
@@ -119,7 +120,6 @@ export function parsePanelMessage(value: unknown, eventCount: number): FromPanel
   }
   switch (value.type) {
     case 'ready':
-    case 'stop':
       return hasOnly(value, ['type']) ? { type: value.type } : undefined;
     case 'window': {
       const { run, start, end, following } = value;
@@ -133,9 +133,10 @@ export function parsePanelMessage(value: unknown, eventCount: number): FromPanel
         ? { type: 'window', run, start, end, following }
         : undefined;
     }
+    case 'stop':
     case 'save': {
       const { run } = value;
-      return hasOnly(value, ['type', 'run']) && isRun(run) ? { type: 'save', run } : undefined;
+      return hasOnly(value, ['type', 'run']) && isRun(run) ? { type: value.type, run } : undefined;
     }
     case 'rendered': {
       const { run, newest } = value;

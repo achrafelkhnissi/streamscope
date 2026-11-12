@@ -59,6 +59,13 @@ const columns: readonly vscode.ViewColumn[] = [
   vscode.ViewColumn.Nine,
 ];
 
+function reportFailure(action: string): (error: unknown) => void {
+  return (error) => {
+    const reason = error instanceof Error ? error.message : String(error);
+    void vscode.window.showErrorMessage(`Streamscope could not ${action}: ${reason}`);
+  };
+}
+
 function isRunning(run: RunHandle): boolean {
   const { status } = run.snapshot();
   return status === 'sending' || status === 'receiving';
@@ -94,7 +101,7 @@ export class ResponsePanels implements vscode.Disposable {
     entry.unsubscribe = run.onUpdate(() => {
       entry.feed.refresh();
     });
-    void run.done.then(() => this.ended(entry, run));
+    run.done.then(() => this.ended(entry, run)).catch(reportFailure('show the response body'));
     if (entry.panel === undefined) {
       this.open(entry, false);
       return;
@@ -295,17 +302,21 @@ export class ResponsePanels implements vscode.Disposable {
         }
         return;
       case 'save':
-        void this.options.save(entry.run, entry.documentUri);
+        this.options.save(entry.run, entry.documentUri).catch(reportFailure('save the response'));
         return;
       case 'tab':
         entry.feed.pick(message.view);
         this.remember(entry, message.view);
         return;
       case 'open':
-        void this.options.presenter.open(entry.key, message.target, this.besidePanel(entry));
+        this.options.presenter
+          .open(entry.key, message.target, this.besidePanel(entry))
+          .catch(reportFailure(`open the response ${message.target} in the editor`));
         return;
       case 'openEvent':
-        void this.options.presenter.openEvent(entry.run, message.index, this.besidePanel(entry));
+        this.options.presenter
+          .openEvent(entry.run, message.index, this.besidePanel(entry))
+          .catch(reportFailure(`open event ${String(message.index)} in the editor`));
         return;
     }
   }

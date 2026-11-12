@@ -43,7 +43,7 @@ describe('panel protocol', () => {
 describe('parsePanelMessage', () => {
   it('accepts every message the page may send', () => {
     expect(parse({ type: 'ready' })).toEqual({ type: 'ready' });
-    expect(parse({ type: 'stop' })).toEqual({ type: 'stop' });
+    expect(parse({ type: 'stop', run: 3 })).toEqual({ type: 'stop', run: 3 });
     expect(parse({ type: 'save', run: 3 })).toEqual({ type: 'save', run: 3 });
     expect(parse({ type: 'window', run: 3, start: 10, end: 60, following: true })).toEqual({
       type: 'window',
@@ -83,7 +83,7 @@ describe('parsePanelMessage', () => {
   });
 
   it('returns a copy, never the object the page sent', () => {
-    const sent = { type: 'stop' };
+    const sent = { type: 'stop', run: 1 };
 
     expect(parse(sent)).not.toBe(sent);
   });
@@ -139,6 +139,14 @@ describe('parsePanelMessage', () => {
     expect(parse({ type: 'save', run: 1, uri: 'file:///x' })).toBeUndefined();
   });
 
+  it('rejects a stop without a positive whole-number run or with any other key', () => {
+    for (const run of [0, -1, 1.5, Number.NaN, '1', null, undefined]) {
+      expect(parse({ type: 'stop', run })).toBeUndefined();
+    }
+    expect(parse({ type: 'stop' })).toBeUndefined();
+    expect(parse({ type: 'stop', run: 1, all: true })).toBeUndefined();
+  });
+
   it('rejects a window that is reversed, too large or outside the events', () => {
     expect(parse({ type: 'window', run: 1, start: 1, end: 401, following: false })).toBeUndefined();
     expect(parse({ type: 'window', run: 1, start: 9, end: 8, following: false })).toBeUndefined();
@@ -174,7 +182,7 @@ describe('parsePanelMessage', () => {
 
   it('rejects any extra key, including a url, a command id or a path', () => {
     expect(parse({ type: 'ready', extra: 1 })).toBeUndefined();
-    expect(parse({ type: 'stop', command: 'workbench.action.quit' })).toBeUndefined();
+    expect(parse({ type: 'stop', run: 1, command: 'workbench.action.quit' })).toBeUndefined();
     expect(parse({ type: 'detail', run: 1, index: 1, path: '/etc/passwd' })).toBeUndefined();
     expect(parse({ type: 'open', run: 1, target: 'body', uri: 'file:///x' })).toBeUndefined();
     expect(parse({ type: 'tab', view: 'raw', url: 'https://example.test' })).toBeUndefined();

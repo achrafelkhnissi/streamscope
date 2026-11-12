@@ -19,7 +19,7 @@ const viewTitles: Record<PanelView, string> = {
 const panelContents: Record<PanelView, string> = {
   events:
     '<div class="list" id="list" role="listbox" tabindex="0" aria-label="Events"><div id="spacer"></div></div>',
-  reply: '<pre id="reply"></pre>',
+  reply: '<pre id="reply"></pre><p id="reply-note" hidden></p>',
   raw: '<pre id="raw"></pre>',
   headers: '<pre id="headers"></pre>',
   body: '<p id="body-note"></p><pre id="body"></pre>',

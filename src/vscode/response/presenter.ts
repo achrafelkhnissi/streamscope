@@ -1,8 +1,13 @@
 import * as vscode from 'vscode';
-import { formatBodyOffThread, type EncodedBody } from '../../response/format-off-thread';
+import {
+  formatBodyOffThread,
+  workerThresholdBytes,
+  type EncodedBody,
+} from '../../response/format-off-thread';
 import { renderHeadersDocument } from '../../response/headers-document';
 import { bodyExtension, fileSafeName } from '../../response/labels';
-import { eventText } from '../../response/panel-content';
+import { compactEventJson, eventNote, eventText } from '../../response/panel-content';
+import type { StreamEvent } from '../../events/model';
 import type { RunHandle, RunSnapshot } from '../../runs/run';
 import { responseScheme, type ResponseFileSystem } from './response-file-system';
 
@@ -38,16 +43,22 @@ function responseUri(path: string): vscode.Uri {
   return vscode.Uri.from({ scheme: responseScheme, path });
 }
 
-async function closeTabs(uris: readonly vscode.Uri[]): Promise<void> {
-  const wanted = new Set(uris.map((uri) => uri.toString()));
+async function closeTabsWhere(matches: (uri: vscode.Uri) => boolean): Promise<void> {
   const tabs = vscode.window.tabGroups.all
     .flatMap((group) => group.tabs)
-    .filter(
-      (tab) => tab.input instanceof vscode.TabInputText && wanted.has(tab.input.uri.toString()),
-    );
+    .filter((tab) => tab.input instanceof vscode.TabInputText && matches(tab.input.uri));
   if (tabs.length > 0) {
     await vscode.window.tabGroups.close(tabs, true);
   }
+}
+
+function closeTabs(uris: readonly vscode.Uri[]): Promise<void> {
+  const wanted = new Set(uris.map((uri) => uri.toString()));
+  return closeTabsWhere((uri) => wanted.has(uri.toString()));
+}
+
+export function closeResponseTabs(): Promise<void> {
+  return closeTabsWhere((uri) => uri.scheme === responseScheme);
 }
 
 export class ResponsePresenter {
@@ -165,8 +176,11 @@ export class ResponsePresenter {
     }
     const extension = event.kind === 'json' ? '.json' : '.txt';
     const uri = responseUri(`${documents.base}/event-${String(index)}${extension}`);
-    const limit = event.length * eventDocumentGrowth + eventDocumentAllowance;
-    this.files.write(uri, new TextEncoder().encode(eventText(event, limit).text));
+    const content = await this.eventContent(event, index);
+    if (documents.run !== run) {
+      return;
+    }
+    this.files.write(uri, content);
     documents.events.delete(uri.path);
     documents.events.set(uri.path, index);
     const dropped: vscode.Uri[] = [];
@@ -181,6 +195,26 @@ export class ResponsePresenter {
     }
     await this.show(uri, options);
     await this.discard(documents, dropped);
+  }
+
+  private async eventContent(event: StreamEvent, index: number): Promise<Uint8Array> {
+    const encoder = new TextEncoder();
+    let content: Uint8Array;
+    let truncated = false;
+    if (event.kind === 'json' && event.length > workerThresholdBytes) {
+      const compact = encoder.encode(compactEventJson(event.value));
+      content = await formatBodyOffThread(compact, 'application/json', this.workerFile).then(
+        (encoded) => encoded.content,
+        () => compact,
+      );
+    } else {
+      const limit = event.length * eventDocumentGrowth + eventDocumentAllowance;
+      const shown = eventText(event, limit);
+      content = encoder.encode(shown.text);
+      truncated = shown.truncated;
+    }
+    const note = eventNote(event, index, truncated);
+    return note === undefined ? content : Buffer.concat([encoder.encode(`${note}\n\n`), content]);
   }
 
   private create(key: string): Documents {

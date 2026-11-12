@@ -4,7 +4,13 @@ import * as path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { StreamSession } from '../../../src/events/session';
 import { SpillArea, type SpillFile } from '../../../src/events/spill';
-import { PanelFeed, RowCache } from '../../../src/response/panel-feed';
+import {
+  PanelFeed,
+  readBackBytes,
+  readsInFlight,
+  RowCache,
+} from '../../../src/response/panel-feed';
+import type { StreamEvent } from '../../../src/events/model';
 import {
   panelLimits,
   type PanelRow,
@@ -357,6 +363,89 @@ describe('PanelFeed', () => {
     expect(indexes(update.rows)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
     expect(update.rows[3]).toMatchObject({ label: 'PART', preview: '' });
     expect(rows?.type === 'rows' && rows.rows[3]?.preview).toBe('{"type":"PART","index":4}');
+  });
+
+  it('reads back only events small enough for a preview', async () => {
+    const page = harness({ spill: await spillFile() });
+    const large = JSON.stringify({ type: 'LARGE', padding: 'x'.repeat(readBackBytes) });
+    page.write(`${lines(1, 2)}${large}\n${lines(4, 2)}`);
+    page.session.end();
+    page.session.store.release();
+    const read = vi.spyOn(page.session.store, 'read');
+
+    page.feed.start();
+    await vi.waitFor(() => {
+      expect(page.posted.at(-1)?.type).toBe('rows');
+    });
+    const rows = page.posted.at(-1);
+
+    expect(read.mock.calls.map(([index]) => index)).toEqual([1, 2, 4, 5]);
+    expect(page.last().rows[2]).toMatchObject({ index: 3, label: 'LARGE', preview: '' });
+    expect(rows?.type === 'rows' && indexes(rows.rows)).toEqual([1, 2, 4, 5]);
+  });
+
+  it('keeps a bounded number of reads in flight and drops the queued reads of a replaced window', async () => {
+    const page = harness();
+    page.write(lines(1, 1000));
+    page.feed.start();
+    page.session.store.release();
+    let active = 0;
+    let most = 0;
+    const started: number[] = [];
+    const waiting: (() => void)[] = [];
+    vi.spyOn(page.session.store, 'read').mockImplementation((index) => {
+      started.push(index);
+      active += 1;
+      most = Math.max(most, active);
+      return new Promise<StreamEvent | undefined>((resolve) => {
+        waiting.push(() => {
+          active -= 1;
+          resolve(undefined);
+        });
+      });
+    });
+    const finish = async (): Promise<void> => {
+      while (waiting.length > 0) {
+        waiting.splice(0).forEach((release) => {
+          release();
+        });
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
+    };
+
+    const first = page.feed.window(1, 100, false);
+    const second = page.feed.window(101, 200, false);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const inFlight = active;
+    await finish();
+    await Promise.all([first, second]);
+
+    expect(inFlight).toBe(readsInFlight);
+    expect(most).toBe(readsInFlight);
+    expect(started.filter((index) => index <= 100)).toHaveLength(readsInFlight);
+    expect(started.filter((index) => index > 100)).toHaveLength(100);
+    const windows = page.posted.filter((message) => message.type === 'rows');
+    expect(windows).toHaveLength(1);
+    expect(windows[0]?.type === 'rows' && windows[0].rows[0]?.index).toBe(101);
+  });
+
+  it('treats an event whose read fails as no longer available', async () => {
+    const page = harness();
+    page.write(lines(1, 1000));
+    page.feed.start();
+    page.session.store.release();
+    vi.spyOn(page.session.store, 'read').mockRejectedValue(new Error('synthetic EIO'));
+
+    await page.feed.window(3, 4, false);
+    await page.feed.detail(3);
+
+    const rows = page.posted.find((message) => message.type === 'rows');
+    expect(rows?.type === 'rows' && rows.rows.map((row) => row.preview)).toEqual(['', '']);
+    expect(page.posted.at(-1)).toMatchObject({
+      type: 'detail',
+      index: 3,
+      text: 'This event is no longer available.',
+    });
   });
 
   it('counts drawn rows only forward and from zero after a reload', () => {

@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import type { PanelStatus } from '../../../src/response/panel-protocol';
+import { maxReplyLength } from '../../../src/streaming/limits';
 import {
   bodyNote,
+  replyNote,
   stateAnnouncement,
   stateLabels,
   statusLine,
@@ -16,6 +18,7 @@ function status(overrides: Partial<PanelStatus> = {}): PanelStatus {
     warnings: 0,
     format: undefined,
     reply: false,
+    replyCut: false,
     ...overrides,
   };
 }
@@ -101,5 +104,19 @@ describe('bodyNote', () => {
     expect(bodyNote({ kind: 'preview', language: 'text', text: 'a\nb', totalBytes: 900 })).toBe(
       'Showing the first 2 lines of a 900 B body.',
     );
+  });
+});
+
+describe('replyNote', () => {
+  it('says where the reply was cut off, and nothing while it is whole', () => {
+    expect(replyNote(status({ reply: true, replyCut: true }))).toBe(
+      'The reply was cut off at 1,048,576 characters.',
+    );
+    expect(replyNote(status({ reply: true }))).toBe('');
+    expect(replyNote(undefined)).toBe('');
+  });
+
+  it('names the limit the reply assembler stops at', () => {
+    expect(maxReplyLength).toBe(1_048_576);
   });
 });

@@ -12,7 +12,7 @@ import {
 } from '../response/panel-protocol';
 import { followingAfterScroll, listWindow, scrollTopFor, type ListInput } from './list-window';
 import { canSave, effectiveView, visibleViews } from './panel-state';
-import { bodyNote, stateAnnouncement, stateLabels, statusLine } from './panel-text';
+import { bodyNote, replyNote, stateAnnouncement, stateLabels, statusLine } from './panel-text';
 import { rawTail, rawTokens, splitLines } from './raw-colour';
 
 interface PanelState {
@@ -76,6 +76,7 @@ const saveButton = element('save', HTMLButtonElement);
 const announcer = element('announce', HTMLDivElement);
 const replyPanel = element('panel-reply', HTMLElement);
 const replyText = element('reply', HTMLPreElement);
+const replyCutText = element('reply-note', HTMLParagraphElement);
 const rawPanel = element('panel-raw', HTMLElement);
 const rawText = element('raw', HTMLPreElement);
 const headersText = element('headers', HTMLPreElement);
@@ -230,6 +231,9 @@ function showStatus(status: PanelStatus): void {
   statusText.title = line;
   stopButton.disabled = !status.running;
   saveButton.disabled = !canSave(status);
+  const cut = replyNote(status);
+  replyCutText.textContent = cut;
+  replyCutText.hidden = cut === '';
   showTabs();
   const text = stateAnnouncement(announcedState, status);
   announcedState = status.state;
@@ -742,7 +746,9 @@ for (const entry of views) {
 }
 
 stopButton.addEventListener('click', () => {
-  post({ type: 'stop' });
+  if (run !== undefined) {
+    post({ type: 'stop', run });
+  }
 });
 
 saveButton.addEventListener('click', () => {

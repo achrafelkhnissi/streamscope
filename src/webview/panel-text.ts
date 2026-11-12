@@ -53,6 +53,10 @@ export function stateAnnouncement(
     : `${stateLabels[status.state]}. ${statusLine(status)}`;
 }
 
+export function replyNote(status: PanelStatus | undefined): string {
+  return status?.replyCut === true ? 'The reply was cut off at 1,048,576 characters.' : '';
+}
+
 export function bodyNote(body: PanelBody): string {
   switch (body.kind) {
     case 'stream':

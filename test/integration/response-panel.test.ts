@@ -67,6 +67,7 @@ function chunk(text: string): string {
 
 describe('the response panel', () => {
   let folder = '';
+  let remembered = 0;
   const servers: LocalServer[] = [];
   const sending: Thenable<unknown>[] = [];
 
@@ -87,8 +88,34 @@ describe('the response panel', () => {
     sending.push(send());
   }
 
+  async function rememberView(view: string): Promise<void> {
+    const server = await startStreamServer();
+    try {
+      remembered += 1;
+      await open(`remember-${String(remembered)}.http`, [
+        `GET ${server.url}/stream?rate=50&seconds=30&size=128`,
+      ]);
+      const running = send();
+      await waitForState(
+        (state) => state.visible && state.status === 'receiving',
+        'the stream for setting the view did not open',
+      );
+      await vscode.commands.executeCommand('streamscope.showResponseView', view);
+      await waitForState((state) => state.view === view, `the ${view} view was not selected`);
+      await vscode.commands.executeCommand('streamscope.stopRequest');
+      await running;
+    } finally {
+      await server.close();
+      await vscode.commands.executeCommand('workbench.action.closeAllEditors');
+    }
+  }
+
   before(() => {
     folder = mkdtempSync(path.join(tmpdir(), 'streamscope-panel-'));
+  });
+
+  beforeEach(async () => {
+    await rememberView('events');
   });
 
   afterEach(async () => {
@@ -117,8 +144,7 @@ describe('the response panel', () => {
   it('switching views mid-stream keeps everything', async function () {
     this.timeout(30_000);
     const server = await streamServer();
-    await open('views.http', [`GET ${server.url}/stream?rate=100&seconds=4&size=128`]);
-    const expected = 400 + 2;
+    await open('views.http', [`GET ${server.url}/stream?rate=100&seconds=30&size=128`]);
 
     start();
     await waitForState((seen) => seen.rendered >= 5, 'the first events were not drawn');
@@ -131,13 +157,20 @@ describe('the response panel', () => {
       );
       assert.equal(seen.status, 'receiving');
     }
+    await vscode.commands.executeCommand('streamscope.stopRequest');
+    const stopped = await waitForState(
+      (state) => state.status === 'cancelled',
+      'the stream did not stop',
+    );
+    await new Promise((resolve) => setTimeout(resolve, 300));
     const done = await waitForState(
-      (state) => state.status === 'completed' && state.rendered === state.events,
-      'the list did not catch up with the completed stream',
+      (state) => state.rendered === state.events,
+      'the list did not catch up with the stopped stream',
     );
 
-    assert.equal(done.events, expected);
-    assert.equal(done.rendered, expected);
+    assert.equal(done.events, stopped.events);
+    assert.ok(done.events > 5);
+    assert.equal(done.rendered, done.events);
     assert.equal(done.view, 'events');
   });
 

@@ -211,6 +211,49 @@ describe('sending requests', () => {
     assert.equal(await text(body), '{\n  "count": 2\n}');
   });
 
+  it('moves the modified time of a rewritten response forward within one millisecond', async () => {
+    let count = 0;
+    const server = await serve((_request, response) => {
+      count += 1;
+      response.writeHead(200, { 'Content-Type': 'application/json' });
+      response.end(JSON.stringify({ count }));
+    });
+    await open('mtime.http', [`GET ${server.url}/count`]);
+    const realNow = Date.now;
+    const frozen = realNow();
+    Date.now = () => frozen;
+    try {
+      await send();
+      await showBody();
+      const body = responseTabs().find((uri) => uri.path.endsWith('.json'));
+      assert.ok(body);
+      const first = (await vscode.workspace.fs.stat(body)).mtime;
+      await send();
+      const second = (await vscode.workspace.fs.stat(body)).mtime;
+
+      assert.ok(second > first, `the modified time stayed at ${String(first)}`);
+      assert.equal(await text(body), '{\n  "count": 2\n}');
+    } finally {
+      Date.now = realNow;
+    }
+  });
+
+  it('closes response documents whose content is gone, as after a window reload', async () => {
+    const server = await serve((_request, response) => {
+      response.writeHead(200, { 'Content-Type': 'application/json' });
+      response.end('{"restored":false}');
+    });
+    await open('restored.http', [`GET ${server.url}/restored`]);
+    await send();
+    await showBody();
+    await vscode.commands.executeCommand('streamscope.showResponseHeaders');
+    assert.equal(responseTabs().length, 2);
+
+    await vscode.commands.executeCommand('streamscope.test.closeResponseTabs');
+
+    assert.deepEqual(responseTabs(), []);
+  });
+
   it('saves the raw decoded body', async () => {
     const json = '{"saved":true}';
     const server = await serve((_request, response) => {
