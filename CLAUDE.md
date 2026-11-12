@@ -13,6 +13,7 @@ The product is **Streamscope** (`achrafelkhnissi.streamscope`, display name "Str
 
 - Work runs in approved phases: research (done), project setup (done), product planning and technical design (approved 2026-11-11), then the implementation milestones in `docs/roadmap.md`. Do not build product functionality before the user approves the design, and ask before starting a new phase or milestone.
 - The design is `docs/design.md`, the milestone plan `docs/roadmap.md`, the release process `docs/publishing.md`, and the approved response view mockup `docs/mockups/response-view.html`. They win over anything older in this file.
+- Unscheduled work waits in `docs/backlog.md`. Nothing there is approved; an item joins the roadmap only when the user approves it.
 - Settled decisions: VS Code `^1.101.0` with forks best effort; desktop only; native VS Code UI first, with a planned spike deciding whether a webview is needed; REST Client syntax compatibility (core syntax, request references, system variables, `rest-client.environmentVariables`, JetBrains env files); language id `http` with our own grammar scope; in-memory history for the MVP; captured values wait up to 30 s and never auto-run producers; Marketplace and Open VSX via OIDC trusted publishing.
 
 ## Layout
