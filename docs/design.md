@@ -543,7 +543,12 @@ Rules: never swallow an error, never send a partly resolved request, notificatio
 
 - Parse each NDJSON line once, on arrival; keep parsed values only for in-memory events.
 - No O(n) work per event: the store appends, the batcher sends deltas, captures and checks keep incremental state (`count` is a counter; `last` keeps one reference).
-- Bodies over 1 MiB are formatted in a worker thread. Response documents are served by a read-only `FileSystemProvider`, so their bytes reach the editor without being turned into one string in the extension host; large bodies rely on VS Code's own large-file handling instead of rendering progressively. A 50 MB JSON body is an integration test with an event-loop bound.
+- Bodies over 1 MiB are formatted in a worker thread. Response documents are served by a read-only `FileSystemProvider`; large bodies rely on VS Code's own large-file handling instead of rendering progressively.
+- VS Code's own document handling still costs the extension host time, measured in M2:
+  - The stable API reads a provider file whole, so opening a document copies all its bytes out of the extension host in one step: about 20–60 ms for a 77 MB document on a fast Mac, and several hundred milliseconds on slow CI runners.
+  - VS Code also syncs the text of every open document under 50 MiB into the extension host, whatever its scheme. A 46 MB document blocked it for about 350 ms on the same Mac.
+  - Both costs are inputs to the M5 response-view decision and to how M11 counts "a synchronous task of the extension".
+- The 50 MB integration test checks that Streamscope adds less than 250 ms to VS Code's own cost of opening the same document, and that nothing blocks for 2 s.
 - The native surface's full-document re-diff cost is measured in the spike; if native is chosen, the live Events document is capped (for example the newest 5,000 lines) with older events reachable by paging.
 - The extension ships as one bundle plus the format worker, so transport code loads at activation; the M11 benchmark checks the activation budget.
 - A benchmark harness (synthetic local server, scripted VS Code session) runs before each release and its numbers are kept in `docs/benchmarks.md`.

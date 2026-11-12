@@ -133,7 +133,7 @@ REST Client behaviour reference: its MIT-licensed bundle (system variable regexe
 - **Empty compressed bodies.** HEAD, 204 and 304 responses with `Content-Encoding: gzip` must complete.
   - Task 6: tests.
 
-The 50 MB acceptance test (Task 14) guards against freezes. Its event-loop bound (250 ms) is a CI-noise guard, not the 50 ms design budget; that budget is measured by the M11 benchmark.
+The 50 MB acceptance test (Task 14) guards against freezes. It compares the extension host's largest event-loop delay during the send with the delay of VS Code opening the same document again, in the same run: Streamscope may add less than 250 ms to that baseline, and no send may block for 2 s. An absolute 250 ms bound measured runner noise instead (GitHub's macOS runner alone varied from 137 to 638 ms). The 50 ms design budget is measured by the M11 benchmark.
 
 ---
 
@@ -1027,7 +1027,7 @@ export function competingSendLenses(probe: ExtensionProbe): CompetingLens[];
     - `ignores REST Client when its lens is off`.
     - `turns off only httpyac's send lens and keeps its other lens settings`.
   - **`large-body.test.ts`:**
-    - `opens a 50 MB JSON body without blocking the extension host`. The 50 MB synthetic JSON is built before measuring. `perf_hooks.monitorEventLoopDelay({ resolution: 10 })` runs from send until the body tab exists. Expected: `max` under 250 ms, and `workspace.fs.stat(bodyUri).size` above 50,000,000. The measured max is printed.
+    - `adds little to the time VS Code itself needs to open a 50 MB JSON body`. The 50 MB synthetic JSON is built before measuring. `perf_hooks.monitorEventLoopDelay({ resolution: 10 })` measures the largest delay from send until the body tab exists, then again while `vscode.open` opens the same document under a new URI (`bodyUri.with({ query: 'baseline' })`, served the same bytes). Expected: the send's delay under the baseline plus 250 ms and under 2,000 ms, and `workspace.fs.stat(bodyUri).size` above 50,000,000. Both numbers are printed.
   - **`proxy.test.ts`:**
     - `routes http requests through http.proxy`. A local proxy answers `GET http://api.streamscope.test/items` itself, and records it.
     - `tunnels an # @insecure https request through the proxy`. `CONNECT secure.streamscope.test:443` is piped to a local self-signed server, and the request completes.

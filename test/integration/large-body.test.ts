@@ -1,10 +1,11 @@
 import * as assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
 import * as vscode from 'vscode';
 import { startHttpServer, type LocalServer } from '../support/servers';
+import { removeTemporaryFolder } from './temporary-folder';
 
 function syntheticJson(minimumBytes: number): Buffer {
   const items: { id: number; name: string; tags: string[]; note: string }[] = [];
@@ -22,6 +23,14 @@ function syntheticJson(minimumBytes: number): Buffer {
   return Buffer.from(JSON.stringify({ items }));
 }
 
+async function largestDelayDuring(action: () => Thenable<unknown>): Promise<number> {
+  const delay = monitorEventLoopDelay({ resolution: 10 });
+  delay.enable();
+  await action();
+  delay.disable();
+  return delay.max / 1_000_000;
+}
+
 describe('large responses', () => {
   let folder = '';
   let server: LocalServer | undefined;
@@ -33,10 +42,10 @@ describe('large responses', () => {
   after(async () => {
     await vscode.commands.executeCommand('workbench.action.closeAllEditors');
     await server?.close();
-    rmSync(folder, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    removeTemporaryFolder(folder);
   });
 
-  it('opens a 50 MB JSON body without blocking the extension host', async function () {
+  it('adds little to the time VS Code itself needs to open a 50 MB JSON body', async function () {
     this.timeout(180_000);
     const body = syntheticJson(50_000_000);
     assert.ok(body.length > 50_000_000);
@@ -49,11 +58,9 @@ describe('large responses', () => {
     const document = await vscode.workspace.openTextDocument(vscode.Uri.file(file));
     await vscode.window.showTextDocument(document, vscode.ViewColumn.One);
 
-    const delay = monitorEventLoopDelay({ resolution: 10 });
-    delay.enable();
-    await vscode.commands.executeCommand('streamscope.sendRequest');
-    delay.disable();
-
+    const sendMs = await largestDelayDuring(() =>
+      vscode.commands.executeCommand('streamscope.sendRequest'),
+    );
     const bodyUri = vscode.window.tabGroups.all
       .flatMap((group) => group.tabs)
       .flatMap((tab) =>
@@ -64,9 +71,26 @@ describe('large responses', () => {
           : [],
       )[0];
     assert.ok(bodyUri, 'the body document is not open');
-    const maxMs = delay.max / 1_000_000;
-    console.log(`Largest event loop delay while sending 50 MB: ${maxMs.toFixed(1)} ms`);
-    assert.ok(maxMs < 250, `the event loop was blocked for ${maxMs.toFixed(1)} ms`);
-    assert.ok((await vscode.workspace.fs.stat(bodyUri)).size > 50_000_000);
+    const size = (await vscode.workspace.fs.stat(bodyUri)).size;
+    assert.ok(size > 50_000_000);
+
+    const baselineUri = bodyUri.with({ query: 'baseline' });
+    const baselineMs = await largestDelayDuring(() =>
+      vscode.commands.executeCommand('vscode.open', baselineUri, {
+        viewColumn: vscode.ViewColumn.Beside,
+        preserveFocus: true,
+        preview: false,
+      }),
+    );
+    assert.equal((await vscode.workspace.fs.stat(baselineUri)).size, size);
+
+    console.log(
+      `Largest event loop delay for 50 MB: ${sendMs.toFixed(1)} ms sending, ${baselineMs.toFixed(1)} ms for VS Code to open the same document`,
+    );
+    assert.ok(
+      sendMs < baselineMs + 250,
+      `Streamscope blocked the extension host ${(sendMs - baselineMs).toFixed(1)} ms longer than VS Code's own open`,
+    );
+    assert.ok(sendMs < 2_000, `the extension host froze for ${sendMs.toFixed(1)} ms`);
   });
 });
