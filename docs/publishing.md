@@ -4,17 +4,15 @@ Status: approved 2026-11-11. Nothing is published, pushed or submitted without t
 
 ## Identity (reserved 2026-11-11)
 
-| Item                  | Value                                                                                | Status                                                                                                                                             |
-| --------------------- | ------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Extension name        | `streamscope`                                                                        | Free on both registries when checked                                                                                                               |
-| Display name          | Streamscope: HTTP Client with Live Streaming                                         | To confirm free on the Marketplace before the first publish (display names must be unique)                                                         |
-| Extension id          | `achrafelkhnissi.streamscope`                                                        |                                                                                                                                                    |
-| Marketplace publisher | [`achrafelkhnissi`](https://marketplace.visualstudio.com/publishers/achrafelkhnissi) | Created; personal Microsoft account; profile links to GitHub, LinkedIn and X                                                                       |
-| Open VSX namespace    | `achrafelkhnissi`                                                                    | Created; Publisher Agreement signed; ownership claim [EclipseFdn/open-vsx.org#15561](https://github.com/EclipseFdn/open-vsx.org/issues/15561) open |
-| Repository            | [`achrafelkhnissi/streamscope`](https://github.com/achrafelkhnissi/streamscope)      | Public, empty                                                                                                                                      |
-| License               | MIT                                                                                  | Added in milestone M0                                                                                                                              |
-
-**Pending clean-up:** the Open VSX administrator was given temporary Reader access to the Marketplace publisher for the namespace claim. Remove that member from the publisher's **Members** tab once issue #15561 is closed.
+| Item                  | Value                                                                                | Status                                                                                                                                                       |
+| --------------------- | ------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Extension name        | `streamscope`                                                                        | Free on both registries when checked                                                                                                                         |
+| Display name          | Streamscope: HTTP Client with Live Streaming                                         | To confirm free on the Marketplace before the first publish (display names must be unique)                                                                   |
+| Extension id          | `achrafelkhnissi.streamscope`                                                        |                                                                                                                                                              |
+| Marketplace publisher | [`achrafelkhnissi`](https://marketplace.visualstudio.com/publishers/achrafelkhnissi) | Created; personal Microsoft account; profile links to GitHub, LinkedIn and X                                                                                 |
+| Open VSX namespace    | `achrafelkhnissi`                                                                    | Created; Publisher Agreement signed; ownership granted 2026-11-12 ([EclipseFdn/open-vsx.org#15561](https://github.com/EclipseFdn/open-vsx.org/issues/15561)) |
+| Repository            | [`achrafelkhnissi/streamscope`](https://github.com/achrafelkhnissi/streamscope)      | Public, empty                                                                                                                                                |
+| License               | MIT                                                                                  | Added in milestone M0                                                                                                                                        |
 
 ## Manifest for the Marketplace
 
@@ -89,9 +87,8 @@ flowchart LR
 1. **Marketplace trusted publishing:** publisher `achrafelkhnissi` → Trusted Publishing → Create. Policy name "Release workflow", repository owner `achrafelkhnissi`, repository `streamscope`, workflow `release.yml`, environment `release`.
 2. **GitHub environment:** create `release` in the repository settings with Achraf as required reviewer.
 3. **First Marketplace version:** publish through the workflow. If the Marketplace refuses OIDC for an extension that does not exist yet (unverified), upload the first VSIX on the publisher page (New extension → Visual Studio Code) by hand; later versions use the workflow.
-4. **First Open VSX version:** after claim #15561 is approved, Achraf creates an Open VSX access token and publishes the same VSIX once from his own terminal, entering the token in a hidden prompt (never in chat or in files). Then: Open VSX Settings → Trusted Publishers → GitHub Actions, owner `achrafelkhnissi`, repository `streamscope`, workflow `release.yml`, environment `release`; then delete the token. Open VSX requires an owned namespace and an existing extension for trusted publishing.
-5. **Clean-up:** remove the temporary Reader member from the Marketplace publisher.
-6. **Later, optional:** verified publisher badge, which needs a domain registered for at least 6 months and an extension on the Marketplace for at least 6 months.
+4. **First Open VSX version:** Achraf creates an Open VSX access token and publishes the same VSIX once from his own terminal, entering the token in a hidden prompt (never in chat or in files). Then: Open VSX Settings → Trusted Publishers → GitHub Actions, owner `achrafelkhnissi`, repository `streamscope`, workflow `release.yml`, environment `release`; then delete the token. Open VSX requires an owned namespace and an existing extension for trusted publishing.
+5. **Later, optional:** verified publisher badge, which needs a domain registered for at least 6 months and an extension on the Marketplace for at least 6 months.
 
 ## Updates
 

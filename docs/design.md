@@ -192,7 +192,7 @@ Principles:
 | `src/checks`              | Evaluate `# @expect` lines live, early failure                                                                                                               | `expressions`, `events`             |
 | `src/runs`                | Request lifecycle state machine, file-run orchestration, skip rules                                                                                          | all core modules                    |
 | `src/vscode/language`     | Grammar contribution, CodeLens, outline, folding, hovers, completion, diagnostics, quick fixes, inlay hints, decorations                                     | core                                |
-| `src/vscode/response`     | Response view surface (chosen by the spike, section 13), status bar run indicator                                                                            | `events`, `runs`                    |
+| `src/vscode/response`     | Response view webview panel and its overflow documents (section 13), status bar run indicator                                                                | `events`, `runs`                    |
 | `src/vscode/testing`      | Test controller mapping files and requests to test items                                                                                                     | `runs`                              |
 | `src/vscode/secrets`      | SecretStorage access, secret commands, masking registry                                                                                                      | `variables`                         |
 | `src/vscode/environments` | Environment discovery and picker, REST Client settings reader, JetBrains file reader, file watchers                                                          | `variables`                         |
@@ -487,7 +487,14 @@ Native first, as agreed. Milestone M5 (roadmap) is a time-boxed spike that build
 - Messages batched and capped; the webview never holds more than the visible window plus a margin.
 - VS Code theme variables only; keyboard navigation and ARIA roles for the event list.
 
-Whichever wins, Raw uses VS Code's built-in `jsonl` colouring for NDJSON (verified present in 1.101) and a small grammar for SSE.
+### Decision (M5)
+
+The M5 spike chose the webview; [decisions/response-surface.md](decisions/response-surface.md) has the measurements and the full record. At 500 events/s for 30 minutes, the native document view missed the latency, responsiveness and memory budgets and needed workarounds, and the webview met latency and memory.
+
+- One webview panel per request is the only home of a response. It opens when the headers arrive, for every response, with the tabs Events, Reply, Raw, Headers, Body and Checks.
+- Documents are an overflow. Open in Editor opens the Body, the Headers or a single event as a read-only editor tab, and content over a size limit is shown that way instead of inside the panel. Each document leads back to the panel with Show Response.
+- The safeguards above apply in full, and the record's "Consequences for M6" lists the rest: masking before anything reaches the panel, validating every message from it, byte caps, and benchmark commands registered only in development and test mode.
+- Raw is coloured in the panel by its own tokenizer. VS Code's `jsonl` grammar colours Raw only when it is opened as a document.
 
 ### Editor-side presentation (both surfaces)
 
@@ -572,7 +579,7 @@ Rules: never swallow an error, never send a partly resolved request, notificatio
   - VS Code also syncs the text of every open document under 50 MiB into the extension host, whatever its scheme. A 46 MB document blocked it for about 350 ms on the same Mac.
   - Both costs are inputs to the M5 response-view decision and to how M11 counts "a synchronous task of the extension".
 - The 50 MB integration test checks that Streamscope adds less than 250 ms to VS Code's own cost of opening the same document, comparing the medians of seven sends and seven reopenings because a single open on GitHub's macOS runner ranged from 38 to 1,103 ms, and that no send blocks for 2 s.
-- The native surface's full-document re-diff cost is measured in the spike; if native is chosen, the live Events document is capped (for example the newest 5,000 lines) with older events reachable by paging.
+- The M5 spike measured the native surface's full-document re-diff cost and chose the webview (section 13). The panel holds only the visible rows and the tail, and older events are read from the spill file when scrolled to.
 - The extension ships as one bundle plus the format worker, so transport code loads at activation; the M11 benchmark checks the activation budget.
 - A benchmark harness (synthetic local server, scripted VS Code session) runs before each release and its numbers are kept in `docs/benchmarks.md`. Since M4, `npm run bench -- throughput` measures parsing speed and `npm run bench -- soak` measures heap, spill size and event lag over a real local stream.
 
@@ -635,10 +642,10 @@ Summary; details in [publishing.md](publishing.md).
 
 ## Open questions and assumptions
 
-| Item                                                                  | Status                                                                                                                                                                                   |
-| --------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Native or webview response surface                                    | Decided by the M5 spike against the section 3 budgets                                                                                                                                    |
-| Whether the Marketplace accepts OIDC for an extension's first version | Unverified; fallback is uploading the first VSIX in the Marketplace web page                                                                                                             |
-| Cursor and Windsurf VS Code base versions                             | Unverified; best effort                                                                                                                                                                  |
-| Open VSX namespace verification                                       | Claim filed ([EclipseFdn/open-vsx.org#15561](https://github.com/EclipseFdn/open-vsx.org/issues/15561)); remove the temporary Reader member from the Marketplace publisher when it closes |
-| Reply adapters beyond the five listed                                 | Added on request                                                                                                                                                                         |
+| Item                                                                  | Status                                                                                                                                                                      |
+| --------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Native or webview response surface                                    | Decided in M5: a webview panel, with editor documents as overflow ([decisions/response-surface.md](decisions/response-surface.md))                                          |
+| Whether the Marketplace accepts OIDC for an extension's first version | Unverified; fallback is uploading the first VSIX in the Marketplace web page                                                                                                |
+| Cursor and Windsurf VS Code base versions                             | Unverified; best effort                                                                                                                                                     |
+| Open VSX namespace verification                                       | Granted 2026-11-12 ([EclipseFdn/open-vsx.org#15561](https://github.com/EclipseFdn/open-vsx.org/issues/15561)); the temporary Reader member is off the Marketplace publisher |
+| Reply adapters beyond the five listed                                 | Added on request                                                                                                                                                            |

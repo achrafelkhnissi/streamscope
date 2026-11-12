@@ -14,7 +14,7 @@ The product is **Streamscope** (`achrafelkhnissi.streamscope`, display name "Str
 - Work runs in approved phases: research (done), project setup (done), product planning and technical design (approved 2026-11-11), then the implementation milestones in `docs/roadmap.md`. Do not build product functionality before the user approves the design, and ask before starting a new phase or milestone.
 - The design is `docs/design.md`, the milestone plan `docs/roadmap.md`, the release process `docs/publishing.md`, and the approved response view mockup `docs/mockups/response-view.html`. They win over anything older in this file.
 - Unscheduled work waits in `docs/backlog.md`. Nothing there is approved; an item joins the roadmap only when the user approves it.
-- Settled decisions: VS Code `^1.101.0` with forks best effort; desktop only; native VS Code UI first, with a planned spike deciding whether a webview is needed; REST Client syntax compatibility (core syntax, request references, system variables, `rest-client.environmentVariables`, JetBrains env files); language id `http` with our own grammar scope; in-memory history for the MVP; captured values wait up to 30 s and never auto-run producers; Marketplace and Open VSX via OIDC trusted publishing.
+- Settled decisions: VS Code `^1.101.0` with forks best effort; desktop only; native VS Code UI first, except the response view, which M5 made a webview panel with editor documents for large content (`docs/decisions/response-surface.md`); REST Client syntax compatibility (core syntax, request references, system variables, `rest-client.environmentVariables`, JetBrains env files); language id `http` with our own grammar scope; in-memory history for the MVP; captured values wait up to 30 s and never auto-run producers; Marketplace and Open VSX via OIDC trusted publishing.
 
 ## Layout
 
@@ -32,9 +32,10 @@ The product is **Streamscope** (`achrafelkhnissi.streamscope`, display name "Str
 | `src/events/`                      | Event model, labels, reply assembly, spill files, event store, update batching, stream sessions            |
 | `src/masking/`                     | Masking of secret headers, URL user info, credential names and sensitive values                            |
 | `src/coexistence/`                 | Detection of other extensions' Send CodeLens                                                               |
+| `src/benchmark/`                   | Latency histogram and the command contract between the view benchmark and a response view                  |
 | `src/vscode/`                      | VS Code wiring: language features, environments, secrets, requests, response view, log                     |
 | `test/support/`                    | Local HTTP, HTTPS, raw and stream servers, stream fixtures, a chunk splitter, a test certificate           |
-| `test/benchmark/`                  | Throughput and soak benchmarks for the streaming pipeline, run with `npm run bench`                        |
+| `test/benchmark/`                  | Throughput, soak and VS Code response view benchmarks, run with `npm run bench`                            |
 | `test/unit/`                       | Vitest tests for pure modules and the manifest                                                             |
 | `test/integration/`                | Mocha tests run by `@vscode/test-cli` inside the Extension Development Host, on VS Code stable and 1.101.0 |
 | `test/restricted/`                 | Checks run in a real restricted (untrusted) workspace built from `test/fixtures/restricted`                |
@@ -80,7 +81,7 @@ Time and space complexity rank with correctness and security in every change. De
 | Quick gate           | `npm run check` (typecheck, lint, format check, unit tests)                              |
 | Package              | `npm run package` (VSIX in the project root), `npm run package:list` to see its contents |
 | Installed-VSIX check | `npm run verify:vsix`                                                                    |
-| Stream benchmarks    | `npm run bench -- throughput` or `npm run bench -- soak` (see `docs/benchmarks.md`)      |
+| Stream benchmarks    | `npm run bench -- throughput`, `soak` or `view` (see `docs/benchmarks.md`)               |
 
 ## Toolchain facts
 

@@ -163,6 +163,36 @@ describe('test support', () => {
     expect(sequences).toEqual(sequences.map((_, index) => index + 1));
   });
 
+  it('stamps every streamed event with the time it was sent', async () => {
+    const server = await startStreamServer();
+    const { body } = await get(`${server.url}/stream?rate=50&seconds=0.2&size=256`);
+    await server.close();
+    const events = body
+      .split('\n')
+      .slice(0, -1)
+      .map((line) => JSON.parse(line) as { type: string; sentAt?: unknown });
+
+    expect(events.length).toBeGreaterThanOrEqual(3);
+    expect(events.every((event) => typeof event.sentAt === 'number')).toBe(true);
+  });
+
+  it('answers a request whose path is not a URL with 400 instead of failing', async () => {
+    const server = await startStreamServer();
+    const status = await new Promise<number | undefined>((resolve, reject) => {
+      http
+        .get({ host: '127.0.0.1', port: server.port, path: '//' }, (response) => {
+          response.resume();
+          resolve(response.statusCode);
+        })
+        .on('error', reject);
+    });
+    const { contentType } = await get(`${server.url}/stream?rate=10&seconds=0.1`);
+    await server.close();
+
+    expect(status).toBe(400);
+    expect(contentType).toBe('application/x-ndjson');
+  });
+
   it('serves the same stream as SSE', async () => {
     const server = await startStreamServer();
     const { contentType, body } = await get(

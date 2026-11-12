@@ -18,19 +18,19 @@ function padded(
   return frame(format, JSON.stringify({ ...fields, [padField]: padding }));
 }
 
-export function runStarted(format: SyntheticFormat, size: number): string {
+export function runStarted(format: SyntheticFormat, size: number, sentAt: number): string {
   return padded(
     format,
-    { type: 'RUN_STARTED', threadId: 'thread-1', runId: 'run-1' },
+    { type: 'RUN_STARTED', threadId: 'thread-1', runId: 'run-1', sentAt },
     'padding',
     size,
   );
 }
 
-export function runFinished(format: SyntheticFormat, size: number): string {
+export function runFinished(format: SyntheticFormat, size: number, sentAt: number): string {
   return padded(
     format,
-    { type: 'RUN_FINISHED', threadId: 'thread-1', runId: 'run-1' },
+    { type: 'RUN_FINISHED', threadId: 'thread-1', runId: 'run-1', sentAt },
     'padding',
     size,
   );
@@ -55,8 +55,24 @@ function numberParameter(value: string | null, fallback: number): number {
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
 }
 
+function now(): number {
+  return performance.timeOrigin + performance.now();
+}
+
+function requestUrl(request: http.IncomingMessage): URL | undefined {
+  try {
+    return new URL(request.url ?? '/', 'http://localhost');
+  } catch {
+    return undefined;
+  }
+}
+
 function stream(request: http.IncomingMessage, response: http.ServerResponse): void {
-  const url = new URL(request.url ?? '/', 'http://localhost');
+  const url = requestUrl(request);
+  if (url === undefined) {
+    response.writeHead(400).end();
+    return;
+  }
   if (url.pathname !== '/stream') {
     response.writeHead(404).end();
     return;
@@ -70,13 +86,13 @@ function stream(request: http.IncomingMessage, response: http.ServerResponse): v
     url.searchParams.get('type') ??
     (format === 'sse' ? 'text/event-stream' : 'application/x-ndjson');
   response.writeHead(200, { 'Content-Type': contentType, 'Cache-Control': 'no-store' });
-  response.write(runStarted(format, size));
+  response.write(runStarted(format, size, now()));
   const startedAt = performance.now();
   let sent = 0;
   const tick = (): void => {
     const elapsed = (performance.now() - startedAt) / 1000;
     const due = Math.min(total, Math.floor(rate * elapsed));
-    const sentAt = performance.timeOrigin + performance.now();
+    const sentAt = now();
     let batch = '';
     while (sent < due) {
       sent += 1;
@@ -87,7 +103,7 @@ function stream(request: http.IncomingMessage, response: http.ServerResponse): v
     }
     if (elapsed >= seconds) {
       clearInterval(timer);
-      response.end(runFinished(format, size));
+      response.end(runFinished(format, size, now()));
     }
   };
   const timer = setInterval(tick, 10);

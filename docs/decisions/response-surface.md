@@ -1,0 +1,203 @@
+# Response surface
+
+**Status:** Accepted (2026-11-12). The response view is a webview panel, with documents for large content (see Decision).
+
+## Context
+
+Design section 13 left one question open: whether the response view is built from native VS Code documents or a webview. Native came first, as agreed, and the M5 spike decides with data. The design states the rule:
+
+> Native is chosen if it meets every section 3 budget and supports Events, Reply, Raw, Headers, Body, Checks, Stop and click-to-capture without awkward workarounds. Otherwise the webview is used.
+
+The budgets in section 3:
+
+| Budget         | Requirement                                                                                                       |
+| -------------- | ----------------------------------------------------------------------------------------------------------------- |
+| Latency        | An event is visible at most 100 ms (p95) after its last byte arrives, at 500 events/s of 1 KiB events             |
+| Responsiveness | No synchronous task blocks the extension host for more than 50 ms; typing stays smooth through a 30-minute stream |
+| Memory         | Extension heap under 150 MB regardless of stream length                                                           |
+
+## What was built
+
+Two throwaway prototypes, both fed by the M2 transport and the M4 `StreamSession` from the synthetic AG-UI NDJSON server. They lived in a development-only extension under `spike/`. Commit `379b0d6` still contains them, and Task 9 of the M5 plan deleted them.
+
+- **Native**, in two variants:
+  - `native-fs` serves each view as a read-only file from a `FileSystemProvider`, as M2's response documents are. VS Code re-reads the file after every change.
+  - `native-content` serves each view from a `TextDocumentContentProvider`. VS Code diffs each new version in its editor worker.
+
+  Both variants have the same features. Each view (Events, Reply, Raw, Headers, Body, Checks) is its own document, switched with editor title buttons. Events is one line per event, coloured by a small grammar, capped at the newest 5,000 to 6,000 lines with paging to older events. Event detail opens in a peek. Status, Stop and captured values show as CodeLenses and in a status bar item.
+
+- **Webview:**
+  - One panel per response, laid out after the approved mockup: a status pill, counts, a Stop button, a tab strip, a captured-values strip, and a virtualized event list that follows the tail and expands one event inline.
+  - It applies the section 13 safeguards: a nonce-only CSP, `localResourceRoots` limited to the bundle, content inserted with `textContent` only, deltas only for visible rows, and VS Code theme variables.
+
+The measurements come from the view benchmark kept in `test/benchmark/view/`: `npm run bench -- view`, described in [benchmarks.md](../benchmarks.md).
+
+## Measurements
+
+Thirty minutes at 500 events/s of 1 KiB, on an Apple M3 Pro with VS Code 1.146.0 (stable; the 1.101.0 minimum was not measured). All the numbers are in [benchmarks.md](../benchmarks.md).
+
+| Budget                             | `native-fs`                                         | `webview`                                                  |
+| ---------------------------------- | --------------------------------------------------- | ---------------------------------------------------------- |
+| Every event becomes visible        | 900,002 of 900,002                                  | 900,002 of 900,002 (after a fix, see below)                |
+| Latency p95 under 100 ms           | **Fails:** p95 393 ms, p99 921 ms, max 5.9 s        | **Passes:** p95 54 ms, p99 59 ms, max 1.2 s                |
+| No extension host pause over 50 ms | **Fails:** 87 pauses, the longest 670 ms            | **Fails:** 14 pauses, the longest 257 ms                   |
+| Typing stays smooth                | **Fails:** p95 136 ms, worst 5.5 s                  | **Mostly passes:** p95 1 ms, worst 465 ms                  |
+| Extension heap under 150 MB        | **Most likely fails:** up to 289 MB, an upper bound | **Passes:** up to 87 MB, about 111 MB with the event index |
+| Renderer                           | 140% CPU on average, 3.14 GB                        | 22% CPU on average, 600 MB                                 |
+
+Native got worse the longer it ran. Its 5-minute screening had a p95 of 70 ms, and the 30-minute run 393 ms. The screening ran on commit `3d88351`, before a change in `fd2f887` that made native's document links cheaper, so if anything the comparison understates how much native slowed down. The webview had a p95 of 54 ms in both.
+
+The first 30-minute webview run failed. Its list stopped scrolling at event 762,641. At 22 px per row, that matches Chromium's limit on layout height (2²⁴ px). Scaling scroll positions past 8 million pixels fixed it, and the rerun is the one in the table.
+
+The pause counts cover the whole extension host, not only the response view. The driver records every stretch of over 50 ms in which its 10 ms timer could not run, but not what caused it.
+
+The heap budget is defined as heap plus array buffers (see the M4 section of [benchmarks.md](../benchmarks.md)). The extension host reports array buffers as 0, so the event index has to be estimated: about 27 bytes per event, or 24 MB at 900,000 events. That puts the webview at about 111 MB, still under 150 MB.
+
+Screening runs, 5 minutes each at 500 events/s of 1 KiB:
+
+| Surface          | Result                                                                                                                                                                     |
+| ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `native-fs`      | Every event visible; latency p95 70 ms, max 2,073 ms; 5 extension host long tasks, the longest 408 ms; renderer CPU 94% mean                                               |
+| `native-content` | The window's renderer ran out of memory about 3 minutes in and crashed (V8 OOM, renderer at 2.35 GB and 210% CPU)                                                          |
+| `webview`        | Every event visible; latency p95 54 ms, p99 59 ms, max 1,063 ms (most likely the first events, waiting for the page to load); 1 long task of 105 ms; renderer CPU 34% mean |
+
+The most likely reason `native-content` crashed: when a content provider's document changes, VS Code computes minimal edits in its editor worker. The worker's code in VS Code 1.101 gives up above 100,000 characters and replaces the whole document (the runs used 1.146, which was not inspected). An Events line is about 245 characters, so the window passes that size at about 400 lines, and every update after that would become a full replacement.
+
+How to read the numbers:
+
+- **Native latency is a lower bound.** Native counts an event as visible when the document change reaches the extension host, before the editor paints it. The webview counts it when the page acknowledges the frame that painted it, one message later.
+- **Typing is the extension host round trip** of an edit, not the renderer's input-to-paint time.
+- **Heap figures are upper bounds.** They are sampled without forcing garbage collection. Electron reports array buffers as 0 in the extension host. Resident size would include the event index, but on macOS it can be lower than the heap because the system compresses memory: native's heap peaked at 289 MB and its resident size at 263 MB.
+- **The renderer figure is the sum** of every renderer process: the workbench window plus any webview frames.
+
+## Walkthrough
+
+Both surfaces streamed 20 events/s, and each step was captured automatically. Screenshots are in [response-surface/](response-surface/).
+
+| Item                        | Native                                                                                                                                                                                                                           | Webview                                                                                                                                  |
+| --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| Events, live                | One coloured line per event ([native-events-live](response-surface/native-events-live.jpeg)). Editors do not follow appended text, so it needed a reveal after every update, and the first open landed scrolled to the far right | Virtualized list that follows the tail ([webview-events-live](response-surface/webview-events-live.jpeg))                                |
+| Switching views mid-stream  | Title bar icons for Events, Reply, Raw and Headers. Body and Checks are only in the `…` menu. A switch closes one tab and opens another, so each view loses its scroll position. No data is lost                                 | Tab strip with all six views; nothing is lost                                                                                            |
+| Reply                       | Markdown document, updated live                                                                                                                                                                                                  | Appended text, sent only while visible                                                                                                   |
+| Raw colouring               | Built-in `jsonl` colouring, free                                                                                                                                                                                                 | Hand-written tokenizer; keeps the newest 2,000 lines                                                                                     |
+| Headers                     | `.http` document, coloured by the Streamscope grammar                                                                                                                                                                            | Status line and table                                                                                                                    |
+| Body, Checks                | Plain documents behind the overflow menu                                                                                                                                                                                         | Tabs                                                                                                                                     |
+| Event detail                | Peek with the pretty JSON, opened with Enter, Cmd+click on the event number, or the context menu ([native-detail](response-surface/native-detail.jpeg)). Folding, find and copy work                                             | Inline expansion under the row, as in the mockup ([webview-detail](response-surface/webview-detail.jpeg))                                |
+| Stop                        | Title bar button, CodeLens and status bar                                                                                                                                                                                        | Button in the status line                                                                                                                |
+| Live status                 | CodeLens on the first line, which scrolls away while following the tail, so it needed a status bar item. That item's text is cut off at ordinary widths                                                                          | Status line, always visible                                                                                                              |
+| Captured values             | Same as live status: a CodeLens plus the status bar; no strip                                                                                                                                                                    | Strip of chips, always visible ([webview-stopped](response-surface/webview-stopped.jpeg))                                                |
+| Click-to-capture entry      | The quick-fix lightbulb does not render in an unfocused window, so a visible entry needed a CodeLens above every property ([native-capture-entry](response-surface/native-capture-entry.jpeg))                                   | Button in the expanded event ([webview-capture-entry](response-surface/webview-capture-entry.jpeg))                                      |
+| Event numbers               | `#000123` was drawn as a colour swatch by VS Code's colour decorators, so it became `[000123]`                                                                                                                                   | No issue                                                                                                                                 |
+| Find and copy               | Free across the whole window                                                                                                                                                                                                     | Only rendered rows exist in the page: no find across the list, no multi-row copy yet                                                     |
+| Keyboard and screen readers | Free, including Accessible View                                                                                                                                                                                                  | Hand-built: arrows, Home, End and Enter in the list, arrows between tabs, ARIA roles. Not yet checked with VoiceOver; no Accessible View |
+| Theming                     | Free                                                                                                                                                                                                                             | Theme variables; looked right in the default dark theme                                                                                  |
+
+## Costs
+
+**Native** needed these workarounds to reach the mockup's behaviour:
+
+- following the tail by revealing the last line after every update;
+- a status bar item, because the status and captured-values CodeLenses scroll away;
+- a CodeLens per property, because the capture lightbulb does not show in an unfocused window;
+- closing and reopening tabs to switch views, with Body and Checks hidden in the overflow menu;
+- a different event number format, to avoid colour swatches;
+- resending the whole text of the open view on every batch, which VS Code then re-reads and re-diffs.
+
+**The webview** costs code that VS Code would otherwise give for free:
+
+- keyboard navigation, ARIA roles and screen reader support, with no Accessible View;
+- find and copy across the list;
+- a CSP and XSS surface to keep closed;
+- a page load before the first event paints;
+- rebuilding its state each time the panel is shown again, since it does not keep its context while hidden.
+
+## Recommendation
+
+**Use the webview.**
+
+Applying the rule literally, native does not qualify:
+
+- **It fails two budgets in the 30-minute run, and most likely a third:**
+  - latency, with p95 393 ms against 100 ms;
+  - responsiveness, with 87 extension host pauses up to 670 ms and typing that stalled for up to 5.5 s;
+  - most likely heap, at up to 289 MB against 150 MB. That is an upper bound, sampled without forced garbage collection.
+
+  Its renderer used 140% CPU and 3.14 GB. The content-provider variant crashed the window within 3 minutes.
+
+- **It needed workarounds** for following the tail, for live status and captured values, for click-to-capture and for switching views (see Costs).
+
+The webview meets the latency and memory budgets with room to spare and stays flat over 30 minutes. It does not yet meet the pause budget: 14 extension host pauses over 50 ms, the longest 257 ms. Their cause is unknown, so M6 has to find it and meet the budget.
+
+What the webview gives up is mostly what VS Code provides free to documents: keyboard and screen reader support, Accessible View, find and copy. M6 has to build those, and the M11 accessibility pass has to check them.
+
+## Decision
+
+The user approved the webview, in this form:
+
+- **One panel per request is the only home of a response.** It opens when the response headers arrive, for every response. Streamscope cannot tell a stream from a normal response at that point: some servers label NDJSON as `application/json`, and it only shows as a stream when the second line arrives. The panel has all six tabs from the mockup: Events, Reply, Raw, Headers, Body, Checks.
+- **Documents are an overflow.** An **Open in Editor** action opens content beside the panel as a read-only editor tab, where VS Code's find, copy, keyboard and screen-reader support and large-file handling apply. It covers the Body, the Headers and a single event, and it is reachable from a button in the tab, an editor title action and the Command Palette. Above a size limit, the panel shows a preview and the action instead of the full content, so large bodies never pass through the webview.
+- **Each document has a Show Response action** back to the matching tab of the panel. A new run of the request closes the previous run's documents, as M2 does today.
+- **What M2 built stays:** the response file system, the off-thread formatter, the Headers renderer, Save Response and the 50 MB test. The 50 MB test moves to Open in Editor. M2's automatic opening of the Body document is retired.
+
+The reasons:
+
+- **A 50 MB body is a text editor's job.** Pretty-printed, it runs to millions of lines, far past the layout limit that stopped the prototype's list.
+  - Comparable extensions that draw everything in a webview limit large responses: Thunder Client stops displaying responses over 10 MB, and REST Client turns off colouring over 5 MB, with open reports of freezes.
+  - VS Code's editor already opens the 50 MB body without freezing.
+- **Accessibility.** Extensions cannot add Accessible View to a webview, so the editor is the best option for screen readers on large content.
+- **Precedent.** VS Code does the same: notebooks draw output in a webview and offer to open long output in a text editor, and the Markdown preview has Show Source.
+
+The main risk is two kinds of tabs. The overflow documents reduce it: they open only on request or for oversize content, carry clear names (for example "Response 3 · Body.json") and lead back to the panel. Click-to-capture (M8) gets one shared core behind both entry points.
+
+Questions for the M6 plan:
+
+- the size limits for a Body drawn in the panel (suggested: 1 MiB, the formatter's existing limit) and for an event shown inline (suggested: 64 KiB);
+- whether content over the limit opens in the editor automatically or through the button (suggested: the button);
+- whether a setting should always show the Body in an editor;
+- whether Headers starts as a panel tab (suggested) or a document;
+- whether click-to-capture from documents uses a hand-written JSON position scanner or the `jsonc-parser` package, which needs approval as a new dependency;
+- whether Save Stream is enough for searching all events in an editor, or an "Open Events in Editor" snapshot is needed;
+- that overflow documents, like M2's documents today, can be read by other extensions.
+
+## Consequences for M6
+
+- **Surface:** one webview panel per response, laid out after the mockup, with the section 13 safeguards the prototype used, written out in full:
+  - the policy `default-src 'none'; script-src 'nonce-N'; style-src 'nonce-N'; img-src ${cspSource}; font-src ${cspSource}; form-action 'none'; base-uri 'none'`, with a fresh random nonce for each render and no `unsafe-inline` or `unsafe-eval`;
+  - `enableForms: false`, `enableCommandUris` left off, and `localResourceRoots` set to the bundle's folder only (left unset, it would include the workspace);
+  - response content only through `textContent`, never `innerHTML`. Trusted Types (`require-trusted-types-for 'script'`) would make that rule enforced, if VS Code's webview bootstrap allows it;
+  - bodies shown as text; any rendered HTML preview goes in an iframe with `sandbox=""` and its own policy;
+  - VS Code theme variables.
+- **Masking:** section 15 masking happens on the extension side before anything is posted. Secret header values, `{{$secret}}` values and `secret` captures never reach the webview. Webview state saved with `setState` holds only interface state (tab, selected index, scroll), never rows, headers or values.
+- **Messages from the webview are untrusted input:**
+  - each one is checked against a schema: known `type` and view, whole-number indexes from 1 to the event count, capped window sizes;
+  - events are read by index only, never by offsets or paths taken from a message;
+  - the webview never supplies a URL, command id or file path.
+
+  For click-to-capture, the webview sends only an event index and JSON path segments. The extension builds the `# @capture` expression, checks it against the capture grammar, rejects control characters, asks for the name in a native input box validated as an identifier, and inserts the line with a `WorkspaceEdit` on the producing request only. The prototype's message handling is not reused as it is.
+
+- **Updates:**
+  - at most one message per update batch (50 ms), capped in bytes as well as rows;
+  - only the newest rows while following the tail, at most 500 per message;
+  - event detail capped in size, with large events offered as a document instead;
+  - Reply and Raw as deltas, sent only while their tab is visible;
+  - older rows read from the spill file when the user scrolls back.
+- **The event list:**
+  - virtualized, with fixed-height rows;
+  - scroll positions scaled once the list would pass a few million pixels, because Chromium stops laying out at 2²⁴ px (the prototype failed at 762,641 rows);
+  - one event expanded inline at a time.
+- **Built by hand, and checked in M6 and M11:**
+  - keyboard navigation in the list and the tabs, with ARIA roles, checked with VoiceOver;
+  - find across all events, done on the extension side because only visible rows exist in the page;
+  - copying an event or several;
+  - light, dark and high-contrast themes;
+  - restoring the selected tab and scroll position when a hidden panel is shown again.
+- **Raw colouring** needs its own tokenizer in the webview, since the built-in `jsonl` grammar only colours documents. The design's "Raw uses VS Code's built-in `jsonl` colouring" therefore changes with this decision.
+- **Benchmark and budgets:**
+  - The response view registers `streamscope.benchmark.stream` and `streamscope.benchmark.walkthrough` from `src/benchmark/contract.ts` only when `STREAMSCOPE_BENCHMARK=1` and the extension runs in development or test mode (`context.extensionMode` is not `Production`). That way `npm run bench -- view` can measure it, but a Marketplace install never registers them.
+  - The two commands are never contributed in the manifest, and accept only `http://127.0.0.1` URLs.
+  - A surface records a latency for every visible event, reading the server's `sentAt` when the event arrives. The runner fails a run in which a visible event has no latency, the stream ends early, or the event count differs from what the server sent.
+  - M6 meets the section 3 budgets in that benchmark, which includes finding the cause of the extension host pauses over 50 ms.
+- **Not measured by the spike:**
+  - memory at 1,000 events/s for 30 minutes, which is how section 3 says to check the memory budget (the spike ran at 500 events/s);
+  - a native Events document appended to through `WorkspaceEdit` on an untitled document, instead of being re-served whole. Both native variants resent the whole text, so this third native approach was not tried.
+- **The panel and its overflow documents** follow the Decision section above. The webview may ask to open a document only by run and event index, checked against the message schema, and never sends a URI or path. The benchmark adds a check that opening a Body or event document mid-stream causes no extension host pause.
