@@ -87,10 +87,7 @@ describe('resolveSystemVariable', () => {
   });
 
   it('reports variables that arrive in a later milestone', () => {
-    expect(problem('$processEnv HOME')).toContain('not supported yet');
-    expect(problem('$dotenv KEY')).toContain('not supported yet');
     expect(problem('$aadToken')).toContain('not supported yet');
     expect(problem('$aadV2Token')).toContain('not supported yet');
-    expect(problem('$secret apiKey')).toContain('not supported yet');
   });
 });

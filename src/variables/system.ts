@@ -24,13 +24,7 @@ const expectedFormats: Record<string, string> = {
   localDatetime: '$localDatetime rfc1123|iso8601|"<format>" [<offset> <unit>]',
   randomInt: '$randomInt <min> <max>',
 };
-const laterVariables: ReadonlySet<string> = new Set([
-  'processEnv',
-  'dotenv',
-  'aadToken',
-  'aadV2Token',
-  'secret',
-]);
+const laterVariables: ReadonlySet<string> = new Set(['aadToken', 'aadV2Token']);
 
 function ok(value: string): SystemValue {
   return { ok: true, value };

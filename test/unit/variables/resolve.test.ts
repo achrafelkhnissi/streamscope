@@ -190,8 +190,8 @@ describe('resolveRequest', () => {
   });
 
   it('reports system variable problems where they are used', () => {
-    expect(problems('GET https://api.example.test/{{$processEnv HOME}}')).toEqual([
-      { message: '`{{$processEnv HOME}}` is not supported yet.', range: at(0, 29, 49) },
+    expect(problems('GET https://api.example.test/{{$aadToken}}')).toEqual([
+      { message: '`{{$aadToken}}` is not supported yet.', range: at(0, 29, 42) },
     ]);
   });
 
