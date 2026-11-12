@@ -223,9 +223,9 @@ Design:
 flowchart LR
   Socket["socket<br/>node:https"] --> Decomp["decompress<br/>zlib"]
   Decomp --> Spill["raw spill file<br/>(append, bounded)"]
-  Decomp --> Decode["TextDecoder<br/>stream: true"]
-  Decode --> Frame["LineFramer<br/>CR, LF, CRLF<br/>size limits, byte offsets"]
-  Frame --> Detect["FormatDetector"]
+  Decomp --> Frame["LineFramer on bytes<br/>CR, LF, CRLF<br/>size limits, byte offsets"]
+  Frame --> Decode["UTF-8 decode per line<br/>(text bodies: TextDecoder stream: true)"]
+  Decode --> Detect["FormatDetector"]
   Detect --> SSE["SSE interpreter"]
   Detect --> ND["NDJSON interpreter"]
   Detect --> Text["text / single JSON"]
@@ -241,8 +241,9 @@ flowchart LR
 Rules:
 
 - The socket is read at full speed. The UI never slows it down. The only backpressure is the spill-file write; if the disk cannot keep up, the socket pauses.
-- Each chunk is decoded with one `TextDecoder` in streaming mode, so multi-byte characters split across chunks are rebuilt. At end of stream the decoder is flushed; invalid bytes become U+FFFD and a warning.
-- The framer splits on LF, CRLF and lone CR, carrying a pending CR across chunk boundaries. Each line records its byte offset and length in the decompressed stream.
+- The framer splits bytes on LF, CRLF and lone CR, carrying a pending CR across chunk boundaries. Each line records its exact byte offset and length in the decompressed stream. A leading BOM belongs to no line.
+- Each complete line is then decoded as UTF-8. CR and LF never occur inside a multi-byte sequence, so a character split across chunks is rebuilt as the line accumulates. Invalid bytes become U+FFFD and one warning per stream. Bodies that are not parsed into events (text, single JSON, raw) go through one `TextDecoder` in streaming mode, flushed at end of stream.
+- The framer holds at most `maxEventSize` bytes of one line, and an undecided body at most 64 KiB plus one chunk.
 - Captures and checks evaluate on every event synchronously and cheaply; UI updates are batched: the first event is shown immediately, then at most every 50 ms, and immediately on end, error or cancel.
 - The format detector runs once, but may upgrade single JSON to NDJSON (section 8).
 
@@ -260,13 +261,19 @@ Rules:
 
 The status line shows the format and why, for example "NDJSON (detected; server said application/json)".
 
+How detection behaves in practice (M4):
+
+- Sniffing skips empty and whitespace-only lines. Only a first line starting with `{` or `[` counts as JSON, so a `text/plain` body of `42` or `true` stays text.
+- A complete JSON object or array on the first line is shown as single JSON at once; the next non-empty line upgrades it to NDJSON, with the first line as event 1. The reason stays "detected" either way.
+- A first line still incomplete after 64 KiB is decided from its prefix, and so is a completed first line of that length, so the result never depends on how the bytes were split. Such a body, like a pretty-printed one, is never upgraded.
+
 ### NDJSON
 
-- One JSON value per line, LF or CRLF. Empty lines are ignored.
+- One JSON value per line, LF or CRLF. Empty and whitespace-only lines are ignored.
 - A line that fails to parse becomes a malformed event (line number, byte offset, parser message); the stream continues.
 - A final line without a newline is parsed at end of stream and flagged as unterminated.
 - Lines over the limit (default 16 MiB, `streamscope.stream.maxEventSize`) become an oversize event with a preview; the framer resynchronises at the next newline.
-- Numbers are parsed with `JSON.parse` source-text access (verified in VS Code 1.101's Node 22.15.1) so large integers keep their exact digits when captured.
+- Numbers are parsed with `JSON.parse` source-text access (verified in VS Code 1.101's Node 22.15.1) so large integers keep their exact digits when captured: an integer outside the safe range becomes a `bigint`. Only lines containing a run of 16 or more digits take this slower path.
 
 ### Server-Sent Events
 
@@ -277,6 +284,9 @@ Follows the WHATWG event stream interpretation:
 - A blank line dispatches the event; an event without data is not dispatched. An incomplete final event is reported as discarded.
 - If `data` parses as JSON, the event value is that JSON; otherwise it is text. The OpenAI-style `[DONE]` sentinel is shown as an end marker, not as malformed.
 - `event: error` is shown as an error event; it does not change the transport outcome.
+- Each event records the `id` of its own block, as `eventsource-parser` does, not the inherited last event ID: Streamscope never reconnects. An empty `event:` value means no event type.
+- Comment lines become `comment` events. An event whose data passes `maxEventSize`, or that contains an over-limit line, becomes one oversize event with a preview; the next block parses normally.
+- Behaviour is checked against `eventsource-parser` on every SSE fixture.
 
 ### Text and single JSON
 
@@ -298,8 +308,9 @@ Text bodies are appended as they arrive. A single JSON body is pretty-printed wh
 
 ### Retention
 
-- For a run shown in an open view, the newest 10,000 events (`streamscope.stream.memoryEvents`) are kept in memory with parsed values. Older events, and every event of runs that are only in history, keep only index, time, label and offsets; their bodies are re-read from the spill file on demand.
-- The spill file lives in the extension's global storage with owner-only permissions, is capped at 512 MiB per response (`streamscope.stream.maxSpillSize`) and 2 GiB across history (`streamscope.stream.maxTotalSpillSize`, oldest runs lose raw data first) **(builder's call)**, and is deleted when its run leaves history or VS Code exits. When a cap is reached the stream continues, raw data stops being saved, and the view says so.
+- For a run shown in an open view, the newest 10,000 events (`streamscope.stream.memoryEvents`) are kept in memory with parsed values, within at most 16 MiB of their raw bytes. Older events, and every event of runs that are only in history, keep only index, time, label and offsets; their bodies are re-read from the spill file on demand.
+- That index uses typed-array blocks, about 27 bytes per event: roughly 49 MB for the 1.8 million events of a 30-minute stream at 1,000 events/s. The heap budget therefore holds for about 90 minutes at that rate; spilling the index itself to disk is left for M11 if longer streams need it. Up to 4,096 distinct labels are kept; later new labels are read back from the spill file.
+- The spill file lives in the extension's global storage with owner-only permissions, is capped at 512 MiB per response (`streamscope.stream.maxSpillSize`) and 2 GiB across history (`streamscope.stream.maxTotalSpillSize`, oldest runs lose raw data first) **(builder's call)**, and is deleted when its run leaves history or VS Code exits. Each extension host process uses its own directory; at start, directories of processes that have exited are removed, so one window never deletes another window's files. When a cap is reached, or a write fails, the stream continues, raw data stops being saved, and the view says so.
 
 ### Reply assembly
 
@@ -313,7 +324,7 @@ The Reply view concatenates text deltas using an adapter chosen from the first e
 | Anthropic Messages      | SSE `event: content_block_delta`                    | `delta.text`                                                  |
 | Ollama                  | NDJSON with `message.content` or `response`         | that field                                                    |
 
-Other formats show no Reply view. The same adapter powers the `text` capture source.
+Other formats show no Reply view. The same adapter powers the `text` capture source. The reply stops growing at 1,048,576 characters and is marked as cut off.
 
 ## 10. Variable extraction and resolution
 
@@ -562,7 +573,7 @@ Rules: never swallow an error, never send a partly resolved request, notificatio
 - The 50 MB integration test checks that Streamscope adds less than 250 ms to VS Code's own cost of opening the same document, and that nothing blocks for 2 s.
 - The native surface's full-document re-diff cost is measured in the spike; if native is chosen, the live Events document is capped (for example the newest 5,000 lines) with older events reachable by paging.
 - The extension ships as one bundle plus the format worker, so transport code loads at activation; the M11 benchmark checks the activation budget.
-- A benchmark harness (synthetic local server, scripted VS Code session) runs before each release and its numbers are kept in `docs/benchmarks.md`.
+- A benchmark harness (synthetic local server, scripted VS Code session) runs before each release and its numbers are kept in `docs/benchmarks.md`. Since M4, `npm run bench -- throughput` measures parsing speed and `npm run bench -- soak` measures heap, spill size and event lag over a real local stream.
 
 ## 18. Testing architecture
 
