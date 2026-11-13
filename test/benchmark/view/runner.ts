@@ -20,7 +20,9 @@ import { benchmarkEnvironment } from '../../../src/benchmark/contract';
 import { startHttpServer, type LocalServer } from '../../support/servers';
 import { startStreamServer } from '../../support/stream-server';
 import { captureScreenshot } from './devtools';
+import { copyExtension } from './extension-copy';
 import {
+  checkDevelopmentPaths,
   checkSurfaceName,
   devToolsPort,
   profileSettings,
@@ -158,12 +160,19 @@ export async function runViewBenchmark(
       );
     }
     const executable = await downloadAndUnzipVSCode('stable');
+    const extensionFolder = path.join(sandbox, 'streamscope');
+    copyExtension(root, extensionFolder);
+    const developmentPaths = [
+      extensionFolder,
+      ...options.extensions.map((folder) => path.resolve(root, folder)),
+    ];
+    checkDevelopmentPaths(developmentPaths, executable);
     const args = vscodeArguments({
       walkthrough: options.walkthrough,
       platform: process.platform,
       userDataDir,
       extensionsDir,
-      developmentPaths: [root, ...options.extensions.map((folder) => path.resolve(root, folder))],
+      developmentPaths,
       driver: path.join(outDirectory, 'view-driver.js'),
       workspace,
     });

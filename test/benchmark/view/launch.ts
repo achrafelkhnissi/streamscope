@@ -1,3 +1,5 @@
+import * as path from 'node:path';
+
 const surfaceNamePattern = /^[a-z0-9-]+$/;
 const devToolsListening = /DevTools listening on ws:\/\/127\.0\.0\.1:(\d+)\//;
 const passedVariables = [
@@ -60,6 +62,19 @@ export function checkSurfaceName(name: string): string | undefined {
   return surfaceNamePattern.test(name)
     ? undefined
     : 'Use lowercase letters, digits and hyphens for --surface.';
+}
+
+export function checkDevelopmentPaths(paths: readonly string[], executable: string): void {
+  for (const folder of paths) {
+    const relative = path.relative(folder, executable);
+    const outside =
+      relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative);
+    if (!outside) {
+      throw new Error(
+        `The development extension folder ${folder} contains VS Code at ${executable}, so VS Code would apply one of its built-in themes instead of the configured one. Load the extension from its own folder.`,
+      );
+    }
+  }
 }
 
 export function vscodeArguments(launch: VscodeLaunch): string[] {

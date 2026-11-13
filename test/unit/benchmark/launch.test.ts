@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  checkDevelopmentPaths,
   checkSurfaceName,
   colorThemes,
   devToolsPort,
@@ -102,6 +103,26 @@ describe('vscodeArguments', () => {
     expect(args).toContain('--user-data-dir=/tmp/ssv-1/ud');
     expect(args.at(-1)).toBe('/tmp/ssv-1/ws');
   });
+});
+
+describe('checkDevelopmentPaths', () => {
+  const executable =
+    '/repo/.vscode-test/vscode-darwin-arm64-1.146.0/Visual Studio Code.app/Contents/MacOS/Code';
+
+  it('accepts folders that do not contain VS Code', () => {
+    expect(() => {
+      checkDevelopmentPaths(['/tmp/ssv-1/streamscope', '/repo-spike', '/repo/spike'], executable);
+    }).not.toThrow();
+  });
+
+  it.each(['/repo', '/repo/.vscode-test', '/'])(
+    'refuses %s, which holds the built-in themes VS Code would then pick from',
+    (folder) => {
+      expect(() => {
+        checkDevelopmentPaths(['/tmp/ssv-1/streamscope', folder], executable);
+      }).toThrow(`The development extension folder ${folder} contains VS Code at ${executable}`);
+    },
+  );
 });
 
 describe('vscodeEnvironment', () => {
