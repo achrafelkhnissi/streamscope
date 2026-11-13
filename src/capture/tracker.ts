@@ -425,6 +425,10 @@ export class CaptureTracker {
   }
 
   event(event: StreamEvent): void {
+    if (this.access?.signal.aborted === true) {
+      this.dropQueue(true);
+      return;
+    }
     this.counts.events += 1;
     if (event.kind === 'malformed') {
       this.counts.malformed += 1;

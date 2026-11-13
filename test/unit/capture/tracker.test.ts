@@ -1975,6 +1975,56 @@ describe('evaluation paced by slices and backpressure', () => {
     );
   });
 
+  it('an aborted run evaluates no event that arrives after the abort', async () => {
+    const run = harness(
+      [
+        capture('threadId', 'first(type == "RUN_STARTED").threadId'),
+        capture('counted', 'count(type == "x")'),
+      ],
+      missingWorker,
+    );
+    const controller = new AbortController();
+    run.tracker.head(ndjsonHead, {
+      spillPath: () => Promise.resolve(undefined),
+      signal: controller.signal,
+    });
+    run.send({ type: 'x' });
+
+    controller.abort();
+    run.send({ type: 'RUN_STARTED', threadId: 'thread-1' });
+    run.send({ type: 'x' });
+
+    expect(run.results.has('threadId')).toBe(false);
+    expect(run.tracker.queued).toBe(0);
+    await run.tracker.end({ ...completed('ndjson'), signal: controller.signal });
+    expect(run.results.get('threadId')).toEqual(
+      failed('startRun was cancelled before threadId resolved'),
+    );
+    expect(run.results.get('counted')).toEqual(
+      failed('startRun was cancelled before counted resolved'),
+    );
+  });
+
+  it('an event after an abort drops the queue at once', () => {
+    const { budget } = stepped(4);
+    const run = harness([capture('counted', 'count(type == "x")')], missingWorker, budget);
+    const controller = new AbortController();
+    run.tracker.head(ndjsonHead, {
+      spillPath: () => Promise.resolve(undefined),
+      signal: controller.signal,
+    });
+    for (let n = 0; n < 5_010; n += 1) {
+      run.send({ type: 'x', n }, { length: 38 });
+    }
+    const listener = drainListener(run.tracker);
+
+    controller.abort();
+    run.send({ type: 'x', n: 5_010 }, { length: 38 });
+
+    expect(run.tracker.queued).toBe(0);
+    expect(listener.drains).toBe(1);
+  });
+
   it('a run whose captures all settle stops queueing and drains', () => {
     const { budget, tasks } = stepped(4);
     const run = harness([capture('seventh', 'first(n == 6).n')], missingWorker, budget);
