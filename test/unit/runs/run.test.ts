@@ -2500,6 +2500,111 @@ describe('waiting for captured values', () => {
         expect(shown.logged).toContain(`X-Thread: thread-1 ${maskedValue} key-007`);
         expect(shown.logged).not.toContain('token-08');
       });
+
+      it('a short session cookie value inside a body capture is masked, while consent=1 still does not blank the 1s', async () => {
+        const shown = await shownAndLogged(
+          { 'Set-Cookie': ['session=q7x9z', 'consent=1'] },
+          'thread-1 q7x9z',
+        );
+
+        expect(shown.strip).toBe(`thread-1 ${maskedValue}`);
+        expect(shown.hint).toBe(`= thread-1 ${maskedValue}`);
+        expect(shown.logged).toContain(`X-Thread: thread-1 ${maskedValue}`);
+        expect(shown.logged).toContain('127.0.0.1');
+        expect(shown.logged).not.toContain('q7x9z');
+      });
+    });
+
+    describe('captures that read a sensitive header or a cookie', () => {
+      async function produced(
+        headers: Record<string, string | string[]>,
+        captures: string[],
+      ): Promise<{ registry: CaptureRegistry; login: RunHandle; lines: string[] }> {
+        const api = await track(
+          startHttpServer((_request, response) => {
+            response.writeHead(200, { 'Content-Type': 'application/json', ...headers });
+            response.end('{}');
+          }),
+        );
+        const registry = new CaptureRegistry();
+        const lines = [
+          '# @name login',
+          ...captures.map((capture) => `# @capture ${capture}`),
+          `POST ${api.url}/login`,
+          '',
+          '###',
+          '# @name continue',
+          `GET ${api.url}/continue`,
+        ];
+        const login = startRun(capturing(registry, lines, 0), dependencies);
+        await login.done;
+        await waitFor(() =>
+          registry.forRequest(loginKey).every((entry) => entry.result.state === 'resolved'),
+        );
+        return { registry, login, lines };
+      }
+
+      it('cookies.sid with a 4-character value resolves secret and shows •••••• in the strip, the hint and the hover', async () => {
+        const { registry, login, lines } = await produced({ 'Set-Cookie': 'sid=q7x9' }, [
+          'sid = cookies.sid',
+        ]);
+        const posted: ToPanel[] = [];
+        const feed = new PanelFeed(login, {
+          readOnly: false,
+          streamView: 'events',
+          post: (message) => posted.push(message),
+          captures: registry,
+          timed: (work) => {
+            work();
+          },
+        });
+        feed.start();
+        feed.pause();
+        const file = parseHttpFile(lines.join('\n'));
+        const sources: VariableSources = {
+          ...emptyVariables,
+          system: dependencies.system,
+          restricted: false,
+          captures: captureLookup(registry, documentUri, file, new Map()),
+        };
+        const hover = describeReference(file, 'login.sid', sources);
+
+        expect(registry.get(loginKey, 'sid')?.result).toMatchObject({
+          state: 'resolved',
+          text: 'q7x9',
+          secret: true,
+        });
+        expect(posted.find((message) => message.type === 'reset')?.captures).toEqual([
+          { name: 'sid', state: 'resolved', text: maskedValue },
+        ]);
+        expect(captureHint(registry.get(loginKey, 'sid'))?.label).toBe(`= ${maskedValue}`);
+        expect(hover).toMatchObject({ kind: 'value', value: maskedValue, sensitive: true });
+      });
+
+      it('headers["X-Api-Key"] with a 6-character value resolves secret', async () => {
+        const { registry } = await produced({ 'X-Api-Key': 'k3y-06' }, [
+          'apiValue = headers["X-Api-Key"]',
+        ]);
+
+        expect(registry.get(loginKey, 'apiValue')?.result).toMatchObject({
+          state: 'resolved',
+          text: 'k3y-06',
+          secret: true,
+        });
+        expect(registry.get(loginKey, 'apiValue')?.secret).toBe(true);
+      });
+
+      it('cookies.theme = dark also resolves secret by provenance', async () => {
+        const { registry } = await produced({ 'Set-Cookie': 'theme=dark' }, [
+          'theme = cookies.theme',
+        ]);
+
+        expect(registry.get(loginKey, 'theme')?.result).toMatchObject({
+          state: 'resolved',
+          text: 'dark',
+          secret: true,
+        });
+      });
     });
   });
 });

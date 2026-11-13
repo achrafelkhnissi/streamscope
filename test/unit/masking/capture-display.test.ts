@@ -82,6 +82,18 @@ describe('sensitive values of a response', () => {
     ]);
   });
 
+  it('takes a cookie value of any length when the cookie is named like a credential or a session', () => {
+    expect(
+      sensitiveHeaderValues([
+        ['Set-Cookie', 'session=q7x9z'],
+        ['Set-Cookie', 'auth_token=a1'],
+        ['Set-Cookie', 'theme=dark'],
+        ['Set-Cookie', 'consent=1'],
+        ['Set-Cookie', 'token='],
+      ]),
+    ).toEqual(['session=q7x9z', 'q7x9z', 'auth_token=a1', 'a1', 'theme=dark', 'consent=1']);
+  });
+
   it('keeps only the values that occur in a text, in any encoded form', () => {
     expect(
       sensitiveValuesIn('received Bearer synthetic-token and a%20b', [

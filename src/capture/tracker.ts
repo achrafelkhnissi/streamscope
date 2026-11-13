@@ -3,7 +3,12 @@ import type { Expr, SourceNode, Value } from '../expressions/ast';
 import { holds, type ConditionItem, type Outcome } from '../expressions/evaluate';
 import { sourcesOf } from '../expressions/parse';
 import { unitsPerCheck, type WorkBudget } from '../expressions/work';
-import { maskValues, sensitiveHeaderValues, sensitiveValuesIn } from '../masking/masking';
+import {
+  isSensitiveHeader,
+  maskValues,
+  sensitiveHeaderValues,
+  sensitiveValuesIn,
+} from '../masking/masking';
 import type { RunAccess, RunEnd } from '../runs/observer';
 import type { ResponseHead } from '../transport/model';
 import {
@@ -217,6 +222,56 @@ function watchOf(node: EventNode): Watch {
     case 'all':
       return { kind: 'all', node, condition, matches: { ranges: [], values: [] } };
   }
+}
+
+export function readsSensitiveHead(expression: Expr): boolean {
+  const pending: Expr[] = [expression];
+  for (let node = pending.pop(); node !== undefined; node = pending.pop()) {
+    switch (node.kind) {
+      case 'source':
+        if (node.name === 'cookies') {
+          return true;
+        }
+        break;
+      case 'access':
+        if (
+          node.target.kind === 'source' &&
+          node.target.name === 'headers' &&
+          node.step.kind === 'name' &&
+          isSensitiveHeader(node.step.name)
+        ) {
+          return true;
+        }
+        pending.push(node.target);
+        break;
+      case 'filter':
+        pending.push(node.target);
+        break;
+      case 'check':
+        pending.push(...node.args);
+        break;
+      case 'list':
+        pending.push(...node.items);
+        break;
+      case 'not':
+        pending.push(node.operand);
+        break;
+      case 'logical':
+      case 'compare':
+        pending.push(node.left, node.right);
+        break;
+      case 'events':
+      case 'nth':
+      case 'jsonpath':
+      case 'literal':
+      case 'regex':
+      case 'field':
+      case 'item':
+      case 'sse':
+        break;
+    }
+  }
+  return false;
 }
 
 export function headValues(head: ResponseHead): HeadValues {

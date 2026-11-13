@@ -20,7 +20,7 @@ import {
 } from './messages';
 import { evaluateResponseReference, type ReferencedRun } from './references';
 import { CaptureWaitError, type CaptureEntry, type CaptureRegistry } from './registry';
-import { CaptureTracker, type CaptureDefinition } from './tracker';
+import { CaptureTracker, readsSensitiveHead, type CaptureDefinition } from './tracker';
 
 interface ProducerSnapshot {
   label: string;
@@ -176,7 +176,16 @@ export class CaptureService implements RunCaptures {
   constructor(private readonly options: CaptureServiceOptions) {
     this.definitions = options.request.captures.flatMap(
       ({ name, secret, expression, expressionText }) =>
-        expression === undefined ? [] : [{ name, secret, expression, text: expressionText }],
+        expression === undefined
+          ? []
+          : [
+              {
+                name,
+                secret: secret || readsSensitiveHead(expression),
+                expression,
+                text: expressionText,
+              },
+            ],
     );
     const base = captureLookup(options.registry, options.documentUri, options.file, this.responses);
     this.lookup = {

@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { captureSliceMs, hostBudget, TaskBudget } from '../../../src/capture/task-budget';
 import {
   CaptureTracker,
+  readsSensitiveHead,
   type CaptureDefinition,
   type CaptureResult,
 } from '../../../src/capture/tracker';
@@ -301,7 +302,9 @@ describe('CaptureTracker', () => {
       resolved('token-1', undefined, '["x-session-token"]', true),
     );
     expect(run.results.get('trace')).toEqual(resolved('a, b', undefined, '["x-trace"]'));
-    expect(run.results.get('session')).toEqual(resolved('def', undefined, 'session'));
+    expect(run.results.get('session')).toEqual(
+      resolved('def', undefined, 'session', false, ['def']),
+    );
     expect(run.results.get('allHeaders')).toEqual(
       resolved(
         JSON.stringify({
@@ -313,11 +316,11 @@ describe('CaptureTracker', () => {
         undefined,
         '',
         false,
-        ['session=abc; Path=/', 'theme=dark', 'session=def; HttpOnly'],
+        ['session=abc; Path=/', 'abc', 'theme=dark', 'session=def; HttpOnly', 'def'],
       ),
     );
     expect(run.results.get('allCookies')).toEqual(
-      resolved('{"session":"def","theme":"dark"}', undefined, ''),
+      resolved('{"session":"def","theme":"dark"}', undefined, '', false, ['def']),
     );
     expect(run.results.get('constant')).toEqual(resolved('fixed', undefined, ''));
   });
@@ -2158,5 +2161,41 @@ describe('evaluation paced by slices and backpressure', () => {
     expect(run.results.get('light')).toEqual(resolved('A', 1, 'type'));
     expect(run.results.get('twin')).toEqual(resolved('A', 1, 'type'));
     expect(run.results.get('heavy')).toEqual(failed(hostWork));
+  });
+});
+
+describe('readsSensitiveHead', () => {
+  function reads(text: string): boolean {
+    return readsSensitiveHead(capture('value', text).expression);
+  }
+
+  it('is true for a sensitive header or any cookie, wherever the expression reads it', () => {
+    for (const text of [
+      'headers["Authorization"]',
+      'headers["set-cookie"]',
+      'headers["X-Api-Key"]',
+      'headers["x-session-token"] == "synthetic"',
+      'headers.authorization | match(/Bearer (.+)/)',
+      'cookies.session',
+      'cookies["sid"]',
+      'cookies[*]',
+      'cookies',
+      'status == 200 && cookies.theme == "dark"',
+    ]) {
+      expect(reads(text), text).toBe(true);
+    }
+  });
+
+  it('is false for other headers, all headers, the body and events', () => {
+    for (const text of [
+      'headers["X-Trace"]',
+      'headers',
+      'status',
+      'body.token',
+      'first(type == "RUN_STARTED").threadId',
+      'jsonpath("$.session")',
+    ]) {
+      expect(reads(text), text).toBe(false);
+    }
   });
 });

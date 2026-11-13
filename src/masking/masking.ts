@@ -86,10 +86,18 @@ export function sensitiveValuesIn(text: string, values: readonly string[]): stri
 
 const minimumHeaderValueLength = 8;
 
-function cookieValue(setCookie: string): string {
+function cookieValue(setCookie: string): string | undefined {
   const pair = setCookie.split(';', 1)[0] ?? '';
   const equals = pair.indexOf('=');
-  return equals === -1 ? '' : pair.slice(equals + 1).trim();
+  if (equals === -1) {
+    return undefined;
+  }
+  const name = pair.slice(0, equals).trim();
+  const value = pair.slice(equals + 1).trim();
+  const credential = looksLikeCredential(name) || isSensitiveHeader(name);
+  return value.length >= minimumHeaderValueLength || (credential && value !== '')
+    ? value
+    : undefined;
 }
 
 export function sensitiveHeaderValues(headers: Headers): string[] {
@@ -98,10 +106,13 @@ export function sensitiveHeaderValues(headers: Headers): string[] {
     if (!isSensitiveHeader(name)) {
       continue;
     }
-    values.push(value);
-    if (name.toLowerCase() === 'set-cookie') {
-      values.push(cookieValue(value));
+    if (value.length >= minimumHeaderValueLength) {
+      values.push(value);
+    }
+    const cookie = name.toLowerCase() === 'set-cookie' ? cookieValue(value) : undefined;
+    if (cookie !== undefined) {
+      values.push(cookie);
     }
   }
-  return values.filter((value) => value.length >= minimumHeaderValueLength);
+  return values;
 }
