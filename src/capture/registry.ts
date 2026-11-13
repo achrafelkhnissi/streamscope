@@ -73,7 +73,7 @@ export class CaptureRegistry {
   private readonly declaring = new Map<string, Set<RequestCaptures>>();
   private readonly waitsByCapture = new Map<string, Set<Wait>>();
   private readonly waitsByRun = new Map<number, Set<Wait>>();
-  private readonly listeners = new Set<(entry: CaptureEntry) => void>();
+  private readonly listeners = new Set<(request: string, name: string) => void>();
   private waits = 0;
 
   constructor(private readonly limit = maxCaptureRequests) {}
@@ -121,8 +121,8 @@ export class CaptureRegistry {
     }
     this.requests.set(run.key, captures);
     this.runs.set(run.id, captures);
-    for (const entry of captures.entries.values()) {
-      this.emit(entry);
+    for (const name of captures.entries.keys()) {
+      this.emit(run.key, name);
     }
   }
 
@@ -134,7 +134,7 @@ export class CaptureRegistry {
     }
     const updated = { ...entry, result };
     captures.entries.set(name, updated);
-    this.emit(updated);
+    this.emit(captures.key, name);
     if (result.state === 'pending') {
       return;
     }
@@ -220,16 +220,16 @@ export class CaptureRegistry {
     });
   }
 
-  onDidChange(listener: (entry: CaptureEntry) => void): () => void {
+  onDidChange(listener: (request: string, name: string) => void): () => void {
     this.listeners.add(listener);
     return () => {
       this.listeners.delete(listener);
     };
   }
 
-  private emit(entry: CaptureEntry): void {
+  private emit(request: string, name: string): void {
     for (const listener of this.listeners) {
-      listener(entry);
+      listener(request, name);
     }
   }
 
@@ -274,6 +274,9 @@ export class CaptureRegistry {
     this.runs.delete(captures.runId);
     for (const name of captures.entries.keys()) {
       removed(this.declaring, name, captures);
+    }
+    for (const name of captures.entries.keys()) {
+      this.emit(captures.key, name);
     }
   }
 

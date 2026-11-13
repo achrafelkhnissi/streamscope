@@ -1796,8 +1796,11 @@ describe('waiting for captured values', () => {
     pendingProducer(registry, -1);
     registry.update(-1, 'threadId', resolved('thread-0', -1));
     const changes: string[] = [];
-    registry.onDidChange((entry) => {
-      changes.push(`${String(entry.runId)} ${entry.result.state}`);
+    registry.onDidChange((request, name) => {
+      const entry = registry.get(request, name);
+      changes.push(
+        entry === undefined ? `${name} removed` : `${String(entry.runId)} ${entry.result.state}`,
+      );
     });
     const lines = [
       '# @name startRun',
@@ -1809,7 +1812,11 @@ describe('waiting for captured values', () => {
     expect((await producer.done).status).toBe('blocked');
     await waitFor(() => registry.get(startKey, 'threadId')?.result.state === 'failed');
 
-    expect(changes).toEqual([`${String(producer.id)} pending`, `${String(producer.id)} failed`]);
+    expect(changes).toEqual([
+      'threadId removed',
+      `${String(producer.id)} pending`,
+      `${String(producer.id)} failed`,
+    ]);
     expect(registry.get(startKey, 'threadId')?.result).toEqual({
       state: 'failed',
       reason:

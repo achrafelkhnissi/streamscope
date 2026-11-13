@@ -173,11 +173,11 @@ describe('CaptureRegistry', () => {
 
   it('an update from a superseded run is ignored', () => {
     const registry = new CaptureRegistry();
-    const changes: CaptureEntry[] = [];
+    const changes: string[] = [];
     registry.begin(run(1, startKey, 'startRun'), threadId);
     registry.begin(run(2, startKey, 'startRun'), threadId);
-    registry.onDidChange((entry) => {
-      changes.push(entry);
+    registry.onDidChange((request, name) => {
+      changes.push(`${request} ${name}`);
     });
 
     registry.update(1, 'threadId', resolved('thread-old', 1));
@@ -462,11 +462,13 @@ describe('CaptureRegistry', () => {
     const registry = new CaptureRegistry();
     const first: string[] = [];
     const second: string[] = [];
-    const removeFirst = registry.onDidChange((entry) => {
-      first.push(`${entry.name}:${entry.result.state}`);
+    const state = (request: string, name: string): string =>
+      `${name}:${registry.get(request, name)?.result.state ?? 'removed'}`;
+    const removeFirst = registry.onDidChange((request, name) => {
+      first.push(state(request, name));
     });
-    registry.onDidChange((entry) => {
-      second.push(`${entry.name}:${entry.result.state}`);
+    registry.onDidChange((request, name) => {
+      second.push(state(request, name));
     });
 
     registry.begin(run(1, startKey, 'startRun'), [...threadId, ...messageId]);
@@ -480,6 +482,31 @@ describe('CaptureRegistry', () => {
       'messageId:pending',
       'threadId:resolved',
       'messageId:failed',
+    ]);
+  });
+
+  it('tells listeners which request and name lost its captures when they are removed', () => {
+    const registry = new CaptureRegistry(2);
+    const changes: string[] = [];
+    registry.begin(run(1, startKey, 'startRun'), [...threadId, ...messageId]);
+    registry.begin(run(2, continueKey, 'continue'), messageId);
+    registry.onDidChange((request, name) => {
+      changes.push(`${request} ${name}:${registry.get(request, name)?.result.state ?? 'removed'}`);
+    });
+
+    registry.begin(run(3, startKey, 'startRun'), threadId);
+    registry.begin(run(4, continueKey, 'continue'), []);
+    registry.begin(run(5, summaryKey, 'summary'), threadId);
+    registry.begin(run(6, continueKey, 'continue'), messageId);
+
+    expect(changes).toStrictEqual([
+      `${startKey} threadId:removed`,
+      `${startKey} messageId:removed`,
+      `${startKey} threadId:pending`,
+      `${continueKey} messageId:removed`,
+      `${summaryKey} threadId:pending`,
+      `${startKey} threadId:removed`,
+      `${continueKey} messageId:pending`,
     ]);
   });
 

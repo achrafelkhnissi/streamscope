@@ -1,6 +1,10 @@
 import * as vscode from 'vscode';
+import { CaptureChanges } from '../../capture/changes';
+import type { CaptureRegistry } from '../../capture/registry';
 import type { HttpFile, HttpRequest, ParseDiagnostic, Range } from '../../http-file/model';
+import { requestKeyDocument } from '../../runs/run';
 import { variableDiagnostics } from '../../variables/inspect';
+import { CaptureInlayHints } from './captures';
 import type { ParseCache } from './parse-cache';
 import type { LanguageVariables } from './variables';
 
@@ -54,6 +58,12 @@ function documentSymbols(file: HttpFile): vscode.DocumentSymbol[] {
   return [...variables, ...requests];
 }
 
+function referencesAny(file: HttpFile, names: ReadonlySet<string>): boolean {
+  return file.requests.some((request) =>
+    request.variableReferences.some(({ expression }) => names.has(expression)),
+  );
+}
+
 function toDiagnostic(problem: ParseDiagnostic): vscode.Diagnostic {
   const diagnostic = new vscode.Diagnostic(
     toRange(problem.range),
@@ -71,8 +81,10 @@ export function registerLanguageFeatures(
   context: vscode.ExtensionContext,
   cache: ParseCache,
   variables: LanguageVariables,
+  captures: CaptureRegistry,
 ): void {
   const diagnostics = vscode.languages.createDiagnosticCollection('streamscope');
+  const hints = new CaptureInlayHints(cache, captures);
   const pending = new Map<string, ReturnType<typeof setTimeout>>();
 
   const update = async (document: vscode.TextDocument): Promise<void> => {
@@ -115,8 +127,28 @@ export function registerLanguageFeatures(
     );
   };
 
+  const changes = new CaptureChanges(captures, (requests, names) => {
+    const changed = new Set([...requests].map(requestKeyDocument));
+    let hintsChanged = false;
+    for (const document of vscode.workspace.textDocuments) {
+      if (!isSupported(document)) {
+        continue;
+      }
+      hintsChanged ||= changed.has(document.uri.toString());
+      if (referencesAny(cache.get(document), names)) {
+        refresh(document);
+      }
+    }
+    if (hintsChanged) {
+      hints.refresh();
+    }
+  });
+
   context.subscriptions.push(
     diagnostics,
+    hints,
+    changes,
+    vscode.languages.registerInlayHintsProvider(httpSelector, hints),
     vscode.languages.registerDocumentSymbolProvider(httpSelector, {
       provideDocumentSymbols: (document) => documentSymbols(cache.get(document)),
     }),

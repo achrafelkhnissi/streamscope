@@ -269,3 +269,205 @@ describe('waiting for captured values', () => {
     assert.match(runs[1]?.description ?? '', /^Cancelled after /);
   });
 });
+
+describe('captures in the editor', () => {
+  let folder = '';
+  const servers: LocalServer[] = [];
+
+  async function serve(): Promise<LocalServer> {
+    const server = await startStreamServer();
+    servers.push(server);
+    return server;
+  }
+
+  async function open(
+    name: string,
+    lines: string[],
+    column = vscode.ViewColumn.One,
+  ): Promise<vscode.TextDocument> {
+    const file = path.join(folder, name);
+    writeFileSync(file, lines.join('\n'));
+    const document = await vscode.workspace.openTextDocument(vscode.Uri.file(file));
+    await vscode.window.showTextDocument(document, column);
+    return document;
+  }
+
+  async function hintLabels(document: vscode.TextDocument): Promise<string[]> {
+    const hints = await vscode.commands.executeCommand<vscode.InlayHint[]>(
+      'vscode.executeInlayHintProvider',
+      document.uri,
+      new vscode.Range(0, 0, document.lineCount, 0),
+    );
+    return hints.map((hint) =>
+      typeof hint.label === 'string' ? hint.label : hint.label.map((part) => part.value).join(''),
+    );
+  }
+
+  async function hoverText(
+    document: vscode.TextDocument,
+    line: number,
+    reference: string,
+  ): Promise<string> {
+    const character = document.lineAt(line).text.indexOf(reference) + 3;
+    const hovers = await vscode.commands.executeCommand<vscode.Hover[]>(
+      'vscode.executeHoverProvider',
+      document.uri,
+      new vscode.Position(line, character),
+    );
+    return hovers
+      .flatMap((hover) => hover.contents)
+      .map((content) => (content instanceof vscode.MarkdownString ? content.value : ''))
+      .join('\n')
+      .replace(/&nbsp;/g, ' ')
+      .replace(/\\(.)/g, '$1');
+  }
+
+  function undefinedWarnings(document: vscode.TextDocument): vscode.Diagnostic[] {
+    return vscode.languages
+      .getDiagnostics(document.uri)
+      .filter((diagnostic) => diagnostic.code === 'undefined-variable');
+  }
+
+  before(() => {
+    folder = mkdtempSync(path.join(tmpdir(), 'streamscope-editor-captures-'));
+  });
+
+  afterEach(async () => {
+    await vscode.commands.executeCommand('workbench.action.closeAllEditors');
+    await Promise.all(servers.splice(0).map((server) => server.close()));
+  });
+
+  after(() => {
+    removeTemporaryFolder(folder);
+  });
+
+  it('an inlay hint after the capture line shows the value after the run', async () => {
+    const server = await serve();
+    const lines = agentFile(server, 'hinted', 'seconds=0');
+    const document = await open('hints.http', lines);
+    assert.deepEqual(await hintLabels(document), []);
+
+    await send(document.uri, producerLine);
+    await waitFor(
+      async () => (await hintLabels(document)).includes('= thread-1'),
+      'no inlay hint showed = thread-1',
+    );
+
+    const [hint] = await vscode.commands.executeCommand<vscode.InlayHint[]>(
+      'vscode.executeInlayHintProvider',
+      document.uri,
+      new vscode.Range(0, 0, document.lineCount, 0),
+    );
+    assert.deepEqual([hint?.position.line, hint?.position.character], [2, lines[2]?.length]);
+  });
+
+  it('hovering {{startRun.threadId}} shows the value and its provenance', async () => {
+    const server = await serve();
+    const document = await open('hover.http', agentFile(server, 'hovered', 'seconds=0'));
+
+    await send(document.uri, producerLine);
+    const text = await hoverText(document, followUpLine, '{{startRun.threadId}}');
+
+    assert.ok(text.includes('{{startRun.threadId}} = thread-1'), text);
+    assert.match(text, /startRun › threadId · run \d+ · event \d+ at threadId · \d\d:\d\d:\d\d/);
+  });
+
+  it('completion after {{ offers startRun.threadId and threadId', async () => {
+    const document = await open('complete.http', [
+      '### Start agent run',
+      '# @name startRun',
+      '# @capture threadId = first(type == "RUN_STARTED").threadId',
+      'GET https://api.example.test/stream',
+      '',
+      '###',
+      'GET https://api.example.test/continue?thread={{',
+    ]);
+
+    const list = await vscode.commands.executeCommand<vscode.CompletionList>(
+      'vscode.executeCompletionItemProvider',
+      document.uri,
+      new vscode.Position(6, document.lineAt(6).text.length),
+      '{',
+    );
+    const labels = list.items.map((item) =>
+      typeof item.label === 'string' ? item.label : item.label.label,
+    );
+
+    assert.ok(labels.includes('startRun.threadId'), labels.join(', '));
+    assert.ok(labels.includes('threadId'), labels.join(', '));
+  });
+
+  it('hovering a response reference still says its producer has not run', async () => {
+    const document = await open('response-hover.http', [
+      '# @name login',
+      'POST https://api.example.test/login',
+      '',
+      '###',
+      'GET https://api.example.test/me?token={{login.response.body.$.token}}',
+    ]);
+
+    const text = await hoverText(document, 4, '{{login.response.body.$.token}}');
+
+    assert.equal(
+      text,
+      '`{{login.response.body.$.token}}` comes from login, which has not run in this session.',
+    );
+  });
+
+  it('a secret capture is masked in the inlay hint and the hover', async () => {
+    const server = await serve();
+    const document = await open('secret.http', [
+      '### Start agent run',
+      '# @name secretRun',
+      '# @capture secret runHandle = first(type == "RUN_STARTED").runId',
+      `GET ${server.url}/stream?seconds=0`,
+      '',
+      '###',
+      'GET https://api.example.test/continue?run={{secretRun.runHandle}}',
+    ]);
+
+    await send(document.uri, 3);
+    await waitFor(
+      async () => (await hintLabels(document)).includes('= ••••••'),
+      'no masked inlay hint',
+    );
+    const text = await hoverText(document, 6, '{{secretRun.runHandle}}');
+
+    assert.ok(text.includes('{{secretRun.runHandle}} = ••••••'), text);
+    assert.ok(!text.includes('run-1'), text);
+  });
+
+  it('a bare capture from another file stops warning once its producer runs, and warns again when a re-run drops it', async () => {
+    const server = await serve();
+    const consumer = await open('consumer.http', [
+      'GET https://api.example.test/continue?thread={{seededThread}}',
+    ]);
+    await waitFor(() => undefinedWarnings(consumer).length === 1, 'no undefined-variable warning');
+    const producer = await open(
+      'producer.http',
+      [
+        '### Seed',
+        '# @name seedRun',
+        '# @capture seededThread = first(type == "RUN_STARTED").threadId',
+        `GET ${server.url}/stream?seconds=0`,
+      ],
+      vscode.ViewColumn.Two,
+    );
+
+    await send(producer.uri, 3);
+    await waitFor(
+      () => undefinedWarnings(consumer).length === 0,
+      'the warning stayed after the producer ran',
+    );
+    assert.equal(consumer.isClosed, false);
+
+    const edit = new vscode.WorkspaceEdit();
+    edit.delete(producer.uri, new vscode.Range(2, 0, 3, 0));
+    await vscode.workspace.applyEdit(edit);
+    await send(producer.uri, 2);
+    await waitFor(
+      () => undefinedWarnings(consumer).length === 1,
+      'the warning did not return after the re-run dropped the capture',
+    );
+  });
+});

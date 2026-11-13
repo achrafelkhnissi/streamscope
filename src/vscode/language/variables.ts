@@ -1,10 +1,18 @@
 import * as vscode from 'vscode';
+import { captureCompletions } from '../../capture/hints';
+import { captureLookup } from '../../capture/lookup';
+import type { CaptureRegistry } from '../../capture/registry';
 import { directiveKinds, type HttpFile } from '../../http-file/model';
 import { scanReferences } from '../../http-file/references';
 import { maskedValue, maskUrl } from '../../masking/masking';
 import { unescapeFileVariable } from '../../variables/resolve';
 import { describeReference, secretCandidates, variableCompletions } from '../../variables/inspect';
-import { emptyCaptureLookup, type VariableSources } from '../../variables/sources';
+import {
+  emptyCaptureLookup,
+  type CaptureLookup,
+  type CaptureLookupResult,
+  type VariableSources,
+} from '../../variables/sources';
 import type { EnvironmentStore } from '../environments/environment-store';
 import { readDotenv, usesDotenv } from '../requests/variables';
 import type { SecretStore } from '../secrets/secret-store';
@@ -20,11 +28,14 @@ export interface LanguageVariables extends vscode.Disposable {
 const secretNamePattern = /^[\w.-]+$/;
 const variablePrefix = /\{\{\s*([\w$.-]*)$/;
 const directivePrefix = /^\s*(?:#|\/\/)\s*@([\w-]*)$/;
+const noResponses: ReadonlyMap<string, CaptureLookupResult> = new Map();
 
 export function createLanguageVariables(
   context: vscode.ExtensionContext,
   environments: EnvironmentStore,
   secrets: SecretStore,
+  cache: ParseCache,
+  registry: CaptureRegistry,
 ): LanguageVariables {
   const changed = new vscode.EventEmitter<void>();
   const subscriptions = [
@@ -38,6 +49,10 @@ export function createLanguageVariables(
   return {
     onDidChange: changed.event,
     sourcesFor: async (document) => {
+      const captures: CaptureLookup = {
+        ...captureLookup(registry, document.uri.toString(), cache.get(document), noResponses),
+        response: (requestName, reference) => emptyCaptureLookup.response(requestName, reference),
+      };
       const restricted = !vscode.workspace.isTrusted;
       const catalog = await environments.catalogFor(document.uri);
       return {
@@ -55,7 +70,7 @@ export function createLanguageVariables(
             ? await readDotenv(document.uri, catalog.active)
             : { kind: 'missing' },
         processEnv: restricted ? {} : process.env,
-        captures: emptyCaptureLookup,
+        captures,
       };
     },
     dispose: () => {
@@ -176,10 +191,18 @@ export function registerVariableFeatures(
               position.line,
               position.character,
             );
-            return variableCompletions(
-              cache.get(document),
-              await variables.sourcesFor(document),
-            ).map(({ label, detail }) => {
+            const file = cache.get(document);
+            const sources = await variables.sourcesFor(document);
+            const completions = new Map<string, string>();
+            for (const { label, detail } of [
+              ...captureCompletions(file, sources.captures),
+              ...variableCompletions(file, sources),
+            ]) {
+              if (!completions.has(label)) {
+                completions.set(label, detail);
+              }
+            }
+            return [...completions].map(([label, detail]) => {
               const item = new vscode.CompletionItem(label, vscode.CompletionItemKind.Variable);
               item.detail = detail;
               item.range = range;

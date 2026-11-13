@@ -115,7 +115,7 @@ export function describeReference(
     return {
       kind: 'value',
       value: capture.secret ? maskedValue : evaluated.value,
-      origin: provenance(capture),
+      origin: captureProvenance(capture),
       sensitive: capture.secret || sensitive,
     };
   }
@@ -127,7 +127,7 @@ export function describeReference(
   };
 }
 
-function provenance({ label, name, provenance: from }: CapturedValue): string {
+export function captureProvenance({ label, name, provenance: from }: CapturedValue): string {
   const where = [
     from.event === undefined ? '' : `event ${String(from.event)}`,
     from.path === '' ? '' : `at ${from.path}`,
