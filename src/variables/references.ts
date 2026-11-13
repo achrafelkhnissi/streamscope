@@ -1,4 +1,5 @@
 import type { DiagnosticCode, HttpFile } from '../http-file/model';
+import type { VariableSources } from './sources';
 
 export type ResponseSelector =
   | { ok: true; part: 'head'; header: string }
@@ -17,21 +18,22 @@ export type ReferenceTarget =
     }
   | { kind: 'invalid'; code: DiagnosticCode; message: string };
 
-export interface DeclaredCaptures {
+export interface DeclaredNames {
   readonly requests: ReadonlyMap<string, ReadonlySet<string>>;
-  readonly names: ReadonlySet<string>;
+  readonly captures: ReadonlySet<string>;
+  readonly variables: ReadonlySet<string>;
 }
 
 const referencePattern = /^([^.\s]+)\.((request|response)\..*|.+)$/s;
 const bodyPrefix = 'response.body';
 const headersPrefix = 'response.headers';
-const declared = new WeakMap<HttpFile, DeclaredCaptures>();
+const declared = new WeakMap<HttpFile, DeclaredNames>();
 
 export function quoted(expression: string): string {
   return `\`{{${expression}}}\``;
 }
 
-function clause(sentence: string): string {
+export function clause(sentence: string): string {
   return sentence.endsWith('.') ? sentence.slice(0, -1) : sentence;
 }
 
@@ -107,13 +109,13 @@ export function responseSelector(name: string, reference: string): ResponseSelec
   return { ok: false, reason: unsupportedResponseReason(name, reference) };
 }
 
-export function declaredCaptures(file: HttpFile): DeclaredCaptures {
+export function declaredNames(file: HttpFile): DeclaredNames {
   const known = declared.get(file);
   if (known !== undefined) {
     return known;
   }
   const requests = new Map<string, Set<string>>();
-  const names = new Set<string>();
+  const captures = new Set<string>();
   for (const request of file.requests) {
     let named: Set<string> | undefined;
     if (request.name !== undefined) {
@@ -121,23 +123,29 @@ export function declaredCaptures(file: HttpFile): DeclaredCaptures {
       requests.set(request.name, named);
     }
     for (const capture of request.captures) {
-      names.add(capture.name);
+      captures.add(capture.name);
       named?.add(capture.name);
     }
   }
-  const index: DeclaredCaptures = { requests, names };
+  const variables = new Set(file.fileVariables.map((variable) => variable.name));
+  const index: DeclaredNames = { requests, captures, variables };
   declared.set(file, index);
   return index;
 }
 
-export function referenceTarget(file: HttpFile, expression: string): ReferenceTarget {
+export function referenceTarget(
+  file: HttpFile,
+  expression: string,
+  sources: Pick<VariableSources, 'environment' | 'shared'>,
+): ReferenceTarget {
   const match = referencePattern.exec(expression);
   if (match === null) {
     return { kind: 'name' };
   }
   const request = match[1] ?? '';
   const rest = match[2] ?? '';
-  const captures = declaredCaptures(file).requests.get(request);
+  const names = declaredNames(file);
+  const captures = names.requests.get(request);
   if (match[3] !== undefined) {
     const selector = responseSelector(request, rest);
     if (!selector.ok) {
@@ -154,8 +162,15 @@ export function referenceTarget(file: HttpFile, expression: string): ReferenceTa
   if (captures === undefined) {
     return { kind: 'name' };
   }
-  return captures.has(rest)
-    ? { kind: 'capture', request, name: rest }
+  if (captures.has(rest)) {
+    return { kind: 'capture', request, name: rest };
+  }
+  const variable =
+    names.variables.has(expression) ||
+    sources.environment.has(expression) ||
+    sources.shared.has(expression);
+  return variable
+    ? { kind: 'name' }
     : {
         kind: 'invalid',
         code: 'undefined-variable',

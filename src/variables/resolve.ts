@@ -162,8 +162,8 @@ class Scope implements VariableScope {
     }
   }
 
-  evaluate(expression: string): Evaluated {
-    return this.evaluateWithin(expression, []);
+  evaluate(expression: string, target?: ReferenceTarget): Evaluated {
+    return this.evaluateWithin(expression, [], target);
   }
 
   resolveText(text: string): { ok: true; text: string } | { ok: false; messages: string[] } {
@@ -176,7 +176,11 @@ class Scope implements VariableScope {
         };
   }
 
-  private evaluateWithin(expression: string, stack: readonly string[]): Evaluated {
+  private evaluateWithin(
+    expression: string,
+    stack: readonly string[],
+    parsed?: ReferenceTarget,
+  ): Evaluated {
     switch (expression.split(/\s/, 1)[0]) {
       case sharedName:
         return this.sharedReference(expression, stack);
@@ -193,7 +197,7 @@ class Scope implements VariableScope {
       const value = resolveSystemVariable(expression, this.sources.system);
       return value.ok ? value : failure(expression, value.message);
     }
-    const target = referenceTarget(this.file, expression);
+    const target = parsed ?? referenceTarget(this.file, expression, this.sources);
     if (target.kind !== 'name') {
       return this.requestReference(expression, target);
     }
@@ -627,11 +631,12 @@ export function evaluateExpression(
   file: HttpFile,
   expression: string,
   sources: VariableSources,
+  target?: ReferenceTarget,
 ):
   | { ok: true; value: string; sensitiveValues: string[]; capture: CapturedValue | undefined }
   | { ok: false; message: string } {
   const scope = new Scope(file, sources);
-  const evaluated = scope.evaluate(expression);
+  const evaluated = scope.evaluate(expression, target);
   return evaluated.ok
     ? {
         ok: true,

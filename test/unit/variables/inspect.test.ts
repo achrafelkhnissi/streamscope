@@ -255,6 +255,31 @@ describe('variableDiagnostics', () => {
     ).toEqual([]);
   });
 
+  it('a dotted file variable named after a request has no diagnostic', () => {
+    expect(
+      variableDiagnostics(
+        file('@api.base = https://api.example.test', '# @name api', 'GET {{api.base}}/health'),
+        testSources(),
+      ),
+    ).toEqual([]);
+  });
+
+  it('dotted environment and $shared variables named after a request have no diagnostic', () => {
+    expect(
+      variableDiagnostics(
+        file('# @name api', 'GET {{api.base}}/{{api.path}}'),
+        testSources({
+          environmentName: 'dev',
+          environment: sourced(
+            { 'api.base': 'https://api.example.test' },
+            'dev environment (settings)',
+          ),
+          shared: sourced({ 'api.path': 'health' }, '$shared (settings)'),
+        }),
+      ),
+    ).toEqual([]);
+  });
+
   it('an unknown capture on a named request is an error', () => {
     expect(
       variableDiagnostics(file(...producer, 'GET https://x/{{startRun.threadI}}'), testSources()),

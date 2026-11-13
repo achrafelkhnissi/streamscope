@@ -647,3 +647,66 @@ describe('resolveRequest with captures', () => {
     expect(result.ok && result.sensitiveValues).toEqual([]);
   });
 });
+
+describe('dotted variables named after a request', () => {
+  function resolveLast(sources: Partial<VariableSources>, ...lines: string[]): Resolution {
+    const file = parseHttpFile(lines.join('\n'));
+    const request = file.requests.at(-1);
+    if (!request) {
+      throw new Error('expected a request');
+    }
+    return resolveRequest(file, request, testSources({ system: counter(), ...sources }));
+  }
+
+  it('a dotted file variable named after a request resolves to the variable', () => {
+    const result = resolveLast(
+      {},
+      '@api.base = https://api.example.test',
+      '# @name api',
+      'GET {{api.base}}/health',
+    );
+
+    expect(result.ok && result.request.url).toBe('https://api.example.test/health');
+  });
+
+  it('dotted environment and $shared variables named after a request resolve to the variable', () => {
+    const result = resolveLast(
+      {
+        environmentName: 'dev',
+        environment: sourced(
+          { 'api.base': 'https://api.example.test' },
+          'dev environment (settings)',
+        ),
+        shared: sourced({ 'api.path': 'health' }, '$shared (settings)'),
+      },
+      '# @name api',
+      'GET {{api.base}}/{{api.path}}',
+    );
+
+    expect(result.ok && result.request.url).toBe('https://api.example.test/health');
+  });
+
+  it('a declared capture wins over a dotted variable of the same name', () => {
+    const result = resolveLast(
+      {
+        captures: inMemoryCaptures({
+          requests: { 'api.base': captured('https://captured.example.test', false, 'api') },
+        }),
+        environmentName: 'dev',
+        environment: sourced(
+          { 'api.base': 'https://environment.example.test' },
+          'dev environment (settings)',
+        ),
+      },
+      '@api.base = https://file.example.test',
+      '# @name api',
+      '# @capture base = body.base',
+      'GET https://api.example.test/start',
+      '',
+      '###',
+      'GET {{api.base}}/health',
+    );
+
+    expect(result.ok && result.request.url).toBe('https://captured.example.test/health');
+  });
+});

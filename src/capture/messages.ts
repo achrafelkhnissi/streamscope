@@ -1,5 +1,6 @@
 import type { SourceNode } from '../expressions/ast';
 import type { Outcome } from '../expressions/evaluate';
+import { clause } from '../variables/references';
 
 export interface EventCounts {
   events: number;
@@ -72,10 +73,6 @@ function countsText(counts: EventCounts): string {
     parts.push(`${counts.oversize.toLocaleString('en-US')} too large`);
   }
   return `(${parts.join(', ')})`;
-}
-
-function clause(sentence: string): string {
-  return sentence.endsWith('.') ? sentence.slice(0, -1) : sentence;
 }
 
 function eventSubject(outcome: Outcome): Subject {

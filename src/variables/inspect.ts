@@ -1,9 +1,9 @@
 import { JsonPathBudget, type Clock } from '../http-file/captures';
 import type { FileVariable, HttpFile, ParseDiagnostic } from '../http-file/model';
 import { looksLikeCredential, maskedValue } from '../masking/masking';
-import { formatTimeOfDay } from '../response/labels';
+import { formatDate } from './dates';
 import {
-  declaredCaptures,
+  declaredNames,
   jsonPathMessage,
   referenceTarget,
   type ReferenceTarget,
@@ -134,7 +134,12 @@ function provenance({ label, name, provenance: from }: CapturedValue): string {
   ]
     .filter((part) => part !== '')
     .join(' ');
-  return [`${label} › ${name}`, `run ${String(from.runId)}`, where, formatTimeOfDay(from.time)]
+  return [
+    `${label} › ${name}`,
+    `run ${String(from.runId)}`,
+    where,
+    formatDate(new Date(from.time), 'HH:mm:ss', 'local'),
+  ]
     .filter((part) => part !== '')
     .join(' · ');
 }
@@ -144,7 +149,7 @@ function definedName(file: HttpFile, name: string, sources: VariableSources): bo
     file.fileVariables.some((variable) => variable.name === name) ||
     sources.environment.has(name) ||
     sources.shared.has(name) ||
-    declaredCaptures(file).names.has(name) ||
+    declaredNames(file).captures.has(name) ||
     sources.captures.bare(name) !== undefined
   );
 }
@@ -178,11 +183,11 @@ function referenceProblem(
   sources: VariableSources,
   budget: JsonPathBudget,
 ): Problem | undefined {
-  if (!expression.startsWith('$')) {
-    const target = referenceTarget(file, expression);
-    if (target.kind !== 'name') {
-      return requestReferenceProblem(target, expression, budget);
-    }
+  const target = expression.startsWith('$')
+    ? undefined
+    : referenceTarget(file, expression, sources);
+  if (target !== undefined && target.kind !== 'name') {
+    return requestReferenceProblem(target, expression, budget);
   }
   const format = sendTimeFormats[head(expression)];
   if (format) {
@@ -198,7 +203,7 @@ function referenceProblem(
     if (!expression.startsWith('$') && definedName(file, expression, sources)) {
       return undefined;
     }
-    const evaluated = evaluateExpression(file, expression, sources);
+    const evaluated = evaluateExpression(file, expression, sources, target);
     if (evaluated.ok) {
       return undefined;
     }
