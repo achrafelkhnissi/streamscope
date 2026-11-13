@@ -148,12 +148,13 @@ describe('captureLookup', () => {
     expect(lookup.bare('note')).toEqual({
       kind: 'not-run',
       label: 'Summarise',
-      producerName: 'Summarise',
+      producerName: 'file:///agent.http\n#1 POST https://api.example.test/agent/summary',
     });
     expect(lookup.bare('summary')).toEqual({
       kind: 'not-run',
       label: 'POST https://••••••@api.example.test/agent/summary',
-      producerName: 'POST https://••••••@api.example.test/agent/summary',
+      producerName:
+        'file:///agent.http\n#2 POST https://admin:synthetic@api.example.test/agent/summary',
     });
   });
 
@@ -166,9 +167,12 @@ describe('captureLookup', () => {
     );
 
     expect(lookup.request('startRun', 'threadId')).toMatchObject({ kind: 'pending' });
-    for (const producer of [summarise, untitled]) {
+    for (const [index, producer] of [summarise, untitled].entries()) {
       const name = producer.captures[0]?.name ?? '';
-      expect(lookup.bare(name)).toMatchObject({ label: requestLabel(producer) });
+      expect(lookup.bare(name)).toMatchObject({
+        label: requestLabel(producer),
+        producerName: requestKey(documentUri, producer, index + 1),
+      });
     }
   });
 

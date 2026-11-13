@@ -4,7 +4,12 @@ import type { CaptureLookup, CaptureLookupResult } from '../variables/sources';
 import { captureFailedMessage } from './messages';
 import type { CaptureEntry, CaptureRegistry } from './registry';
 
-const producers = new WeakMap<HttpFile, ReadonlyMap<string, HttpRequest>>();
+interface Producer {
+  request: HttpRequest;
+  index: number;
+}
+
+const producers = new WeakMap<HttpFile, ReadonlyMap<string, Producer>>();
 
 export function namedRequestKey(documentUri: string, requestName: string): string {
   return `${documentUri}\n@${requestName}`;
@@ -12,6 +17,11 @@ export function namedRequestKey(documentUri: string, requestName: string): strin
 
 export function responseKey(requestName: string, reference: string): string {
   return `${requestName}\n${reference}`;
+}
+
+function producerIdentity(documentUri: string, { request, index }: Producer): string {
+  const { method, url } = request.requestLine;
+  return request.name ?? `${documentUri}\n#${String(index)} ${method.toUpperCase()} ${url}`;
 }
 
 function producerLabel(request: HttpRequest): string {
@@ -40,16 +50,16 @@ export function lookupResult(entry: CaptureEntry): CaptureLookupResult {
   }
 }
 
-function firstProducers(file: HttpFile): ReadonlyMap<string, HttpRequest> {
+function firstProducers(file: HttpFile): ReadonlyMap<string, Producer> {
   const known = producers.get(file);
   if (known !== undefined) {
     return known;
   }
-  const first = new Map<string, HttpRequest>();
-  for (const request of file.requests) {
+  const first = new Map<string, Producer>();
+  for (const [index, request] of file.requests.entries()) {
     for (const capture of request.captures) {
       if (!first.has(capture.name)) {
-        first.set(capture.name, request);
+        first.set(capture.name, { request, index });
       }
     }
   }
@@ -77,8 +87,11 @@ export function captureLookup(
       if (producer === undefined) {
         return undefined;
       }
-      const label = producerLabel(producer);
-      return { kind: 'not-run', label, producerName: label };
+      return {
+        kind: 'not-run',
+        label: producerLabel(producer.request),
+        producerName: producerIdentity(documentUri, producer),
+      };
     },
     response: (requestName, reference) => responses.get(responseKey(requestName, reference)),
   };

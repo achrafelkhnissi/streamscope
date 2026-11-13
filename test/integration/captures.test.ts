@@ -219,6 +219,38 @@ describe('waiting for captured values', () => {
     );
   });
 
+  it('the Run button sends exactly the producer when two unnamed requests share a title', async () => {
+    const server = await serve();
+    const uri = await open('shared-title.http', [
+      '### Shared title',
+      `GET ${server.url}/first`,
+      '',
+      '### Shared title',
+      '# @capture sharedThread = first(type == "RUN_STARTED").threadId',
+      `GET ${server.url}/stream?seconds=0`,
+      '',
+      '###',
+      `GET ${server.url}/continue?thread={{sharedThread}}`,
+    ]);
+
+    await send(uri, 8);
+    const blocked = await vscode.commands.executeCommand<BlockedActions | undefined>(
+      'streamscope.test.blockedActions',
+    );
+
+    assert.ok(blocked, 'no blocked notification was shown');
+    assert.deepEqual(blocked.actions, ['Run Shared title', 'Go to Line']);
+    const run = blocked.run;
+    assert.ok(run, 'the toast has no Run action');
+    assert.equal(run.arguments[1], 5);
+    await vscode.commands.executeCommand(run.command, ...run.arguments);
+
+    assert.deepEqual(
+      server.requests.map((request) => request.url),
+      ['/stream?seconds=0'],
+    );
+  });
+
   it('a re-send replaces a waiting run', async () => {
     const server = await serve();
     const uri = await open('resend.http', agentFile(server, 'resent', 'delayMs=1500&seconds=0'));

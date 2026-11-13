@@ -156,13 +156,16 @@ function producerAction(
   if (producer === undefined) {
     return undefined;
   }
+  const documentUri = document.uri.toString();
+  const byKey = file.requests.findIndex(
+    (candidate, index) => requestKey(documentUri, candidate, index) === producer,
+  );
   const request =
-    file.requests.find(({ name }) => name === producer) ??
-    file.requests.find((candidate) => requestLabel(candidate) === producer);
+    byKey === -1 ? file.requests.find(({ name }) => name === producer) : file.requests[byKey];
   return request === undefined
     ? undefined
     : {
-        title: `Run ${producer}`,
+        title: `Run ${requestLabel(request)}`,
         command: 'streamscope.sendRequest',
         arguments: [document.uri, request.requestLine.range.start.line],
       };
