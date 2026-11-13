@@ -412,12 +412,12 @@ describe('the former bypasses of the static check', () => {
     ['(?:a{0,2}) 25 times then x', '(?:a{0,2})'.repeat(25) + 'x', '', 'a'.repeat(50)],
     ['(?:\\w|\\d) 30 times then !', String.raw`(?:\w|\d)`.repeat(30) + '!', '', '1'.repeat(30)],
     ['(a|a) 28 times then x', '(a|a)'.repeat(28) + 'x', '', 'a'.repeat(28)],
-    ['ΐ+ΐ+$ with iu', 'ΐ+ΐ+$', 'iu', 'ΐ'.repeat(30000) + '!'],
-    ['\\d+x on 100,000 digits', String.raw`\d+x`, '', '1'.repeat(100000)],
-    ['(a+)+$ on a failing subject', '(a+)+$', '', 'a'.repeat(20000) + '!'],
-    ['(a|aa)*b on a failing subject', '(a|aa)*b', '', 'a'.repeat(20000)],
-    ['\\w+\\s*\\w+x on words', String.raw`\w+\s*\w+x`, '', 'a'.repeat(50000)],
-    ['.*a.*b on a failing subject', '.*a.*b', '', 'a'.repeat(50000)],
+    ['ΐ+ΐ+$ with iu', 'ΐ+ΐ+$', 'iu', 'ΐ'.repeat(20000) + '!'],
+    ['\\d+x on 40,000 digits', String.raw`\d+x`, '', '1'.repeat(40000)],
+    ['(a+)+$ on a failing subject', '(a+)+$', '', 'a'.repeat(15000) + '!'],
+    ['(a|aa)*b on a failing subject', '(a|aa)*b', '', 'a'.repeat(15000)],
+    ['\\w+\\s*\\w+x on words', String.raw`\w+\s*\w+x`, '', 'a'.repeat(30000)],
+    ['.*a.*b on a failing subject', '.*a.*b', '', 'a'.repeat(30000)],
   ];
 
   it.each(hostile)('runs %s in under 50 ms', (_label, pattern, flags, subject) => {
@@ -426,6 +426,17 @@ describe('the former bypasses of the static check', () => {
 
     expect(value).toBe(false);
     expect(ms).toBeLessThan(50);
+  });
+
+  it('answers \\d+x on 100,000 digits at once, as too long, and on a subject at the limit in under 50 ms', () => {
+    const compiled = compile(String.raw`\d+x`);
+    const refused = timed(() => compiled.test('1'.repeat(100000)));
+    const atLimit = timed(() => compiled.test('1'.repeat(longestSubject(compiled))));
+
+    expect(refused.value).toBe('too-long');
+    expect(refused.ms).toBeLessThan(50);
+    expect(atLimit.value).toBe(false);
+    expect(atLimit.ms).toBeLessThan(50);
   });
 
   it('gives the same answer as JavaScript on the hostile patterns with short subjects', () => {
@@ -481,7 +492,7 @@ describe('limits', () => {
       }
     }
 
-    expect(low).toBeGreaterThan(100_000);
+    expect(low).toBe(47_619);
     expect(pattern.test('b'.repeat(low))).toBe(false);
     expect(pattern.test('b'.repeat(low + 1))).toBe('too-long');
     expect(pattern.firstMatch('b'.repeat(low + 1))).toBe('too-long');
@@ -570,12 +581,83 @@ describe('cost at the work limit', () => {
   );
 
   it('weighs an atom that needs case folding or a property as 8 instructions', () => {
-    expect(longestSubject(compile('[^a]'))).toBe(142_857);
-    expect(longestSubject(compile('[^a]', 'i'))).toBe(71_428);
-    expect(longestSubject(compile(String.raw`\p{L}`, 'u'))).toBe(71_428);
-    expect(longestSubject(compile(String.raw`\w`, 'iu'))).toBe(71_428);
-    expect(longestSubject(compile(String.raw`\w`, 'i'))).toBe(142_857);
+    expect(longestSubject(compile('[^a]'))).toBe(47_619);
+    expect(longestSubject(compile('[^a]', 'i'))).toBe(35_714);
+    expect(longestSubject(compile(String.raw`\p{L}`, 'u'))).toBe(35_714);
+    expect(longestSubject(compile(String.raw`\w`, 'iu'))).toBe(35_714);
+    expect(longestSubject(compile(String.raw`\w`, 'i'))).toBe(47_619);
   });
+});
+
+describe('nested groups and repeats that copy the capture slots', () => {
+  function nested(inner: string, levels: number): string {
+    let pattern = inner;
+    for (let level = 0; level < levels; level += 1) {
+      pattern = `(?:${pattern}){1}`;
+    }
+    return pattern;
+  }
+
+  it('emits one clear for any number of {1} repeats directly around a group', () => {
+    const once = longestSubject(compile('(?:(a)){1}x'));
+
+    expect(longestSubject(compile(nested('(a)', 3) + 'x'))).toBe(once);
+    expect(longestSubject(compile(nested('(a)', 69) + 'x'))).toBe(once);
+    expect(longestSubject(compile(nested('(a)?', 8) + 'x'))).toBe(
+      longestSubject(compile('(?:(a)?){1}x')),
+    );
+  });
+
+  it('weighs a save and a clear as 8 instructions in the work limit', () => {
+    expect(longestSubject(compile('(a)x'))).toBe(26_315);
+    expect(longestSubject(compile('(?:(a)){1}x'))).toBe(21_739);
+    expect(longestSubject(compile('(?:(a)){2}x'))).toBe(14_084);
+  });
+
+  it('keeps a clear at the start of every iteration of a loop, whatever surrounds it', () => {
+    const patterns = [
+      '(?:(?:(a)|b)+)',
+      '(?:(?:(a)|b)+){1}',
+      '(?:(?:(?:(a)|b)+){1}){1}',
+      '(?:(?:(a)|b)+)+',
+      '(?:(?:(?:(a)|b)*){1}){2}',
+      '(?:(?:(a)|b)*){1}',
+      '(?:(?:(?:(a)|b)){1}){1}',
+      '(?:(?:(a)|b){2,}){1}',
+      '(?:(?:(a)|b)+?){1}',
+    ];
+
+    for (const pattern of patterns) {
+      for (const subject of ['ab', 'ba', 'abb', 'bab', 'aab', 'b', '']) {
+        expect(compile(pattern).firstMatch(subject), `${pattern} on ${subject}`).toStrictEqual(
+          expected(pattern, '', subject),
+        );
+      }
+    }
+  });
+
+  const families: [label: string, pattern: string][] = [
+    ['69 nested {1} around (a), repeated 27 times, then x', `(?:${nested('(a)', 69)}){27}x`],
+    [
+      '8 nested {1} around (a)?, repeated to the instruction limit, then x',
+      `(?:${nested('(a)?', 8)}){${String(largestCount((n) => `(?:${nested('(a)?', 8)}){${String(n)}}x`))}}x`,
+    ],
+    ['(?:(a)?){332}x', '(?:(a)?){332}x'],
+    ['(?:(?:(a)?){5}){64}x', '(?:(?:(a)?){5}){64}x'],
+  ];
+
+  it.each(families)(
+    'runs firstMatch for %s at the work limit in under 100 ms',
+    (_label, pattern) => {
+      const compiled = compile(pattern);
+      const subject = 'a'.repeat(longestSubject(compiled));
+
+      const { value, ms } = timed(() => compiled.firstMatch(subject));
+
+      expect(value).toBeUndefined();
+      expect(ms).toBeLessThan(100);
+    },
+  );
 });
 
 describe('the case-folding cache', () => {

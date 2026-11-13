@@ -873,7 +873,7 @@ class Emitter {
   private readonly xs: number[] = [];
   private readonly ys: number[] = [];
   private readonly tests: (CharTest | undefined)[] = [];
-  private extraWeight = 0;
+  private weight = 0;
   private blame: { offset: number; length: number };
 
   constructor(patternLength: number) {
@@ -895,7 +895,7 @@ class Emitter {
       ys: Int32Array.from(this.ys),
       tests: this.tests,
       size: this.ops.length,
-      weight: this.ops.length + this.extraWeight,
+      weight: this.weight,
       hasGroup: groups > 0,
     };
   }
@@ -904,6 +904,7 @@ class Emitter {
     if (this.ops.length >= maxInstructions) {
       throw new PatternError(messages.tooLarge, this.blame.offset, this.blame.length);
     }
+    this.weight += op === opSave || op === opClear ? heavyWeight : 1;
     this.ops.push(op);
     this.xs.push(x);
     this.ys.push(y);
@@ -918,7 +919,7 @@ class Emitter {
       case 'atom':
         this.push(opChar, 0, 0, node.test);
         if (node.heavy) {
-          this.extraWeight += heavyWeight - 1;
+          this.weight += heavyWeight - 1;
         }
         return;
       case 'assert':
@@ -972,7 +973,7 @@ class Emitter {
     if (max === Infinity && min > 0) {
       this.copies(node, min - 1);
       const loop = this.ops.length;
-      this.iteration(node);
+      this.iteration(node, true);
       const split = this.push(opSplit);
       this.xs[split] = greedy ? loop : this.ops.length;
       this.ys[split] = greedy ? this.ops.length : loop;
@@ -1007,8 +1008,9 @@ class Emitter {
     }
   }
 
-  private iteration(node: RepeatNode): void {
-    if (node.firstGroup <= 1 && node.lastGroup >= 1) {
+  private iteration(node: RepeatNode, loopTarget = false): void {
+    const clears = node.firstGroup <= 1 && node.lastGroup >= 1;
+    if (clears && (loopTarget || this.ops.at(-1) !== opClear)) {
       this.push(opClear, 2, 3);
     }
     this.emit(node.body);
