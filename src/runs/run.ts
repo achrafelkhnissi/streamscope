@@ -336,6 +336,7 @@ export function startRun(
         contentType: head === undefined ? undefined : contentTypeOf(head),
         bodyLength: state.bodyLength,
         bodyFile,
+        signal: controller.signal,
         readBody,
         readReply,
       };

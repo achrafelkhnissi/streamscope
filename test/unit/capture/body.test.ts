@@ -1,8 +1,15 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { evaluateBodyExpressions, evaluateJobs, type BodyJob } from '../../../src/capture/body';
+import {
+  captureChildren,
+  childTimeLimitMs,
+  evaluateBodyExpressions,
+  evaluateJobs,
+  type BodyJob,
+  type BodySubject,
+} from '../../../src/capture/body';
 import type { CaptureDefinition } from '../../../src/capture/tracker';
 import { parseExpression } from '../../../src/expressions/parse';
 import type { Outcome } from '../../../src/expressions/evaluate';
@@ -422,6 +429,147 @@ describe('evaluateBodyExpressions', () => {
     expect(
       await sent({ kind: 'body', bytes: jsonBody(2 * mebibyte), contentType: 'application/json' }),
     ).toEqual({ kind: 'body', fields: ['bytes', 'contentType', 'kind'], bytes: true });
+    await expectNoChild();
+  });
+});
+
+describe('capture children', () => {
+  const files = useCaptureWorker();
+  const subject: BodySubject = {
+    kind: 'body',
+    bytes: encoder.encode('{"a":1}'),
+    contentType: 'application/json',
+  };
+  const cancelled = { present: false, reason: 'evaluating the capture was cancelled' };
+  const answering = (name: string, delayMs: number): string =>
+    files().script(
+      name,
+      [
+        "process.once('message', (message) => setTimeout(() => {",
+        '  for (const job of message.jobs) {',
+        "    process.send({ name: job.name, outcome: { present: true, value: 'answered', path: '' } });",
+        '  }',
+        `}, ${String(delayMs)}));`,
+      ].join('\n'),
+    );
+  const hanging = (): string => files().script('hanging', 'setInterval(() => undefined, 1000);');
+
+  it('the default limit is 5,000 ms', () => {
+    expect(childTimeLimitMs).toBe(5000);
+  });
+
+  it('runs at most two children at once', async () => {
+    const slow = answering('slow', 150);
+    let running = 0;
+    let waiting = 0;
+    let processes = 0;
+    const sampler = setInterval(() => {
+      running = Math.max(running, captureChildren.running);
+      waiting = Math.max(waiting, captureChildren.waiting);
+      processes = Math.max(
+        processes,
+        process.getActiveResourcesInfo().filter((resource) => resource === 'ProcessWrap').length,
+      );
+    }, 2);
+
+    try {
+      const answers = await Promise.all(
+        Array.from({ length: 5 }, (_, at) =>
+          evaluateJobs(subject, [job(`id${String(at)}`, 'jsonpath("$.a")')], slow),
+        ),
+      );
+
+      expect(answers.map((answer) => answer[0]?.[1])).toEqual(
+        Array.from({ length: 5 }, () => ({ present: true, value: 'answered', path: '' })),
+      );
+    } finally {
+      clearInterval(sampler);
+    }
+
+    expect(running).toBe(2);
+    expect(waiting).toBe(3);
+    expect(processes).toBeLessThanOrEqual(2);
+    expect(captureChildren.running).toBe(0);
+    expect(captureChildren.waiting).toBe(0);
+    await expectNoChild();
+  });
+
+  it('a queued job starts when a running one ends, and its limit starts with its child', async () => {
+    const quick = answering('quick', 0);
+    const started = performance.now();
+    const blockers = [0, 1].map(() =>
+      evaluateJobs(subject, [job('blocked', 'jsonpath("$.a")')], hanging(), { timeLimitMs: 300 }),
+    );
+    const queued = evaluateJobs(subject, [job('queued', 'jsonpath("$.a")')], quick, {
+      timeLimitMs: 300,
+    });
+
+    expect(captureChildren.waiting).toBe(1);
+    const [answer] = await queued;
+    const waited = performance.now() - started;
+    await Promise.all(blockers);
+
+    expect(answer?.[1]).toEqual({ present: true, value: 'answered', path: '' });
+    expect(waited).toBeGreaterThanOrEqual(290);
+    await expectNoChild();
+  });
+
+  it('a cancelled queued job never starts a child', async () => {
+    const folder = mkdtempSync(path.join(tmpdir(), 'streamscope-children-'));
+    const marker = path.join(folder, 'started');
+    const marking = files().script(
+      'marking',
+      `require('node:fs').writeFileSync(${JSON.stringify(marker)}, ''); setInterval(() => undefined, 1000);`,
+    );
+    const controller = new AbortController();
+    const aborted = new AbortController();
+    aborted.abort();
+
+    try {
+      const started = performance.now();
+      const blockers = [0, 1].map(() =>
+        evaluateJobs(subject, [job('blocked', 'jsonpath("$.a")')], hanging(), {
+          timeLimitMs: 300,
+        }),
+      );
+      const queued = evaluateJobs(subject, [job('queued', 'jsonpath("$.a")')], marking, {
+        signal: controller.signal,
+      });
+      const never = evaluateJobs(subject, [job('never', 'jsonpath("$.a")')], marking, {
+        signal: aborted.signal,
+      });
+      expect(captureChildren.waiting).toBe(1);
+      controller.abort();
+      const [answer] = await queued;
+      const [refused] = await never;
+
+      expect(performance.now() - started).toBeLessThan(250);
+      expect(answer?.[1]).toEqual(cancelled);
+      expect(refused?.[1]).toEqual(cancelled);
+      expect(captureChildren.waiting).toBe(0);
+      await Promise.all(blockers);
+      expect(existsSync(marker)).toBe(false);
+      await expectNoChild();
+    } finally {
+      rmSync(folder, { recursive: true, force: true });
+    }
+  });
+
+  it('kills the child of a running job whose signal aborts', async () => {
+    const controller = new AbortController();
+    const started = performance.now();
+    const running = evaluateJobs(subject, [job('query', 'jsonpath("$.a")')], hanging(), {
+      signal: controller.signal,
+    });
+    setTimeout(() => {
+      controller.abort();
+    }, 100);
+
+    const [answer] = await running;
+
+    expect(performance.now() - started).toBeLessThan(2000);
+    expect(answer?.[1]).toEqual(cancelled);
+    expect(captureChildren.running).toBe(0);
     await expectNoChild();
   });
 });

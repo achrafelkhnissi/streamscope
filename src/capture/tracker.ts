@@ -357,7 +357,9 @@ export class CaptureTracker {
       text: tracked.definition.text,
       known: this.known(tracked, phase),
     }));
-    for (const [job, outcome] of await evaluateJobs(subject, jobs, this.workerFile)) {
+    for (const [job, outcome] of await evaluateJobs(subject, jobs, this.workerFile, {
+      signal: end.signal,
+    })) {
       this.settle(job.tracked, outcome);
     }
   }

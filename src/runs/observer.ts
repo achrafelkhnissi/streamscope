@@ -9,6 +9,7 @@ export type RunEnd =
       contentType: string | undefined;
       bodyLength: number;
       bodyFile: () => Promise<{ path: string; length: number } | undefined>;
+      signal: AbortSignal;
       readBody: (maxBytes: number) => Promise<Uint8Array | undefined>;
       readReply: () => Promise<string | undefined>;
     }

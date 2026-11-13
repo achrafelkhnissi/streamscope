@@ -22,6 +22,7 @@ export const eventStreamBodyReason =
 export const jsonPathLimitReason = 'jsonpath() took too long or used too much memory';
 export const bodyLimitReason = 'evaluating the body took too long or used too much memory';
 export const bodyUnavailableReason = 'the body is no longer available';
+export const evaluationCancelledReason = 'evaluating the capture was cancelled';
 export const replyUnavailableReason = 'the reply text is no longer available';
 export const noHeadersReason = 'the response has no headers';
 export const responsePendingReason = 'the response has not ended yet';

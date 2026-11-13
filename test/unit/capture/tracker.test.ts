@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -100,6 +100,7 @@ function completed(
     contentType: options.contentType,
     bodyLength: bytes?.length ?? 0,
     bodyFile: () => Promise.resolve(undefined),
+    signal: new AbortController().signal,
     readBody: (maxBytes) => Promise.resolve((bytes ?? new Uint8Array()).subarray(0, maxBytes)),
     readReply: () => Promise.resolve(options.reply ?? ''),
   };
@@ -112,6 +113,7 @@ function fromFile(file: { path: string; length: number }): RunEnd {
     contentType: 'application/json',
     bodyLength: file.length,
     bodyFile: () => Promise.resolve(file),
+    signal: new AbortController().signal,
     readBody: () => Promise.reject(new Error('the host read the body')),
     readReply: () => Promise.resolve(''),
   };
@@ -831,6 +833,32 @@ describe('CaptureTracker', () => {
     expect(run.results.get('id')).toEqual(resolved('a-1', undefined, 'items[1].id'));
   });
 
+  it('starts no child for a run that was released before its captures were evaluated', async () => {
+    const folder = mkdtempSync(path.join(tmpdir(), 'streamscope-released-'));
+    spillRoots.push(folder);
+    const marker = path.join(folder, 'started');
+    const marking = files().script(
+      'marking',
+      `require('node:fs').writeFileSync(${JSON.stringify(marker)}, ''); setInterval(() => undefined, 1000);`,
+    );
+    const run = harness(
+      [capture('query', 'jsonpath("$.items[0]")'), capture('code', 'status')],
+      marking,
+    );
+    run.tracker.head(head('application/json'));
+    const released = new AbortController();
+    released.abort();
+
+    await run.tracker.end({
+      ...completed('json', { body: '{"items":[1]}', contentType: 'application/json' }),
+      signal: released.signal,
+    } as RunEnd);
+
+    expect(run.results.get('query')).toEqual(failed('evaluating the capture was cancelled'));
+    expect(run.results.get('code')).toEqual(resolved('200', undefined, ''));
+    expect(existsSync(marker)).toBe(false);
+  });
+
   it('an out-of-memory in the child fails the capture and leaves the host running', async () => {
     const body = encoder.encode(
       `[${'{},'.repeat(Math.floor(16_000_000 / 3))}12345678901234567890]`,
@@ -878,6 +906,7 @@ describe('CaptureTracker', () => {
       contentType: 'application/json',
       bodyLength: 7,
       bodyFile: () => Promise.resolve(undefined),
+      signal: new AbortController().signal,
       readBody: () => Promise.reject(new Error('synthetic read failure')),
       readReply: () => Promise.reject(new Error('synthetic read failure')),
     });
@@ -887,6 +916,7 @@ describe('CaptureTracker', () => {
       contentType: 'application/json',
       bodyLength: 7,
       bodyFile: () => Promise.resolve(undefined),
+      signal: new AbortController().signal,
       readBody: () => Promise.resolve(undefined),
       readReply: () => Promise.resolve(undefined),
     });
@@ -896,6 +926,7 @@ describe('CaptureTracker', () => {
       contentType: 'application/x-ndjson',
       bodyLength: 0,
       bodyFile: () => Promise.resolve(undefined),
+      signal: new AbortController().signal,
       readBody: () => Promise.reject(new Error('synthetic read failure')),
       readReply: () => Promise.reject(new Error('synthetic read failure')),
     });

@@ -8,6 +8,7 @@ import {
   bodyLimitReason,
   bodyUnavailableReason,
   checkSourceReason,
+  evaluationCancelledReason,
   eventStreamBodyReason,
   jsonPathLimitReason,
   missingQueryReason,
@@ -25,6 +26,50 @@ export type BodySubject =
 
 export interface EvaluationOptions {
   timeLimitMs?: number;
+  signal?: AbortSignal;
+}
+
+export class ChildSlots {
+  private active = 0;
+  private readonly queue: (() => void)[] = [];
+
+  constructor(private readonly limit: number) {}
+
+  get running(): number {
+    return this.active;
+  }
+
+  get waiting(): number {
+    return this.queue.length;
+  }
+
+  take(signal: AbortSignal | undefined): Promise<boolean> {
+    if (signal?.aborted === true) {
+      return Promise.resolve(false);
+    }
+    if (this.active < this.limit) {
+      this.active += 1;
+      return Promise.resolve(true);
+    }
+    return new Promise((resolve) => {
+      const start = (): void => {
+        signal?.removeEventListener('abort', leave);
+        this.active += 1;
+        resolve(true);
+      };
+      const leave = (): void => {
+        this.queue.splice(this.queue.indexOf(start), 1);
+        resolve(false);
+      };
+      this.queue.push(start);
+      signal?.addEventListener('abort', leave, { once: true });
+    });
+  }
+
+  give(): void {
+    this.active -= 1;
+    this.queue.shift()?.();
+  }
 }
 
 export interface BodyJob {
@@ -46,7 +91,10 @@ export interface WorkerReply {
 
 export const inlineBodyLimit = 1_048_576;
 
-const childTimeLimitMs = 5000;
+export const childTimeLimitMs = 5000;
+export const maxCaptureChildren = 2;
+export const captureChildren = new ChildSlots(maxCaptureChildren);
+
 const childHeapLimit = '--max-old-space-size=1024';
 const noneKnown: ReadonlyMap<string, Outcome> = new Map();
 
@@ -190,19 +238,31 @@ export function runJobs(
   }
 }
 
-function limitOutcome(job: BodyJob): Outcome {
+function unansweredOutcome(job: BodyJob, cancelled: boolean): Outcome {
+  if (cancelled) {
+    return { present: false, reason: evaluationCancelledReason };
+  }
   return {
     present: false,
     reason: hasJsonPath(job.expression) ? jsonPathLimitReason : bodyLimitReason,
   };
 }
 
-function runInChild(
+interface ChildAnswers {
+  answers: Map<string, Outcome>;
+  cancelled: boolean;
+}
+
+async function runInChild(
   subject: BodySubject,
   jobs: readonly BodyJob[],
   workerFile: string,
-  timeLimitMs: number,
-): Promise<Map<string, Outcome>> {
+  options: EvaluationOptions,
+): Promise<ChildAnswers> {
+  const { signal } = options;
+  if (!(await captureChildren.take(signal))) {
+    return { answers: new Map(), cancelled: true };
+  }
   const ordered = jobs.toSorted(
     (left, right) => Number(hasJsonPath(left.expression)) - Number(hasJsonPath(right.expression)),
   );
@@ -214,14 +274,16 @@ function runInChild(
     const answers = new Map<string, Outcome>();
     let child: ChildProcess | undefined;
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const closed = (): void => {
-      clearTimeout(timer);
-      child?.removeAllListeners();
-      resolve(answers);
-    };
     const stop = (): void => {
       clearTimeout(timer);
       child?.kill('SIGKILL');
+    };
+    const closed = (): void => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', stop);
+      child?.removeAllListeners();
+      captureChildren.give();
+      resolve({ answers, cancelled: signal?.aborted === true });
     };
     try {
       const started = fork(workerFile, [], {
@@ -244,7 +306,8 @@ function runInChild(
         }
       });
       started.on('close', closed);
-      timer = setTimeout(stop, timeLimitMs);
+      signal?.addEventListener('abort', stop, { once: true });
+      timer = setTimeout(stop, options.timeLimitMs ?? childTimeLimitMs);
       started.send(request, (error: Error | null) => {
         if (error !== null) {
           stop();
@@ -275,17 +338,15 @@ export async function evaluateJobs<Job extends BodyJob>(
     (away ? offThread : inline).push(job);
   }
   const answering =
-    offThread.length === 0
-      ? undefined
-      : runInChild(subject, offThread, workerFile, options.timeLimitMs ?? childTimeLimitMs);
+    offThread.length === 0 ? undefined : runInChild(subject, offThread, workerFile, options);
   const outcomes = new Map<string, Outcome>();
   runJobs(subject, inline, (name, outcome) => {
     outcomes.set(name, outcome);
   });
-  const answered = (await answering) ?? new Map<string, Outcome>();
+  const { answers, cancelled } = (await answering) ?? { answers: new Map(), cancelled: false };
   return jobs.map((job) => [
     job,
-    outcomes.get(job.name) ?? answered.get(job.name) ?? limitOutcome(job),
+    outcomes.get(job.name) ?? answers.get(job.name) ?? unansweredOutcome(job, cancelled),
   ]);
 }
 

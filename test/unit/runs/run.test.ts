@@ -1359,7 +1359,9 @@ describe('the observer sees head, events and exactly one end on every exit path'
     expect(file?.length).toBe(body.length);
     expect(readFileSync(file?.path ?? '').equals(body)).toBe(true);
     expect(await without.bodyFile()).toBeUndefined();
+    expect(end.signal.aborted).toBe(false);
     await run.release();
+    expect(end.signal.aborted).toBe(true);
     expect(await end.bodyFile()).toBeUndefined();
   });
 
