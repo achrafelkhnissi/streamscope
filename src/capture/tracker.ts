@@ -398,7 +398,7 @@ export class CaptureTracker {
       return;
     }
     const item: ConditionItem = { value: event.value, sse: event.sse, malformed: false };
-    const budget = this.budget.enter();
+    const budget = this.budget.enter(this.watching.length);
     let inlineBytes = 0;
     const away: Tracked[] = [];
     let settled: [Tracked, Inserted][] | undefined;

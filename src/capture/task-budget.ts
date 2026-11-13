@@ -7,6 +7,8 @@ export interface TaskClock {
 }
 
 export const taskBudgetMs = 30;
+export const evaluationAllowanceMs = 0.005;
+export const taskEvaluationCapMs = 200;
 
 const realClock: TaskClock = {
   now: () => performance.now(),
@@ -17,25 +19,35 @@ const realClock: TaskClock = {
 
 export class TaskBudget {
   private budget: WorkBudget | undefined;
-  private spentMs = 0;
+  private countedMs = 0;
+  private evaluatedMs = 0;
+  private freeMs = 0;
+  private checked = false;
   private since: number | undefined;
 
   constructor(private readonly clock: TaskClock = realClock) {}
 
-  enter(): WorkBudget {
+  enter(evaluations = 1): WorkBudget {
+    this.freeMs = evaluationAllowanceMs * evaluations;
+    this.checked = false;
     this.since = this.clock.now();
     return this.budget ?? this.start();
   }
 
   leave(): void {
-    this.elapsed();
+    this.lap(this.checked);
     this.since = undefined;
   }
 
   private start(): WorkBudget {
-    this.spentMs = 0;
+    this.countedMs = 0;
+    this.evaluatedMs = 0;
     const budget = new WorkBudget({
-      expired: () => this.elapsed() > taskBudgetMs,
+      expired: () => {
+        this.lap(true);
+        this.checked = true;
+        return this.countedMs > taskBudgetMs || this.evaluatedMs > taskEvaluationCapMs;
+      },
       reason: hostWorkReason,
     });
     this.budget = budget;
@@ -45,13 +57,18 @@ export class TaskBudget {
     return budget;
   }
 
-  private elapsed(): number {
-    if (this.since !== undefined) {
-      const now = this.clock.now();
-      this.spentMs += now - this.since;
-      this.since = now;
+  private lap(counts: boolean): void {
+    if (this.since === undefined) {
+      return;
     }
-    return this.spentMs;
+    const now = this.clock.now();
+    const elapsed = now - this.since;
+    this.evaluatedMs += elapsed;
+    if (counts) {
+      this.countedMs += Math.max(0, elapsed - this.freeMs);
+    }
+    this.freeMs = Math.max(0, this.freeMs - elapsed);
+    this.since = now;
   }
 }
 
