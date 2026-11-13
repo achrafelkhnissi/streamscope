@@ -28,6 +28,8 @@ interface Options {
   status?: string;
   head?: ResponseHead | undefined;
   done?: Promise<unknown>;
+  headArrived?: Promise<void>;
+  failure?: string;
   body?: string | undefined;
   bodyLength?: number;
   file?: { path: string; length: number };
@@ -37,11 +39,16 @@ interface Options {
 
 function referenced(options: Options): ReferencedRun {
   const bytes = options.body === undefined ? undefined : encoder.encode(options.body);
+  const current = 'head' in options ? options.head : head();
   return {
     label: options.label ?? 'login',
     status: options.status ?? 'completed',
-    head: 'head' in options ? options.head : head(),
+    head: current,
     done: options.done ?? Promise.resolve(),
+    headArrived:
+      options.headArrived ??
+      (current === undefined ? new Promise<void>(() => undefined) : Promise.resolve()),
+    failure: () => options.failure,
     bodyLength: options.bodyLength ?? bytes?.length ?? 0,
     readBody: (maxBytes) => {
       options.reads?.push(maxBytes);
@@ -164,24 +171,53 @@ describe('evaluateResponseReference', () => {
     await expect(body).resolves.toStrictEqual({ ok: true, text: '{"token":"token-1"}' });
   });
 
-  it('a header reference waits for the run when the headers have not arrived', async () => {
-    let finish = (): void => undefined;
-    const done = new Promise<void>((resolve) => {
-      finish = resolve;
+  it('a header reference resolves when the head arrives, before the run ends', async () => {
+    let arrive = (): void => undefined;
+    const headArrived = new Promise<void>((resolve) => {
+      arrive = resolve;
     });
     const live: { head: ResponseHead | undefined } = { head: undefined };
     const run: ReferencedRun = {
-      ...referenced({ body: '{}', done, workerFile: missingWorker }),
+      ...referenced({
+        body: '{}',
+        done: new Promise(() => undefined),
+        headArrived,
+        workerFile: missingWorker,
+      }),
       get head() {
         return live.head;
       },
     };
+    let settled = false;
 
-    const result = evaluateResponseReference(run, 'response.headers.X-Request-Id');
+    const result = evaluateResponseReference(run, 'response.headers.X-Request-Id').then((value) => {
+      settled = true;
+      return value;
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(settled).toBe(false);
     live.head = head([['X-Request-Id', 'request-1']]);
-    finish();
+    arrive();
 
     await expect(result).resolves.toStrictEqual({ ok: true, text: 'request-1' });
+  });
+
+  it('a header reference to a run that ends without a head fails with how it ended', async () => {
+    await expect(
+      evaluateResponseReference(
+        referenced({
+          status: 'failed',
+          head: undefined,
+          failure: 'connect ECONNREFUSED 127.0.0.1:9.',
+          workerFile: missingWorker,
+        }),
+        'response.headers.X-Request-Id',
+      ),
+    ).resolves.toStrictEqual({
+      ok: false,
+      reason:
+        'login failed before response.headers.X-Request-Id resolved: connect ECONNREFUSED 127.0.0.1:9',
+    });
   });
 
   it('rejects request.* and XPath with the decision 10 messages', async () => {
@@ -297,7 +333,7 @@ describe('evaluateResponseReference', () => {
     ).resolves.toStrictEqual(unavailable);
   });
 
-  it('fails a reference to a run that did not complete with its status', async () => {
+  it('fails a reference to a run that did not complete with its status and failure text', async () => {
     const reference = 'response.body.$.token';
 
     await expect(
@@ -311,24 +347,47 @@ describe('evaluateResponseReference', () => {
     });
     await expect(
       evaluateResponseReference(
-        referenced({ status: 'failed', head: undefined, workerFile: missingWorker }),
-        'response.headers.X-Request-Id',
+        referenced({
+          status: 'failed',
+          failure: 'The response body is larger than 256 MiB, so Streamscope stopped reading it.',
+          workerFile: missingWorker,
+        }),
+        reference,
       ),
     ).resolves.toStrictEqual({
       ok: false,
-      reason: 'login failed before response.headers.X-Request-Id resolved',
+      reason:
+        'login failed before response.body.$.token resolved: The response body is larger than 256 MiB, so Streamscope stopped reading it',
     });
     await expect(
       evaluateResponseReference(
-        referenced({ status: 'blocked', head: undefined, workerFile: missingWorker }),
+        referenced({
+          status: 'blocked',
+          head: undefined,
+          failure: '`{{token}}` is not defined in this file.',
+          workerFile: missingWorker,
+        }),
         reference,
       ),
-    ).resolves.toStrictEqual({ ok: false, reason: 'login was not sent' });
+    ).resolves.toStrictEqual({
+      ok: false,
+      reason: 'login was not sent: `{{token}}` is not defined in this file',
+    });
+    await expect(
+      evaluateResponseReference(
+        referenced({ status: 'failed', head: undefined, workerFile: missingWorker }),
+        reference,
+      ),
+    ).resolves.toStrictEqual({
+      ok: false,
+      reason: 'login failed before response.body.$.token resolved',
+    });
     await expect(
       evaluateResponseReference(
         referenced({
           status: 'failed',
           head: head([['X-Request-Id', 'request-1']]),
+          failure: 'socket hang up',
           workerFile: missingWorker,
         }),
         'response.headers.X-Request-Id',

@@ -22,6 +22,8 @@ export interface ReferencedRun {
   readonly status: string;
   readonly head: ResponseHead | undefined;
   readonly done: Promise<unknown>;
+  readonly headArrived: Promise<void>;
+  failure(): string | undefined;
   readonly bodyLength: number;
   readBody(maxBytes: number): Promise<Uint8Array | undefined>;
   bodyFile(): Promise<{ path: string; length: number } | undefined>;
@@ -85,9 +87,9 @@ function endedReason(run: ReferencedRun, reference: string): string | undefined 
     case 'cancelled':
       return cancelledReason(run.label, reference);
     case 'blocked':
-      return notSentReason(run.label);
+      return notSentReason(run.label, run.failure());
     default:
-      return failedReason(run.label, reference);
+      return failedReason(run.label, reference, run.failure());
   }
 }
 
@@ -148,7 +150,7 @@ export async function evaluateResponseReference(
   }
   if (translation.part === 'head') {
     if (run.head === undefined) {
-      await run.done;
+      await Promise.race([run.headArrived, run.done]);
     }
     const head = run.head;
     if (head === undefined) {
