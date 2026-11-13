@@ -275,8 +275,11 @@ export class Lexer {
     }
     this.position = start + source.length;
     const number = Number(source);
-    const value =
-      integerSource.test(source) && !Number.isSafeInteger(number) ? BigInt(source) : number;
+    const integer = integerSource.test(source);
+    if (!integer && !Number.isFinite(number)) {
+      return this.error('The number is too large.', start, start + source.length);
+    }
+    const value = integer && !Number.isSafeInteger(number) ? BigInt(source) : number;
     return { kind: 'number', value, span: { start, end: this.position } };
   }
 

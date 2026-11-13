@@ -1,358 +1,681 @@
 import { describe, expect, it } from 'vitest';
-import { checkPattern } from '../../../src/expressions/regex';
+import { checkFlags, compilePattern, type CompiledPattern } from '../../../src/expressions/regex';
 
-const nestedRepetition =
-  'This regular expression can take very long on some inputs, because a repeated group contains another repetition. Rewrite it without nested repetition.';
-const repeatedAlternatives =
-  'This regular expression can take very long on some inputs, because a repeated group contains alternatives. Rewrite it without alternatives inside a repeated group.';
-const backreference =
-  'This regular expression uses a backreference, which can take very long on some inputs. Rewrite it without one.';
-const lookaround =
-  'This regular expression uses lookahead or lookbehind, which can take very long on some inputs. Rewrite it without lookaround.';
-const adjacentRepetitions =
-  'This regular expression can take very long on some inputs, because two repetitions next to each other can match the same text. Separate them with a character only one of them matches.';
-const tooLong = 'A regular expression is at most 500 characters.';
+interface Found {
+  match: string;
+  groups: (string | undefined)[];
+}
 
-describe('checkPattern', () => {
-  it('accepts plain patterns', () => {
-    const patterns = [
-      '',
-      'abc',
-      String.raw`id=(\d+)`,
-      String.raw`"token":"([^"]+)"`,
-      '^[a-z]+$',
-      '(foo|bar)',
-      '(foo|bar)?',
-      '(?:foo|bar)baz',
-      String.raw`\d+(\.\d+)?`,
-      '(a+)?',
-      '(a+)?b',
-      '(?:ab)+',
-      '(ab)*c',
-      String.raw`(\d{3}-)+`,
-      'a+b*c?d{2,3}',
-      'a+?b*?',
-      String.raw`\(a+\)+`,
-      '[(]+',
-      '[(a+)+]',
-      String.raw`[\]]+`,
-      '(?<name>a)+',
-      String.raw`\0`,
-      String.raw`[\1]`,
-      'a{,2}',
+function compile(pattern: string, flags = ''): CompiledPattern {
+  const result = compilePattern(pattern, flags);
+  if (!result.ok) {
+    throw new Error(`${pattern} did not compile: ${result.message} at ${String(result.offset)}`);
+  }
+  return result.pattern;
+}
+
+function rejection(
+  pattern: string,
+  flags = '',
+): { message: string; offset: number; length: number } {
+  const result = compilePattern(pattern, flags);
+  if (result.ok) {
+    throw new Error(`${pattern} compiled`);
+  }
+  return { message: result.message, offset: result.offset, length: result.length };
+}
+
+function expected(pattern: string, flags: string, subject: string): Found | undefined {
+  const found = new RegExp(pattern, flags).exec(subject);
+  return found === null ? undefined : { match: found[0], groups: found.slice(1) };
+}
+
+function timed<T>(run: () => T): { value: T; ms: number } {
+  const start = performance.now();
+  const value = run();
+  return { value, ms: performance.now() - start };
+}
+
+const common = [
+  '',
+  'a',
+  'abc',
+  'aaa',
+  'abab',
+  'xabcx',
+  'a\nb\nc',
+  'ABC',
+  '123',
+  'a1b2c3',
+  'foo bar',
+  '😀a',
+];
+
+const commonPatterns = [
+  'a',
+  'abc',
+  'a.c',
+  'a|b|c',
+  'ab|abc',
+  '^a',
+  'c$',
+  '^abc$',
+  'a*',
+  'a+',
+  'a?',
+  'a*?',
+  'a+?',
+  'a??',
+  'a{2}',
+  'a{2,}',
+  'a{1,2}',
+  'a{1,2}?',
+  'a{0}',
+  '(a)',
+  '(a)(b)',
+  '(a|b)+',
+  '(a|b)*?c',
+  '(?:a|b)+',
+  '(a+)(a*)',
+  '(a+?)(a*)',
+  '(a*)(a+)',
+  '([a-c]+)',
+  '[^a]',
+  '[^a-c]+',
+  '[a-c]',
+  '[abc]{2}',
+  String.raw`\d`,
+  String.raw`\d+`,
+  String.raw`\D+`,
+  String.raw`\w+`,
+  String.raw`\W+`,
+  String.raw`\s`,
+  String.raw`\S+`,
+  String.raw`\b`,
+  String.raw`\bfoo\b`,
+  String.raw`\Ba`,
+  '(?:)',
+  '()',
+  '(a)|(b)',
+  '(a)?',
+  '(a)*',
+  '((a)|(b))+',
+  'a|',
+  '|a',
+  '.',
+  '.+',
+  '.*?b',
+];
+
+const specific: [pattern: string, flags: string, subjects: string[]][] = [
+  ['<.+?>', '', ['<a><b>', '<<a>>', '']],
+  ['<.+>', '', ['<a><b>', '<<a>>', '']],
+  ['"(.*?)"', '', ['"a" "b"', '""', '"']],
+  [String.raw`(\d+?)(\d*)`, '', ['12345', 'a1']],
+  ['a|ab', '', ['ab', 'ba']],
+  ['(a|ab)(c|bcd)(d*)', '', ['abcd', 'abc']],
+  ['(?:a|ab)c', '', ['abc', 'ac']],
+  ['(a|ab|abc)', '', ['abc', 'ab']],
+  ['(?:(a)|b)*', '', ['ab', 'ba', 'aab', '']],
+  ['(?:(a)|(b))+', '', ['ab', 'ba', 'aabb']],
+  ['(z)((a+)?(b+)?(c))*', '', ['zaacbbbcac', 'z', 'zc']],
+  ['(a)*', '', ['aaa', 'b']],
+  ['(?:(a)|b){2}', '', ['ab', 'ba', 'aa', 'a']],
+  ['((a)|b){1,3}', '', ['abab', 'b', 'ba']],
+  ['(a(b)?){2}', '', ['abab', 'aab', 'ab']],
+  [String.raw`(?<year>\d{4})-(?<month>\d{2})`, '', ['2024-05-17', '24-5']],
+  ['(?<a>x)(?<b>y)?', '', ['x', 'xy', 'y']],
+  ['(ab){2}', '', ['abab', 'ab', 'ababab']],
+  ['(ab){1,3}', '', ['ababab', 'ab', 'abababab']],
+  ['(ab){1,3}?', '', ['ababab']],
+  ['(a|b){2,3}c', '', ['abc', 'ababc', 'bbbc', 'ac']],
+  [String.raw`\d{3}-\d{4}`, '', ['555-1234 x', '55-1234']],
+  ['(a{1,2}){2}', '', ['aaa', 'aaaa', 'a']],
+  ['a{2,3}?', '', ['aaaa', 'a']],
+  ['(a?){3}', '', ['aa', 'aaaa', '']],
+  ['(a*){2}', '', ['aaa', '', 'b']],
+  ['(a*)(b*)', '', ['aabb', 'bb', '']],
+  ['(?:a*){3}b', '', ['aab', 'b', 'a']],
+  ['(a+)+b', '', ['aaab', 'aaa']],
+  ['(a+|b+)*c', '', ['aabbc', 'abab']],
+  ['(a|b)*c|d', '', ['abc', 'd', 'ab']],
+  ['^a', 'm', ['a\na', 'b\na', 'ba']],
+  ['a$', 'm', ['a\na', 'a\nb', 'ba']],
+  ['^$', 'm', ['', 'a\n\nb']],
+  ['^', 'm', ['a\nb']],
+  ['$', 'm', ['a\nb']],
+  ['^b', '', ['a\nb']],
+  [String.raw`\r$`, 'm', ['a\r\nb']],
+  ['^.$', 'm', ['a b', 'ab\ncd']],
+  ['a.b', '', ['a\nb', 'a b', 'a\rb', 'axb']],
+  ['a.b', 's', ['a\nb', 'a b']],
+  ['.+', '', ['a\nb']],
+  ['.+', 's', ['a\nb']],
+  ['^.$', 'su', ['😀', 'ab']],
+  ['abc', 'i', ['ABC', 'aBc', 'xABCx', 'ab']],
+  ['[a-c]+', 'i', ['ABCabc', 'xyz']],
+  ['[^a]', 'i', ['A', 'b', 'aA']],
+  ['é+', 'i', ['ÉÉé', 'e']],
+  ['ß', 'i', ['SS', 'ß', 'ẞ']],
+  ['k', 'iu', ['K', 'K']],
+  ['k', 'i', ['K', 'K']],
+  ['ſ', 'i', ['s', 'S']],
+  ['ſ', 'iu', ['s', 'S']],
+  [String.raw`\w+`, 'iu', ['ſ', 'K', 's', '!']],
+  [String.raw`\w+`, 'i', ['ſ', 'K', 's']],
+  [String.raw`\W+`, 'iu', ['S', 'K', '!']],
+  ['ΐ+ΐ+$', 'iu', ['ΐΐ', 'ΐ', 'ΐΐ', 'ΐ!']],
+  ['ΐ', 'i', ['ΐ', 'ΐ']],
+  ['ΐ', 'iu', ['ΐ', 'ΐ']],
+  ['σ', 'i', ['Σ', 'ς']],
+  ['σ', 'iu', ['Σ', 'ς']],
+  ['[σ]', 'iu', ['ς', 'Σ']],
+  [String.raw`K`, 'iu', ['k', 'K']],
+  [String.raw`K`, 'i', ['k', 'K']],
+  [String.raw`[a-z]+`, 'iu', ['Kſ']],
+  [String.raw`\p{L}+`, 'u', ['héllo wörld', '日本語', '123', '']],
+  [String.raw`\P{L}+`, 'u', ['ab12cd', 'abc']],
+  [String.raw`\p{Lu}\p{Ll}+`, 'u', ['Hello world', 'hello']],
+  [String.raw`[\p{L}\d]+`, 'u', ['ab12!', '!']],
+  [String.raw`[^\p{L}]+`, 'u', ['ab12!x', 'abc']],
+  [String.raw`\p{Script=Greek}+`, 'u', ['αβγabc', 'abc']],
+  [String.raw`\p{L}+`, 'iu', ['Éé']],
+  [String.raw`\p{Lu}`, 'iu', ['a', 'A', '1']],
+  [String.raw`\p{L}`, '', ['p{L}', 'L']],
+  ['^.$', 'u', ['😀', 'a', '😀😀']],
+  ['^.$', '', ['😀', 'a']],
+  ['^..$', '', ['😀']],
+  ['😀+', 'u', ['😀😀', 'a😀']],
+  ['[😀]', 'u', ['😀', 'a']],
+  ['[😀]', '', ['😀', '\ud83d', '\ude00']],
+  [String.raw`\u{1F600}`, 'u', ['😀', 'a']],
+  [String.raw`\u{1F600}`, '', ['u{1F600}']],
+  [String.raw`😀`, 'u', ['😀']],
+  [String.raw`😀`, '', ['😀']],
+  ['[^a]', 'u', ['😀', 'a']],
+  ['.', 'u', ['😀x', 'x']],
+  [String.raw`\S`, 'u', ['😀']],
+  [String.raw`^\W$`, 'u', ['😀']],
+  [String.raw`[\u{1F600}-\u{1F64F}]+`, 'u', ['😀😁x', 'x']],
+  ['a.b', 'u', ['a😀b', 'ab']],
+  ['a.b', '', ['a😀b', 'ab']],
+  ['a..b', '', ['a😀b']],
+  ['.', 'u', ['\ud83d', '\ude00']],
+  ['^.$', 'u', ['\ud83dx']],
+  ['^.*$', 'u', ['a😀\ude00']],
+  [String.raw`\x41`, '', ['A', 'a']],
+  [String.raw`A`, '', ['A']],
+  [String.raw`\cJ`, '', ['\n', 'J']],
+  [String.raw`\0`, '', ['\0', '0']],
+  [String.raw`[\n\r\t]+`, '', ['\t\n', 'x']],
+  [String.raw`\f\v`, '', ['\f\v']],
+  [String.raw`\/`, '', ['/', 'a']],
+  [String.raw`\-`, '', ['-']],
+  [String.raw`[\b]`, '', ['\b', 'b']],
+  [String.raw`\.`, '', ['.', 'a']],
+  ['a{,2}', '', ['a{,2}', 'a']],
+  ['a{', '', ['a{', 'a']],
+  ['a}', '', ['a}']],
+  [']', '', [']']],
+  ['[a-]+', '', ['a-', 'b']],
+  ['[-a]+', '', ['a-', 'b']],
+  [String.raw`[\]]`, '', [']']],
+  [String.raw`[\\]`, '', ['\\']],
+  ['[^]', '', ['a', '']],
+  ['[]', '', ['a', '']],
+  [String.raw`[\d-x]+`, '', ['1-x', 'a']],
+  [String.raw`[a\-z]+`, '', ['a-z', 'b']],
+  [String.raw`\a`, '', ['a']],
+  [String.raw`\_`, '', ['_']],
+  [String.raw`[\w-]+`, '', ['a-b_c', '!']],
+  [String.raw`\u{41}`, '', ['u'.repeat(41), 'A']],
+  ['x{2}{', '', ['xx{']],
+  ['[a-c-e]+', '', ['a-e', 'abcde']],
+  ['"threadId":"([^"]+)"', '', ['{"threadId":"t-1","x":1}', '{"threadId":""}']],
+  [String.raw`id=(\d+)`, '', ['id=42&x=1', 'id=', 'x']],
+  [String.raw`^\s*(\w+)\s*=\s*(.*?)\s*$`, '', ['  key = value  ', 'k=', 'k', '=v']],
+  [String.raw`(\d+)\.(\d+)\.(\d+)`, '', ['v1.22.333-rc', '1.2']],
+  [String.raw`\b(?:GET|POST)\b`, '', ['a POST b', 'POSTS', 'GET']],
+  [String.raw`[^@\s]+@[^@\s]+\.[a-z]{2,}`, '', ['x a@b.co y', 'a@b', '@b.co']],
+  [String.raw`(\w+)@(\w+)\.com`, '', ['me@site.com', 'me@site.org']],
+  [String.raw`^(\d{3})-(\d{4})$`, '', ['555-1234', '555-12345']],
+  ['(?:^|,)([^,]*)', '', ['a,b,,c', '', ',']],
+  ['((a)(b))c', '', ['abc', 'ab']],
+  ['(a(b(c)))', '', ['abc']],
+  ['(?:(a)|(b)|(c))+', '', ['abc', 'cba']],
+  ['', '', ['', 'a']],
+  ['^$', '', ['', 'a']],
+  ['x*', '', ['aaa', 'xaa', '']],
+  ['(a*)b', '', ['aab', 'b', 'a']],
+  ['(?:a|b)*?c', '', ['abc', 'c']],
+  ['a+?$', '', ['aaa', 'aab']],
+  ['(a+?)(b+?)', '', ['aabb']],
+  ['(.)(.)(.)', '', ['abcd', 'ab']],
+  [String.raw`(\w)\s(\w)`, '', ['a b', 'ab']],
+  ['a|b|', '', ['c', 'b']],
+  ['(?:|a)b', '', ['ab', 'b']],
+  ['(a|)b', '', ['ab', 'b', 'xb']],
+  ['((((((((((a))))))))))', '', ['a']],
+];
+
+describe('compilePattern', () => {
+  it('agrees with JavaScript on the table of patterns and subjects', () => {
+    const cases: [string, string, string][] = [];
+    for (const pattern of commonPatterns) {
+      for (const flags of ['', 'i', 'u', 'm', 's']) {
+        for (const subject of common) {
+          cases.push([pattern, flags, subject]);
+        }
+      }
+    }
+    for (const [pattern, flags, subjects] of specific) {
+      for (const subject of subjects) {
+        cases.push([pattern, flags, subject]);
+      }
+    }
+
+    expect(cases.length).toBeGreaterThanOrEqual(200);
+
+    for (const [pattern, flags, subject] of cases) {
+      const label = `/${pattern}/${flags} on ${JSON.stringify(subject)}`;
+      const compiled = compile(pattern, flags);
+      const want = expected(pattern, flags, subject);
+
+      expect(compiled.firstMatch(subject), label).toStrictEqual(want);
+      expect(compiled.test(subject), label).toBe(want !== undefined);
+    }
+  });
+
+  it('keeps the match and every group of the famous specification example', () => {
+    expect(compile('(z)((a+)?(b+)?(c))*').firstMatch('zaacbbbcac')).toStrictEqual({
+      match: 'zaacbbbcac',
+      groups: ['z', 'ac', 'a', undefined, 'c'],
+    });
+  });
+
+  it('returns the groups of a failed optional group as undefined', () => {
+    expect(compile('(a)|(b)').firstMatch('b')).toStrictEqual({
+      match: 'b',
+      groups: [undefined, 'b'],
+    });
+    expect(compile('(a)?b').firstMatch('b')).toStrictEqual({ match: 'b', groups: [undefined] });
+  });
+
+  it('reuses one compiled pattern for many subjects and both methods', () => {
+    const pattern = compile(String.raw`(\d+)-(\d+)`);
+
+    expect(pattern.test('1-2')).toBe(true);
+    expect(pattern.firstMatch('x 10-20 y')).toStrictEqual({ match: '10-20', groups: ['10', '20'] });
+    expect(pattern.test('1-')).toBe(false);
+    expect(pattern.firstMatch('1-')).toBeUndefined();
+    expect(pattern.firstMatch('3-4')).toStrictEqual({ match: '3-4', groups: ['3', '4'] });
+  });
+
+  it('never matches between the halves of a surrogate pair with u', () => {
+    expect(compile('\\B', 'u').test('a😀a')).toBe(false);
+    expect(compile('\\B', '').firstMatch('a😀a')).toStrictEqual({ match: '', groups: [] });
+  });
+
+  it('matches against a lone surrogate and an astral character with and without u', () => {
+    expect(compile('^.$', 'u').test('\ud83d')).toBe(true);
+    expect(compile('^.$').test('😀')).toBe(false);
+    expect(compile('^..$').test('😀')).toBe(true);
+  });
+});
+
+describe('the former bypasses of the static check', () => {
+  it('rejects counts that do not fit in the program', () => {
+    for (const pattern of [
+      'a{1,99999}a{1,99999}$',
+      String.raw`\d{1,99999}\d{1,99999}x`,
+      '.{0,50000}.{0,50000}x',
+    ]) {
+      expect(rejection(pattern).message, pattern).toBe(
+        'The repetition count is too large for this regular expression.',
+      );
+    }
+  });
+
+  it('rejects an inline modifier group', () => {
+    expect(rejection('a+(?i:A+)$')).toStrictEqual({
+      message:
+        'Inline modifiers such as `(?i:…)` are not supported in regular expressions. Put the flag after the closing slash instead.',
+      offset: 2,
+      length: 4,
+    });
+  });
+
+  const hostile: [label: string, pattern: string, flags: string, subject: string][] = [
+    ['.? thirty times then x', '.?'.repeat(30) + 'x', '', 'a'.repeat(30)],
+    ['(?:a{0,2}) 25 times then x', '(?:a{0,2})'.repeat(25) + 'x', '', 'a'.repeat(50)],
+    ['(?:\\w|\\d) 30 times then !', String.raw`(?:\w|\d)`.repeat(30) + '!', '', '1'.repeat(30)],
+    ['(a|a) 28 times then x', '(a|a)'.repeat(28) + 'x', '', 'a'.repeat(28)],
+    ['ΐ+ΐ+$ with iu', 'ΐ+ΐ+$', 'iu', 'ΐ'.repeat(50000) + '!'],
+    ['\\d+x on 100,000 digits', String.raw`\d+x`, '', '1'.repeat(100000)],
+    ['(a+)+$ on a failing subject', '(a+)+$', '', 'a'.repeat(20000) + '!'],
+    ['(a|aa)*b on a failing subject', '(a|aa)*b', '', 'a'.repeat(20000)],
+    ['\\w+\\s*\\w+x on words', String.raw`\w+\s*\w+x`, '', 'a'.repeat(50000)],
+    ['.*a.*b on a failing subject', '.*a.*b', '', 'a'.repeat(50000)],
+  ];
+
+  it.each(hostile)('runs %s in under 50 ms', (_label, pattern, flags, subject) => {
+    const compiled = compile(pattern, flags);
+    const { value, ms } = timed(() => compiled.test(subject));
+
+    expect(value).toBe(false);
+    expect(ms).toBeLessThan(50);
+  });
+
+  it('gives the same answer as JavaScript on the hostile patterns with short subjects', () => {
+    const short: [string, string, string][] = [
+      ['.?'.repeat(6) + 'x', '', 'aaaaaa'],
+      ['(?:a{0,2})'.repeat(4) + 'x', '', 'aaaaaaaa'],
+      [String.raw`(?:\w|\d)`.repeat(5) + '!', '', '11111'],
+      ['(a|a)'.repeat(5) + 'x', '', 'aaaaa'],
+      ['ΐ+ΐ+$', 'iu', 'ΐΐΐ!'],
+      ['(a+)+$', '', 'aaaa!'],
+      ['(a|aa)*b', '', 'aaaa'],
+      ['(a|aa)*b', '', 'aaaab'],
+    ];
+
+    for (const [pattern, flags, subject] of short) {
+      expect(compile(pattern, flags).firstMatch(subject), pattern).toStrictEqual(
+        expected(pattern, flags, subject),
+      );
+    }
+  });
+});
+
+describe('limits', () => {
+  it('accepts a pattern of exactly 500 characters and rejects 501', () => {
+    expect(compilePattern('a'.repeat(500), '').ok).toBe(true);
+    expect(rejection('a'.repeat(501))).toStrictEqual({
+      message: 'A regular expression is at most 500 characters.',
+      offset: 500,
+      length: 1,
+    });
+  });
+
+  it('rejects a program of more than 2,000 instructions', () => {
+    expect(rejection('(?:a|b){1,1000}c')).toStrictEqual({
+      message: 'This regular expression is too large.',
+      offset: 0,
+      length: 15,
+    });
+    expect(compilePattern('a{1,900}', '').ok).toBe(true);
+    expect(rejection('a{1,1100}').message).toBe('This regular expression is too large.');
+  });
+
+  it('returns too-long when the subject length times the program size is over 1,000,000', () => {
+    const pattern = compile('a');
+    let low = 1;
+    let high = 1_000_000;
+    while (low < high) {
+      const middle = Math.ceil((low + high) / 2);
+      if (pattern.test('b'.repeat(middle)) === 'too-long') {
+        high = middle - 1;
+      } else {
+        low = middle;
+      }
+    }
+
+    expect(low).toBeGreaterThan(100_000);
+    expect(pattern.test('b'.repeat(low))).toBe(false);
+    expect(pattern.test('b'.repeat(low + 1))).toBe('too-long');
+    expect(pattern.firstMatch('b'.repeat(low + 1))).toBe('too-long');
+    expect(pattern.firstMatch('b'.repeat(low))).toBeUndefined();
+  });
+
+  function longestSubject(pattern: CompiledPattern): number {
+    let low = 1;
+    let high = 1_000_000;
+    while (low < high) {
+      const middle = Math.ceil((low + high) / 2);
+      if (pattern.test('a'.repeat(middle)) === 'too-long') {
+        high = middle - 1;
+      } else {
+        low = middle;
+      }
+    }
+    return low;
+  }
+
+  function largestCount(build: (count: number) => string): number {
+    let count = 1;
+    while (compilePattern(build(count + 1), '').ok) {
+      count += 1;
+    }
+    return count;
+  }
+
+  it('finishes a program at the instruction limit on a subject at the work limit within 100 ms', () => {
+    const count = largestCount((n) => `a{1,${String(n)}}b`);
+    const pattern = compile(`a{1,${String(count)}}b`);
+    const length = longestSubject(pattern);
+    const subject = 'a'.repeat(length);
+
+    expect(count).toBeGreaterThan(900);
+    expect(length * 2000).toBeGreaterThan(900_000);
+
+    const { value, ms } = timed(() => pattern.test(subject));
+    const firstMatch = timed(() => pattern.firstMatch(subject));
+
+    expect(value).toBe(false);
+    expect(firstMatch.value).toBeUndefined();
+    expect(ms).toBeLessThan(100);
+    expect(firstMatch.ms).toBeLessThan(100);
+  });
+
+  it('finishes the same on a capture-heavy program at the limit', () => {
+    const count = largestCount((n) => `(?:(a)|(b)){1,${String(n)}}c`);
+    const pattern = compile(`(?:(a)|(b)){1,${String(count)}}c`);
+    const length = longestSubject(pattern);
+    const subject = 'ab'.repeat(Math.floor(length / 2));
+
+    const { value, ms } = timed(() => pattern.firstMatch(subject));
+
+    expect(value).toBeUndefined();
+    expect(ms).toBeLessThan(100);
+  });
+
+  it('finishes a program full of case-folded atoms at the limit within 100 ms', () => {
+    const count = largestCount((n) => `(?:é|ΐ){1,${String(n)}}x`);
+    const pattern = compile(`(?:é|ΐ){1,${String(count)}}x`, 'iu');
+    const subject = 'éΐ'.repeat(Math.floor(longestSubject(pattern) / 2));
+
+    const { value, ms } = timed(() => pattern.test(subject));
+
+    expect(value).toBe(false);
+    expect(ms).toBeLessThan(100);
+  });
+});
+
+describe('rejected syntax', () => {
+  const backreference = 'Backreferences such as `\\1` are not supported in regular expressions.';
+  const lookahead = 'Lookahead such as `(?=…)` is not supported in regular expressions.';
+  const lookbehind = 'Lookbehind such as `(?<=…)` is not supported in regular expressions.';
+  const modifier =
+    'Inline modifiers such as `(?i:…)` are not supported in regular expressions. Put the flag after the closing slash instead.';
+  const empty =
+    'A repeated group that can match the empty string is not supported in regular expressions.';
+  const octal = 'Octal escapes are not supported in regular expressions.';
+  const invalidEscape = 'Invalid escape sequence.';
+  const property = 'This Unicode property escape or character class is not valid.';
+  const nothing = 'Nothing to repeat.';
+
+  const table: [pattern: string, flags: string, message: string, offset: number, length: number][] =
+    [
+      [String.raw`\1`, '', backreference, 0, 2],
+      [String.raw`(a)\2`, '', backreference, 3, 2],
+      [String.raw`a\9`, '', backreference, 1, 2],
+      [
+        String.raw`\k<name>`,
+        '',
+        'Named backreferences such as `\\k<name>` are not supported in regular expressions.',
+        0,
+        8,
+      ],
+      [
+        String.raw`(?<n>a)\k<n>`,
+        '',
+        'Named backreferences such as `\\k<name>` are not supported in regular expressions.',
+        7,
+        5,
+      ],
+      ['(?=a)', '', lookahead, 0, 3],
+      ['a(?!b)', '', lookahead, 1, 3],
+      ['(?<=a)', '', lookbehind, 0, 4],
+      ['(?<!a)', '', lookbehind, 0, 4],
+      ['a+(?i:A+)$', '', modifier, 2, 4],
+      ['(?-i:a)', '', modifier, 0, 5],
+      ['(?i)a', '', modifier, 0, 3],
+      ['(?#c)', '', 'This group syntax is not supported in regular expressions.', 0, 3],
+      ['(?', '', 'This group syntax is not supported in regular expressions.', 0, 2],
+      ['(a*)*', '', empty, 0, 5],
+      ['(?:a|)+', '', empty, 0, 7],
+      ['(a?)?', '', empty, 0, 5],
+      ['x(\\b)*', '', empty, 1, 5],
+      ['(a*)+b', '', empty, 0, 5],
+      ['(?:a*|b){2,}', '', empty, 0, 12],
+      ['(a*){1,3}', '', empty, 0, 9],
+      ['(?:)*', '', empty, 0, 5],
+      ['(?:^)?', '', empty, 0, 6],
+      [String.raw`(?:\b)*`, '', empty, 0, 7],
+      ['a{3,2}', '', 'The numbers in a quantifier are out of order.', 1, 5],
+      ['a{99999}', '', 'The repetition count is too large for this regular expression.', 1, 7],
+      ['a{1,3000}', '', 'The repetition count is too large for this regular expression.', 1, 8],
+      [
+        'a{99999999999999999999}',
+        '',
+        'The repetition count is too large for this regular expression.',
+        1,
+        22,
+      ],
+      ['(', '', 'Unterminated group.', 0, 1],
+      ['(a', '', 'Unterminated group.', 0, 1],
+      ['(?:a', '', 'Unterminated group.', 0, 1],
+      ['a(b(c)', '', 'Unterminated group.', 1, 1],
+      [')', '', 'Unmatched `)`.', 0, 1],
+      ['a)', '', 'Unmatched `)`.', 1, 1],
+      ['[a', '', 'Unterminated character class.', 0, 1],
+      ['[', '', 'Unterminated character class.', 0, 1],
+      ['[^', '', 'Unterminated character class.', 0, 1],
+      ['[b-a]', '', 'The range in the character class is out of order.', 1, 3],
+      [
+        String.raw`[\u{1F600}-\u{1F5FF}]`,
+        'u',
+        'The range in the character class is out of order.',
+        1,
+        19,
+      ],
+      ['*a', '', nothing, 0, 1],
+      ['+', '', nothing, 0, 1],
+      ['?', '', nothing, 0, 1],
+      ['a**', '', nothing, 2, 1],
+      ['a+*', '', nothing, 2, 1],
+      ['a{2}{3}', '', nothing, 4, 3],
+      ['{2}', '', nothing, 0, 3],
+      ['^*', '', nothing, 1, 1],
+      ['$+', '', nothing, 1, 1],
+      [String.raw`\b+`, '', nothing, 2, 1],
+      [String.raw`\B{2}`, '', nothing, 2, 3],
+      ['a|*', '', nothing, 2, 1],
+      ['(*a)', '', nothing, 1, 1],
+      ['a+??', '', nothing, 3, 1],
+      [String.raw`\a`, 'u', invalidEscape, 0, 2],
+      [String.raw`\-`, 'u', invalidEscape, 0, 2],
+      [String.raw`\x4`, 'u', invalidEscape, 0, 2],
+      [String.raw`\u12`, 'u', invalidEscape, 0, 2],
+      [String.raw`\u{110000}`, 'u', invalidEscape, 0, 10],
+      ['a{', 'u', 'Incomplete quantifier.', 1, 1],
+      ['{', 'u', 'Unexpected `{`.', 0, 1],
+      ['}', 'u', 'Unexpected `}`.', 0, 1],
+      [']', 'u', 'Unexpected `]`.', 0, 1],
+      [String.raw`\p{Nope}`, 'u', property, 0, 8],
+      [String.raw`[\p{Nope}]`, 'u', property, 0, 10],
+      [String.raw`a\p`, 'u', property, 1, 2],
+      [String.raw`[a-\d]`, 'u', 'Invalid character class range.', 1, 4],
+      [String.raw`[\d-a]`, 'u', 'Invalid character class range.', 1, 4],
+      [String.raw`\c`, '', 'A control escape needs a letter after `\\c`.', 0, 2],
+      [String.raw`\c1`, '', 'A control escape needs a letter after `\\c`.', 0, 2],
+      [String.raw`\01`, '', octal, 0, 2],
+      [String.raw`[\1]`, '', octal, 1, 2],
+      [
+        String.raw`[\k]`,
+        '',
+        'Named backreferences such as `\\k<name>` are not supported in regular expressions.',
+        1,
+        2,
+      ],
+      ['\\', '', 'A backslash at the end of the regular expression has nothing to escape.', 0, 1],
+      ['a\\', '', 'A backslash at the end of the regular expression has nothing to escape.', 1, 1],
+      ['(?<a>x)(?<a>y)', '', 'Duplicate group name `a`.', 10, 1],
+      ['(?<1a>x)', '', 'Invalid group name.', 3, 2],
+      ['(?<>x)', '', 'Invalid group name.', 3, 0],
+      ['(?<a', '', 'Unterminated group name.', 0, 3],
+      ['(?<a-b>x)', '', 'Invalid group name.', 3, 3],
+    ];
+
+  it.each(table)(
+    'rejects %s with flags "%s" at its offset',
+    (pattern, flags, message, offset, length) => {
+      expect(rejection(pattern, flags)).toStrictEqual({ message, offset, length });
+    },
+  );
+
+  it('reports an invalid flag with the flag message', () => {
+    expect(rejection('a', 'g')).toStrictEqual({
+      message: 'Unsupported regular expression flag `g`. Supported flags are i, m, s and u.',
+      offset: 0,
+      length: 1,
+    });
+    expect(rejection('a', 'ii').message).toBe('Duplicate regular expression flag `i`.');
+  });
+
+  it('treats a group around an assertion as a group, not as an assertion', () => {
+    expect(compilePattern('(?:^)a', '').ok).toBe(true);
+    expect(compilePattern('(?:\\b)a', '').ok).toBe(true);
+    expect(compilePattern('(?:^){2}a', '').ok).toBe(true);
+    expect(rejection('^?').message).toBe('Nothing to repeat.');
+  });
+
+  it('accepts a repeated group that can match the empty string only when its count is exact', () => {
+    expect(compilePattern('(a*){3}', '').ok).toBe(true);
+    expect(compilePattern('(?:){2}', '').ok).toBe(true);
+    expect(compilePattern('(\\b){2}', '').ok).toBe(true);
+  });
+
+  it('accepts what JavaScript accepts without the u flag', () => {
+    for (const pattern of [
       'a{',
-      '(a)(b)(c)',
-      '((a)(b))+',
-      '(a|b)',
-      'a|b',
-    ];
-
-    for (const pattern of patterns) {
-      expect(checkPattern(pattern, ''), pattern).toBeUndefined();
+      'a{,2}',
+      'a}',
+      ']',
+      String.raw`\a`,
+      String.raw`\-`,
+      String.raw`\p{L}`,
+    ]) {
+      expect(compilePattern(pattern, '').ok, pattern).toBe(true);
     }
   });
+});
 
-  it('accepts patterns with escapes that take braces', () => {
-    expect(checkPattern(String.raw`\u{41}+`, 'u')).toBeUndefined();
-    expect(checkPattern(String.raw`\p{L}+`, 'u')).toBeUndefined();
-    expect(checkPattern(String.raw`(\p{L}\u{1F600})+`, 'u')).toBeUndefined();
-  });
-
-  it('accepts every flag combination of i, m, s and u', () => {
+describe('checkFlags', () => {
+  it('accepts every combination of i, m, s and u and rejects the rest', () => {
     for (const flags of ['', 'i', 'm', 's', 'u', 'imsu', 'usmi']) {
-      expect(checkPattern('a+', flags), flags).toBeUndefined();
+      expect(checkFlags(flags), flags).toBeUndefined();
     }
-  });
-
-  it('accepts a pattern of exactly 500 characters', () => {
-    expect(checkPattern('a'.repeat(500), '')).toBeUndefined();
-  });
-
-  it('rejects a pattern over 500 characters', () => {
-    expect(checkPattern('a'.repeat(501), '')).toBe(tooLong);
-  });
-
-  it('rejects backreferences, lookaround, nested quantified groups and patterns over 500 characters', () => {
-    const rejected: [string, RegExp][] = [
-      ['(a+)+$', /repeated group contains another repetition/],
-      ['(a|aa)*b', /repeated group contains alternatives/],
-      [String.raw`(\w+\s?)*$`, /repeated group contains another repetition/],
-      ['(?=x)', /lookahead or lookbehind/],
-      [String.raw`\1`, /backreference/],
-      ['a'.repeat(501), /at most 500 characters/],
-    ];
-
-    for (const [pattern, problem] of rejected) {
-      expect(checkPattern(pattern, ''), pattern).toMatch(problem);
-    }
-  });
-
-  it('rejects backreferences', () => {
-    const patterns = [
-      String.raw`\1`,
-      String.raw`(a)\1`,
-      String.raw`(a)(b)\2`,
-      String.raw`(a)\9`,
-      String.raw`(?<x>a)\k<x>`,
-      String.raw`a\10`,
-      String.raw`[a](b)\1`,
-    ];
-
-    for (const pattern of patterns) {
-      expect(checkPattern(pattern, ''), pattern).toBe(backreference);
-    }
-  });
-
-  it('rejects lookaround', () => {
-    const patterns = ['(?=x)', '(?!x)', '(?<=x)', '(?<!x)', 'a(?=b)', '(a(?!b))', '(?:a(?=b))+'];
-
-    for (const pattern of patterns) {
-      expect(checkPattern(pattern, ''), pattern).toBe(lookaround);
-    }
-  });
-
-  it('rejects a repeated group that contains another repetition', () => {
-    const patterns = [
-      '(a+)+$',
-      '(a*)*',
-      '(a+)*',
-      '(a*)+',
-      '(.*)*',
-      '(a+)+',
-      '(a?)+',
-      String.raw`(\w+\s?)*$`,
-      '(a+b)+c',
-      '(a+){2,}',
-      '(a+){2}',
-      '(a+){1,5}',
-      '(a{1,5})+',
-      '(a{2,})+',
-      '(a+)+?',
-      '(?:a+)+',
-      '(?<x>a+)+',
-      '((a+)b)*',
-      '(b(a+))+',
-      '((a)+)+',
-      '(a+|b)+',
-      '(x+y+)+z',
-      '((a|b)?c)+',
-    ];
-
-    for (const pattern of patterns) {
-      expect(checkPattern(pattern, ''), pattern).toBe(nestedRepetition);
-    }
-  });
-
-  it('rejects a repeated group that contains alternatives', () => {
-    const patterns = ['(a|aa)*b', '(a|aa)+', '(a|b){2,}', '(foo|bar)+', '(?:a|b)*', '((a|b)c)+'];
-
-    for (const pattern of patterns) {
-      expect(checkPattern(pattern, ''), pattern).toBe(repeatedAlternatives);
-    }
-  });
-
-  it('rejects two repetitions next to each other that can match the same text', () => {
-    const patterns = [
-      String.raw`\d+\d+x`,
-      'a*a*b',
-      String.raw`\w+\s*\w+`,
-      '.*a.*b',
-      'a+a+',
-      'a+a*',
-      'a*a+',
-      'a{2,}a{3,}',
-      'a{2,}a+',
-      String.raw`\d+x?\d+`,
-      String.raw`\d+x*\d+`,
-      String.raw`\d+x{0,3}\d+`,
-      String.raw`\d+\.?\d*`,
-      String.raw`\d+(\.\d+)?\d+`,
-      String.raw`\d+\s*\w+`,
-      String.raw`\w+\d\w+`,
-      String.raw`.+@.+`,
-      String.raw`.+\s+.+`,
-      String.raw`\S+\S+`,
-      String.raw`\D+\w+`,
-      String.raw`\W+\S+`,
-      '[a-z]+[a-m]+',
-      '[a-z]+[x-z]*',
-      '[^a]+[^b]+',
-      '[^a-z]+[^0-9]+',
-      String.raw`[\d.]+[\d.]+`,
-      String.raw`[a\-z]+z+`,
-      String.raw`[\w-]+[a-c]+`,
-      String.raw`\x41+\x41+`,
-      String.raw`\x41+A+`,
-      String.raw`A+A+`,
-      String.raw`\t+\x09+`,
-      String.raw`\w+_+`,
-      String.raw`(\d+)(\d+)`,
-      String.raw`(?:\d+)\s*(\d+)`,
-      String.raw`(\d+)(?:\.(\d+))?(\d+)`,
-      '(a+|b)a+',
-      '(a+)(b?)a+',
-      'a+(b?)a+',
-      '((a+))a+',
-      '(a+)?a+',
-      'x*(a+|b)a*',
-      'a+(?:b|a?)a+',
-      'a+a{0}a+',
-      'a+b{0}a+',
-      'a+b{0,0}a+',
-      'a+(b)?a+',
-      'a+(?:bc)?a+',
-      'a+(?:b|c)?a+',
-      'a+(b){0,1}a+',
-      String.raw`\d+(?:-)?\d+`,
-      '(ab)+(cd)+',
-      'x+(yz)+',
-      '(yz)+x+',
-      '(ab)+c+',
-      '(ab)*c(de)*',
-      '(yz)*(yz)*',
-      String.raw`a+\b\s*a+`,
-      String.raw`^a+$a+`,
-      String.raw`\w+\s*[\w-]+`,
-      'a+b*c*a+',
-      'a+b?a+',
-    ];
-
-    for (const pattern of patterns) {
-      expect(checkPattern(pattern, ''), pattern).toBe(adjacentRepetitions);
-    }
-  });
-
-  it('accepts repetitions that cannot match the same text', () => {
-    const patterns = [
-      String.raw`\w+@\w+\.\w+`,
-      String.raw`\d+-\d+`,
-      '[a-z]+[0-9]+',
-      '"[^"]*"',
-      String.raw`\w+\s+\w+`,
-      String.raw`\w+\s*=\s*\w+`,
-      String.raw`\S+\s+\S+`,
-      String.raw`\s*,\s*`,
-      String.raw`\s*\w+\s*`,
-      '[^,]+,[^,]+',
-      '[^@]+@[^@]+',
-      String.raw`\D+\d+`,
-      String.raw`\W+\w+`,
-      String.raw`\d+\D+`,
-      '[^a-z]+[a-z]+',
-      '[a-z]+[A-Z]+',
-      '[a-c]+[x-z]*',
-      String.raw`[\d.]+,[\d.]+`,
-      String.raw`[\w-]+\.[\w-]+`,
-      String.raw`\x41+\x42+`,
-      String.raw`\n+\r+`,
-      String.raw`A+B+`,
-      String.raw`\d+\d{3}`,
-      String.raw`\d+\d?`,
-      String.raw`\d+\d{1,3}`,
-      'a+a',
-      'a+aa',
-      'a+b+a+',
-      'a+b*a',
-      'a+b{2}a+',
-      'a+(?:b|c)a+',
-      'a+(b)a+',
-      'a+(b|c+)d+',
-      String.raw`\d+(\.\d+)?`,
-      String.raw`-?\d+(\.\d+)?([eE][+-]?\d+)?`,
-      String.raw`(\w+):(\w+)`,
-      '(a+|b)c',
-      '(a+|b)',
-      String.raw`(\d+|[a-z]+)`,
-      String.raw`\d+|\w+`,
-      String.raw`(\d+)|(\w+)`,
-      '(a+)|(a+)',
-      'a+|a+',
-      '(?:a+|b)(?:c+|d)',
-      'a+(?:b+|c)c+',
-      '(ab)+c',
-      '(?:ab)+',
-      'a+(?:)b',
-      '.*\\n.*',
-      '[a-z]+\\d+[a-z]+',
-      '^[a-z]+$',
-      'a{2}a+',
-    ];
-
-    for (const pattern of patterns) {
-      expect(checkPattern(pattern, ''), pattern).toBeUndefined();
-    }
-  });
-
-  it('decides overlap for the dot, case and Unicode word characters from the flags', () => {
-    expect(checkPattern('.*\\n.*', '')).toBeUndefined();
-    expect(checkPattern('.*\\n.*', 's')).toBe(adjacentRepetitions);
-    expect(checkPattern('.+\\u2028.+', '')).toBeUndefined();
-    expect(checkPattern('.+\\u2028.+', 's')).toBe(adjacentRepetitions);
-    expect(checkPattern('[a-z]+[A-Z]+', '')).toBeUndefined();
-    expect(checkPattern('[a-z]+[A-Z]+', 'i')).toBe(adjacentRepetitions);
-    expect(checkPattern('a+A+', '')).toBeUndefined();
-    expect(checkPattern('a+A+', 'i')).toBe(adjacentRepetitions);
-    expect(checkPattern('[^a]+A+', 'i')).toBeUndefined();
-    expect(checkPattern('[^a]+A+', '')).toBe(adjacentRepetitions);
-    expect(checkPattern('é+É+', '')).toBeUndefined();
-    expect(checkPattern('é+É+', 'i')).toBe(adjacentRepetitions);
-    expect(checkPattern('\\w+\\u212a+', '')).toBeUndefined();
-    expect(checkPattern('\\w+\\u212a+', 'iu')).toBe(adjacentRepetitions);
-    expect(checkPattern('[\\u0100-\\uffff]+x+', '')).toBeUndefined();
-    expect(checkPattern('[\\u0100-\\uffff]+x+', 'i')).toBe(adjacentRepetitions);
-  });
-
-  it('counts anything it cannot decide as overlapping', () => {
-    expect(checkPattern(String.raw`\p{L}+\p{L}+`, 'u')).toBe(adjacentRepetitions);
-    expect(checkPattern(String.raw`\p{L}+\d+`, 'u')).toBe(adjacentRepetitions);
-    expect(checkPattern(String.raw`\d+\P{L}+`, 'u')).toBe(adjacentRepetitions);
-    expect(checkPattern(String.raw`[\p{L}]+\d+`, 'u')).toBe(adjacentRepetitions);
-    expect(checkPattern(String.raw`[^\p{L}]+\d+`, 'u')).toBe(adjacentRepetitions);
-    expect(checkPattern(String.raw`\d+[\1]+`, '')).toBe(adjacentRepetitions);
-    expect(checkPattern(String.raw`\d+\u{1F600}+`, 'u')).toBe(adjacentRepetitions);
-    expect(checkPattern(String.raw`\d+😀+`, 'u')).toBe(adjacentRepetitions);
-  });
-
-  it('reads brace escapes as one escape only with the u flag', () => {
-    expect(checkPattern(String.raw`(a\p{1,})+`, '')).toBe(nestedRepetition);
-    expect(checkPattern(String.raw`(a\P{1,})+`, '')).toBe(nestedRepetition);
-    expect(checkPattern(String.raw`(a\u{1,})+`, '')).toBe(nestedRepetition);
-    expect(checkPattern(String.raw`(a\p{1,2})+`, '')).toBe(nestedRepetition);
-    expect(checkPattern(String.raw`(a\p{1})+`, '')).toBeUndefined();
-    expect(checkPattern(String.raw`\p{1,}\p{1,}`, '')).toBe(adjacentRepetitions);
-    expect(checkPattern(String.raw`\p{L}+`, 'u')).toBeUndefined();
-    expect(checkPattern(String.raw`\P{L}+`, 'u')).toBeUndefined();
-    expect(checkPattern(String.raw`(a\p{L})+`, 'u')).toBeUndefined();
-    expect(checkPattern(String.raw`(a\P{Lu})+`, 'u')).toBeUndefined();
-    expect(checkPattern(String.raw`\u{41}+`, 'u')).toBeUndefined();
-    expect(checkPattern(String.raw`(a\u{41})+`, 'u')).toBeUndefined();
-    expect(checkPattern(String.raw`(a\u{41}\u{1F600})+`, 'u')).toBeUndefined();
-    expect(checkPattern(String.raw`(a\p{L}+)+`, 'u')).toBe(nestedRepetition);
-  });
-
-  it('reports the first problem in the pattern', () => {
-    expect(checkPattern(String.raw`\1(a+)+`, '')).toBe(backreference);
-    expect(checkPattern(String.raw`(a+)+\1`, '')).toBe(nestedRepetition);
-    expect(checkPattern('(?=a)(a+)+', '')).toBe(lookaround);
-  });
-
-  it('checks the length before anything else', () => {
-    expect(checkPattern('(a+)+'.repeat(101), '')).toBe(tooLong);
-  });
-
-  it('rejects flags other than i, m, s and u', () => {
-    expect(checkPattern('a', 'g')).toBe(
-      'Unsupported regular expression flag `g`. Supported flags are i, m, s and u.',
-    );
-    expect(checkPattern('a', 'iy')).toBe(
-      'Unsupported regular expression flag `y`. Supported flags are i, m, s and u.',
-    );
-    expect(checkPattern('a', 'ii')).toBe('Duplicate regular expression flag `i`.');
-  });
-
-  it('ignores unbalanced parentheses and stray quantifiers instead of throwing', () => {
-    for (const pattern of [')', '(', '+', '(+', 'a)+', '((a)', '\\', '[', '(?', '(?<']) {
-      expect(() => checkPattern(pattern, ''), pattern).not.toThrow();
-    }
+    expect(checkFlags('g')).toStrictEqual({
+      index: 0,
+      message: 'Unsupported regular expression flag `g`. Supported flags are i, m, s and u.',
+    });
+    expect(checkFlags('iy')).toStrictEqual({
+      index: 1,
+      message: 'Unsupported regular expression flag `y`. Supported flags are i, m, s and u.',
+    });
+    expect(checkFlags('ii')).toStrictEqual({
+      index: 1,
+      message: 'Duplicate regular expression flag `i`.',
+    });
   });
 });

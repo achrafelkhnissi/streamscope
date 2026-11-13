@@ -8,7 +8,7 @@ import {
   type RegexToken,
   type Token,
 } from './lexer';
-import { checkPattern } from './regex';
+import { compilePattern } from './regex';
 
 export type ExpressionContext = 'capture' | 'expect' | 'condition';
 
@@ -35,7 +35,8 @@ const plainSources: ReadonlySet<string> = new Set(['status', 'headers', 'cookies
 const expectedLiteral = 'Expected a string, number, true, false, null, regular expression or list.';
 const expectedStep = 'Expected an index, a string, `*` or `?`.';
 const expectedFilter = 'Expected default, join, json or match.';
-const wholeNumberIndex = 'An index must be a whole number.';
+const wholeNumberIndex =
+  'An index must be a whole number from -9,007,199,254,740,991 to 9,007,199,254,740,991.';
 const positionRange = 'nth(…) takes a whole number from 1 to 2,147,483,647.';
 
 class SyntaxFailure extends Error {
@@ -425,14 +426,11 @@ class Parser {
   }
 
   private checkRegex(token: RegexToken): void {
-    const problem = checkPattern(token.pattern, token.flags);
-    if (problem !== undefined) {
-      this.failAt(problem, token.span);
-    }
-    try {
-      new RegExp(token.pattern, token.flags);
-    } catch (error) {
-      this.failAt(`${(error as SyntaxError).message}.`, token.span);
+    const result = compilePattern(token.pattern, token.flags);
+    if (!result.ok) {
+      const patternEnd = token.span.start + 1 + token.pattern.length;
+      const start = Math.min(token.span.start + 1 + result.offset, patternEnd);
+      this.failAt(result.message, { start, end: Math.min(start + result.length, patternEnd) });
     }
   }
 

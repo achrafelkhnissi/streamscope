@@ -9,14 +9,9 @@ import {
 
 const unknownSource =
   'Unknown source `frist`. Expected status, headers, cookies, body, text, first, last, nth, all, count or jsonpath.';
+const indexRange =
+  'An index must be a whole number from -9,007,199,254,740,991 to 9,007,199,254,740,991.';
 const expectedLiteral = 'Expected a string, number, true, false, null, regular expression or list.';
-const nestedRepetition =
-  'This regular expression can take very long on some inputs, because a repeated group contains another repetition. Rewrite it without nested repetition.';
-const adjacentRepetitions =
-  'This regular expression can take very long on some inputs, because two repetitions next to each other can match the same text. Separate them with a character only one of them matches.';
-const repeatedAlternatives =
-  'This regular expression can take very long on some inputs, because a repeated group contains alternatives. Rewrite it without alternatives inside a repeated group.';
-
 function parse(text: string, context: ExpressionContext = 'capture'): Expr {
   const result = parseExpression(text, context);
   if (!result.ok) {
@@ -664,17 +659,29 @@ describe('parseExpression', () => {
       });
     });
 
+    it('rejects a number literal that is not finite', () => {
+      expect(failure('1e999')).toStrictEqual({
+        message: 'The number is too large.',
+        span: { start: 0, end: 5 },
+      });
+      expect(failure('status == -1.5e400')).toStrictEqual({
+        message: 'The number is too large.',
+        span: { start: 10, end: 18 },
+      });
+      expect(shape('1'.repeat(400))).toStrictEqual(literal(BigInt('1'.repeat(400))));
+    });
+
     it('rejects an index that is not a whole number', () => {
       expect(failure('body[1.5]')).toStrictEqual({
-        message: 'An index must be a whole number.',
+        message: indexRange,
         span: { start: 5, end: 8 },
       });
       expect(failure('body[12345678901234567890]')).toStrictEqual({
-        message: 'An index must be a whole number.',
+        message: indexRange,
         span: { start: 5, end: 25 },
       });
       expect(failure('body[1e300]')).toStrictEqual({
-        message: 'An index must be a whole number.',
+        message: indexRange,
         span: { start: 5, end: 10 },
       });
     });
@@ -892,60 +899,60 @@ describe('parseExpression', () => {
   });
 
   describe('regex literals', () => {
-    it('rejects a catastrophic pattern over the literal', () => {
-      expect(failure('text matches /(a+)+$/')).toStrictEqual({
-        message: nestedRepetition,
-        span: { start: 13, end: 21 },
-      });
-      expect(failure('status in [/(a|aa)*b/]')).toStrictEqual({
-        message: repeatedAlternatives,
-        span: { start: 11, end: 21 },
-      });
+    it('accepts patterns that backtrack badly in JavaScript, because the matcher is linear', () => {
+      for (const text of [
+        'text matches /(a+)+$/',
+        'status in [/(a|aa)*b/]',
+        String.raw`text matches /\d+\d+x/`,
+        'text | match(/a*a*b/)',
+        String.raw`text | match(/(a\p{1,})+/)`,
+      ]) {
+        expect(parseExpression(text, 'capture').ok, text).toBe(true);
+      }
     });
 
-    it('rejects a nested repetition that hides behind a brace escape without the u flag', () => {
-      expect(failure(String.raw`text matches /(a\p{1,})+/`)).toStrictEqual({
-        message: nestedRepetition,
-        span: { start: 13, end: 25 },
+    it('reports an unsupported construct over the construct inside the literal', () => {
+      expect(failure(String.raw`text matches /(a)\1/`)).toStrictEqual({
+        message: 'Backreferences such as `\\1` are not supported in regular expressions.',
+        span: { start: 17, end: 19 },
       });
-      expect(failure(String.raw`text matches /(a\p{1,})+/u`).message).toMatch(
-        /^Invalid regular expression/,
-      );
-    });
-
-    it('rejects two repetitions next to each other over the literal', () => {
-      expect(failure(String.raw`text matches /\d+\d+x/`)).toStrictEqual({
-        message: adjacentRepetitions,
-        span: { start: 13, end: 22 },
+      expect(failure('text | match(/(?=a)/)')).toStrictEqual({
+        message: 'Lookahead such as `(?=…)` is not supported in regular expressions.',
+        span: { start: 14, end: 17 },
       });
-      expect(failure('text | match(/a*a*b/)')).toStrictEqual({
-        message: adjacentRepetitions,
-        span: { start: 13, end: 20 },
-      });
-      expect(parse(String.raw`text | match(/\w+@\w+\.\w+/)`)).toMatchObject({ kind: 'filter' });
-    });
-
-    it('rejects a catastrophic pattern in match() over the literal', () => {
-      expect(failure('text | match(/(a|aa)*b/)')).toStrictEqual({
-        message: repeatedAlternatives,
-        span: { start: 13, end: 23 },
-      });
-      expect(failure(String.raw`text | match(/(a)\1/)`)).toStrictEqual({
+      expect(failure('text matches /(a*)*/')).toStrictEqual({
         message:
-          'This regular expression uses a backreference, which can take very long on some inputs. Rewrite it without one.',
-        span: { start: 13, end: 20 },
+          'A repeated group that can match the empty string is not supported in regular expressions.',
+        span: { start: 14, end: 19 },
+      });
+      expect(failure('text | match(/a(?i:b)/)')).toStrictEqual({
+        message:
+          'Inline modifiers such as `(?i:…)` are not supported in regular expressions. Put the flag after the closing slash instead.',
+        span: { start: 15, end: 19 },
       });
     });
 
-    it('rejects a pattern that is not valid regular expression syntax', () => {
-      const error = failure('text matches /(/');
+    it('reports a syntax error at its offset inside the literal', () => {
+      expect(failure('text matches /(/')).toStrictEqual({
+        message: 'Unterminated group.',
+        span: { start: 14, end: 15 },
+      });
+      expect(failure('text matches /a)/')).toStrictEqual({
+        message: 'Unmatched `)`.',
+        span: { start: 15, end: 16 },
+      });
+      expect(failure('text | match(/[/)').message).toBe('Unterminated regular expression.');
+      expect(failure(String.raw`text | match(/(a\p{1,})+/u)`)).toStrictEqual({
+        message: 'This Unicode property escape or character class is not valid.',
+        span: { start: 16, end: 22 },
+      });
+    });
 
-      expect(error.message).toMatch(/^Invalid regular expression: .*\.$/);
-      expect(error.span).toStrictEqual({ start: 13, end: 16 });
-      expect(failure('text | match(/[/)').message).toMatch(/^Unterminated regular expression\.$/);
-      expect(failure(String.raw`text | match(/\p{Nope}/u)`).message).toMatch(
-        /^Invalid regular expression: /,
-      );
+    it('reports a pattern over 500 characters over the 501st', () => {
+      expect(failure(`text matches /${'a'.repeat(501)}/`)).toStrictEqual({
+        message: 'A regular expression is at most 500 characters.',
+        span: { start: 514, end: 515 },
+      });
     });
 
     it('reports a flag the lexer rejects over the flag', () => {

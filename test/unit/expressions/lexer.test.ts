@@ -130,6 +130,21 @@ describe('Lexer', () => {
     ]);
   });
 
+  it('rejects a number that is not finite, but keeps a huge integer as bigint', () => {
+    expect(tokens('1e999')).toStrictEqual([
+      { kind: 'error', message: 'The number is too large.', span: span(0, 5) },
+    ]);
+    expect(tokens('a == -2.5E+400')[2]).toStrictEqual({
+      kind: 'error',
+      message: 'The number is too large.',
+      span: span(5, 14),
+    });
+    expect(tokens('1'.repeat(400))).toStrictEqual([
+      { kind: 'number', value: BigInt('1'.repeat(400)), span: span(0, 400) },
+      { kind: 'end', span: span(400, 400) },
+    ]);
+  });
+
   it('ends a number where JSON number syntax ends', () => {
     expect(tokens('01 1. 1e')).toStrictEqual([
       { kind: 'number', value: 0, span: span(0, 1) },
