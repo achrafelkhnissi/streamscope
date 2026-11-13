@@ -1,0 +1,851 @@
+import { describe, expect, it, vi } from 'vitest';
+import type { Expr, Value } from '../../../src/expressions/ast';
+import {
+  evaluate,
+  holds,
+  type ConditionItem,
+  type Outcome,
+  type Sources,
+} from '../../../src/expressions/evaluate';
+import { parseExpression, type ExpressionContext } from '../../../src/expressions/parse';
+import * as regex from '../../../src/expressions/regex';
+
+vi.mock('../../../src/expressions/regex', async (importOriginal) => {
+  const original = await importOriginal<typeof import('../../../src/expressions/regex')>();
+  return { ...original, compilePattern: vi.fn(original.compilePattern) };
+});
+
+const tooLong = 'the text is too long for this regular expression';
+
+function parse(text: string, context: ExpressionContext = 'capture'): Expr {
+  const result = parseExpression(text, context);
+  if (!result.ok) {
+    throw new Error(
+      `${text} failed: ${result.error.message} at ${JSON.stringify(result.error.span)}`,
+    );
+  }
+  return result.expr;
+}
+
+function found(value: Value, event?: number): Outcome {
+  return event === undefined
+    ? { present: true, value, path: '' }
+    : { present: true, value, path: '', event };
+}
+
+function sourcesWith(answers: Record<string, Outcome>): Sources {
+  return {
+    value(node) {
+      const key =
+        node.kind === 'source' || node.kind === 'events' || node.kind === 'check'
+          ? node.name
+          : node.kind;
+      return answers[key] ?? { present: false, reason: `no ${key}` };
+    },
+  };
+}
+
+function run(text: string, answers: Record<string, Outcome> = {}): Outcome {
+  return evaluate(parse(text), sourcesWith(answers));
+}
+
+function bodyOf(value: Value): Record<string, Outcome> {
+  return { body: found(value) };
+}
+
+function item(value: Value, extra: Partial<ConditionItem> = {}): ConditionItem {
+  return { value, sse: undefined, malformed: false, ...extra };
+}
+
+function holdsFor(text: string, value: Value, extra: Partial<ConditionItem> = {}): boolean {
+  return holds(parse(text, 'condition'), item(value, extra));
+}
+
+function nested(depth: number, leaf: Value): Value {
+  let value = leaf;
+  for (let level = 0; level < depth; level += 1) {
+    value = { next: value };
+  }
+  return value;
+}
+
+function nestedLists(depth: number, leaf: Value): Value {
+  let value = leaf;
+  for (let level = 0; level < depth; level += 1) {
+    value = [value];
+  }
+  return value;
+}
+
+function presentValue(outcome: Outcome): Value {
+  if (!outcome.present) {
+    throw new Error(`missing: ${outcome.reason}`);
+  }
+  return outcome.value;
+}
+
+const catalog = {
+  items: [
+    { id: 1, price: 5, tags: ['a', 'b'] },
+    { id: 2, price: 15, tags: ['c'] },
+    { id: 3, price: 25, tags: [] },
+  ],
+  user: { name: 'Ada' },
+  tags: ['alpha', 'beta', 'gamma'],
+};
+
+describe('evaluate paths', () => {
+  it('walks names, indexes, negative indexes, wildcards and [?…]', () => {
+    const answers = bodyOf(catalog);
+    expect(run('body.user.name', answers)).toEqual({
+      present: true,
+      value: 'Ada',
+      path: 'user.name',
+    });
+    expect(run('body["user"]["name"]', answers)).toEqual({
+      present: true,
+      value: 'Ada',
+      path: 'user.name',
+    });
+    expect(run('body.items[0].id', answers)).toEqual({
+      present: true,
+      value: 1,
+      path: 'items[0].id',
+    });
+    expect(run('body.items[-1].id', answers)).toEqual({
+      present: true,
+      value: 3,
+      path: 'items[-1].id',
+    });
+    expect(run('body.items[*].id', answers)).toEqual({
+      present: true,
+      value: [1, 2, 3],
+      path: 'items[*].id',
+    });
+    expect(run('body.items[?price > 10].id', answers)).toEqual({
+      present: true,
+      value: [2, 3],
+      path: 'items[?…].id',
+    });
+    expect(run('body.items[?price > 10 && id != 3]', answers)).toEqual({
+      present: true,
+      value: [{ id: 2, price: 15, tags: ['c'] }],
+      path: 'items[?…]',
+    });
+    expect(run('body.tags[?@ startsWith "a" || @ == "gamma"]', answers)).toEqual({
+      present: true,
+      value: ['alpha', 'gamma'],
+      path: 'tags[?…]',
+    });
+  });
+
+  it('writes the path of a name that is not an identifier with brackets', () => {
+    const headers = { 'x-session-token': 'abc', plain: 'p' };
+    expect(run('headers["x-session-token"]', { headers: found(headers) })).toEqual({
+      present: true,
+      value: 'abc',
+      path: '["x-session-token"]',
+    });
+    expect(run('headers.plain', { headers: found(headers) })).toEqual({
+      present: true,
+      value: 'p',
+      path: 'plain',
+    });
+    expect(run('body.a["b c"].d', bodyOf({ a: { 'b c': { d: 1 } } }))).toEqual({
+      present: true,
+      value: 1,
+      path: 'a["b c"].d',
+    });
+  });
+
+  it('keeps fanning out after a wildcard or a filter step', () => {
+    const answers = bodyOf(catalog);
+    expect(run('body.items[*].tags[*]', answers)).toEqual({
+      present: true,
+      value: ['a', 'b', 'c'],
+      path: 'items[*].tags[*]',
+    });
+    expect(
+      run('body.items[*].tags[0]', bodyOf({ items: [{ tags: ['x'] }, { tags: ['y', 'z'] }] })),
+    ).toEqual({
+      present: true,
+      value: ['x', 'y'],
+      path: 'items[*].tags[0]',
+    });
+    expect(run('body.items[*].tags[?@ != "b"]', answers)).toEqual({
+      present: true,
+      value: ['a', 'c'],
+      path: 'items[*].tags[?…]',
+    });
+    expect(run('body.items[?price > 100].id', answers)).toEqual({
+      present: true,
+      value: [],
+      path: 'items[?…].id',
+    });
+  });
+
+  it('reads the first and last elements and an element of the root value', () => {
+    expect(run('body[0]', bodyOf([10, 20, 30]))).toEqual({ present: true, value: 10, path: '[0]' });
+    expect(run('body[-1]', bodyOf([10, 20, 30]))).toEqual({
+      present: true,
+      value: 30,
+      path: '[-1]',
+    });
+    expect(run('body', bodyOf('text'))).toEqual({ present: true, value: 'text', path: '' });
+  });
+
+  it('maps a path over all(…) results', () => {
+    const events: Value[] = [
+      { type: 'X', result: { id: 'a', n: 1 } },
+      { type: 'X', result: { id: 'b', n: 2 } },
+      { type: 'X', result: { id: 'c', n: 3 } },
+    ];
+    const answers = { all: found(events) };
+    expect(run('all(type == "X").result.id', answers)).toEqual({
+      present: true,
+      value: ['a', 'b', 'c'],
+      path: 'result.id',
+    });
+    expect(run('all(type == "X").result.id | join(",")', answers)).toEqual({
+      present: true,
+      value: 'a,b,c',
+      path: 'result.id',
+    });
+    expect(run('all(type == "X").result.n | json', answers)).toEqual({
+      present: true,
+      value: '[1,2,3]',
+      path: 'result.n',
+    });
+    expect(run('all(type == "X")', answers)).toEqual({ present: true, value: events, path: '' });
+    expect(run('all()', { all: found([]) })).toEqual({ present: true, value: [], path: '' });
+    expect(run('all(type == "X").result.id', { all: found([]) })).toEqual({
+      present: true,
+      value: [],
+      path: 'result.id',
+    });
+  });
+
+  it('names the result that lacks the path when mapping', () => {
+    const events: Value[] = [{ result: { id: 'a' } }, { result: {} }, { result: { id: 'c' } }];
+    expect(run('all().result.id', { all: found(events) })).toEqual({
+      present: false,
+      reason: 'has no value at result.id ("id" is missing) in result 2',
+    });
+    expect(run('body.items[*].id', bodyOf({ items: [{ id: 1 }, {}] }))).toEqual({
+      present: false,
+      reason: 'has no value at items[*].id ("id" is missing) in result 2',
+    });
+  });
+
+  it('passes the event and the source path through from the source', () => {
+    const outcome = evaluate(
+      parse('first(type == "X").result.id'),
+      sourcesWith({ first: found({ result: { id: 'abc' } }, 3) }),
+    );
+    expect(outcome).toEqual({ present: true, value: 'abc', path: 'result.id', event: 3 });
+    const filtered = evaluate(
+      parse('first(type == "X").result.id | match(/^a/)'),
+      sourcesWith({ first: found({ result: { id: 'abc' } }, 3) }),
+    );
+    expect(filtered).toEqual({ present: true, value: 'a', path: 'result.id', event: 3 });
+  });
+
+  it('hands every source node to Sources and never computes one itself', () => {
+    const seen: string[] = [];
+    const sources: Sources = {
+      value(node) {
+        seen.push(node.kind);
+        return found(node.kind);
+      },
+    };
+    for (const text of [
+      'status',
+      'headers',
+      'cookies',
+      'body',
+      'text',
+      'first()',
+      'last()',
+      'nth(2)',
+      'all()',
+      'count()',
+      'jsonpath("$.a")',
+    ]) {
+      evaluate(parse(text), sources);
+    }
+    expect(seen).toEqual([
+      'source',
+      'source',
+      'source',
+      'source',
+      'source',
+      'events',
+      'events',
+      'nth',
+      'events',
+      'events',
+      'jsonpath',
+    ]);
+    const check = evaluate(parse('exists(body.a)', 'expect'), sources);
+    expect(check).toEqual({ present: true, value: 'check', path: '' });
+  });
+
+  it('passes a missing source outcome through its path', () => {
+    expect(run('first(type == "X").result.id')).toEqual({
+      present: false,
+      reason: 'no first',
+    });
+    expect(evaluate(parse('exists(body.a)', 'expect'), sourcesWith({}))).toEqual({
+      present: false,
+      reason: 'no exists',
+    });
+  });
+
+  it('evaluates literals and lists', () => {
+    expect(run('"text"')).toEqual({ present: true, value: 'text', path: '' });
+    expect(run('12345678901234567890')).toEqual({
+      present: true,
+      value: 12345678901234567890n,
+      path: '',
+    });
+    expect(run('[1, "a", [true, null]]')).toEqual({
+      present: true,
+      value: [1, 'a', [true, null]],
+      path: '',
+    });
+  });
+
+  it('has no value for a bare regular expression', () => {
+    const outcome = run('/abc/');
+    expect(outcome.present).toBe(false);
+  });
+});
+
+describe('evaluate defaults', () => {
+  it('default(…) replaces a missing value and nothing else', () => {
+    expect(run('body.nope | default("none")', bodyOf({ a: 1 }))).toEqual({
+      present: true,
+      value: 'none',
+      path: '',
+    });
+    expect(run('first(type == "X").id | default(0)')).toEqual({
+      present: true,
+      value: 0,
+      path: '',
+    });
+    expect(run('body.items[9] | default([1, "a"])', bodyOf({ items: [] }))).toEqual({
+      present: true,
+      value: [1, 'a'],
+      path: '',
+    });
+    expect(run('body.a | default("none")', bodyOf({ a: null }))).toEqual({
+      present: true,
+      value: null,
+      path: 'a',
+    });
+    expect(run('body.a | default("none")', bodyOf({ a: '' }))).toEqual({
+      present: true,
+      value: '',
+      path: 'a',
+    });
+    expect(run('body.a | default("none")', bodyOf({ a: false }))).toEqual({
+      present: true,
+      value: false,
+      path: 'a',
+    });
+    expect(run('body.a | default("none")', bodyOf({ a: 0 }))).toEqual({
+      present: true,
+      value: 0,
+      path: 'a',
+    });
+    expect(run('body.a | default("none")', bodyOf({ a: [] }))).toEqual({
+      present: true,
+      value: [],
+      path: 'a',
+    });
+  });
+
+  it('keeps the event of a value that is present', () => {
+    const outcome = evaluate(
+      parse('first().a | default(1)'),
+      sourcesWith({ first: found({ a: 2 }, 7) }),
+    );
+    expect(outcome).toEqual({ present: true, value: 2, path: 'a', event: 7 });
+  });
+});
+
+describe('evaluate filters', () => {
+  it('join, json and match filters', () => {
+    expect(run('body.tags | join(", ")', bodyOf(catalog))).toEqual({
+      present: true,
+      value: 'alpha, beta, gamma',
+      path: 'tags',
+    });
+    expect(run('body | join("")', bodyOf([]))).toEqual({ present: true, value: '', path: '' });
+    expect(
+      run(
+        'body | join(",")',
+        bodyOf([1, 12345678901234567890n, 1.5, true, null, 'x', { a: 1 }, [2]]),
+      ),
+    ).toEqual({
+      present: true,
+      value: '1,12345678901234567890,1.5,true,null,x,{"a":1},[2]',
+      path: '',
+    });
+    expect(run('body.user | json', bodyOf(catalog))).toEqual({
+      present: true,
+      value: '{"name":"Ada"}',
+      path: 'user',
+    });
+    expect(run('body.user.name | json', bodyOf(catalog))).toEqual({
+      present: true,
+      value: '"Ada"',
+      path: 'user.name',
+    });
+    expect(run('body | json', bodyOf({ id: 12345678901234567890n }))).toEqual({
+      present: true,
+      value: '{"id":12345678901234567890}',
+      path: '',
+    });
+    expect(run('body.id | match(/^run-(\\d+)$/)', bodyOf({ id: 'run-42' }))).toEqual({
+      present: true,
+      value: '42',
+      path: 'id',
+    });
+    expect(run('body.id | match(/^run-\\d+$/)', bodyOf({ id: 'run-42' }))).toEqual({
+      present: true,
+      value: 'run-42',
+      path: 'id',
+    });
+    expect(run('body.id | match(/RUN-(\\d+)/i)', bodyOf({ id: 'a run-7 b' }))).toEqual({
+      present: true,
+      value: '7',
+      path: 'id',
+    });
+    expect(run('body.id | match(/(x)?run/)', bodyOf({ id: 'run' }))).toEqual({
+      present: true,
+      value: 'run',
+      path: 'id',
+    });
+    expect(run('body.id | match(/(x*)run/)', bodyOf({ id: 'run' }))).toEqual({
+      present: true,
+      value: '',
+      path: 'id',
+    });
+  });
+
+  it('chains filters', () => {
+    expect(run('body.tags | join("-") | match(/^(a\\w+)/)', bodyOf(catalog))).toEqual({
+      present: true,
+      value: 'alpha',
+      path: 'tags',
+    });
+    expect(run('body.tags | join("-") | json', bodyOf(catalog))).toEqual({
+      present: true,
+      value: '"alpha-beta-gamma"',
+      path: 'tags',
+    });
+  });
+
+  it('is missing when join gets something that is not a list', () => {
+    expect(run('body.user.name | join(",")', bodyOf(catalog))).toEqual({
+      present: false,
+      reason: 'has no value at user.name (join needs a list, not a string)',
+    });
+    expect(run('body | join(",")', bodyOf(3))).toEqual({
+      present: false,
+      reason: 'has no value (join needs a list, not a number)',
+    });
+  });
+
+  it('is missing, naming the pattern, when match does not match', () => {
+    expect(run('body.id | match(/^run-(\\d+)$/i)', bodyOf({ id: 'job-42' }))).toEqual({
+      present: false,
+      reason: 'has no value at id (the text does not match /^run-(\\d+)$/i)',
+    });
+  });
+
+  it('is missing when match gets something that is not a string', () => {
+    expect(run('body.id | match(/\\d+/)', bodyOf({ id: 42 }))).toEqual({
+      present: false,
+      reason: 'has no value at id (match needs a string, not a number)',
+    });
+  });
+
+  it('match(…) on a text too long for its regex is missing with the reason', () => {
+    expect(run('body | match(/x/)', bodyOf('x'.repeat(2_000_000)))).toEqual({
+      present: false,
+      reason: tooLong,
+    });
+  });
+
+  it('passes a missing target through every filter except default', () => {
+    expect(run('body.nope | join(",")', bodyOf({}))).toEqual({
+      present: false,
+      reason: 'has no value at nope ("nope" is missing)',
+    });
+    expect(run('body.nope | json', bodyOf({}))).toEqual({
+      present: false,
+      reason: 'has no value at nope ("nope" is missing)',
+    });
+    expect(run('body.nope | match(/a/)', bodyOf({}))).toEqual({
+      present: false,
+      reason: 'has no value at nope ("nope" is missing)',
+    });
+  });
+
+  it('treats a pattern that does not compile as not matching, never throwing', () => {
+    const span = { start: 0, end: 1 };
+    const filter: Expr = {
+      kind: 'filter',
+      target: { kind: 'literal', value: 'abc', span },
+      filter: { kind: 'match', pattern: '(', flags: '' },
+      span,
+    };
+    const outcome = evaluate(filter, sourcesWith({}));
+    expect(outcome.present).toBe(false);
+    const condition: Expr = {
+      kind: 'compare',
+      operator: 'matches',
+      left: { kind: 'literal', value: 'abc', span },
+      right: { kind: 'regex', pattern: '(', flags: '', span },
+      span,
+    };
+    expect(holds(condition, item(null))).toBe(false);
+  });
+});
+
+describe('evaluate missing values', () => {
+  it('names the missing segment', () => {
+    expect(run('body.items[5]', bodyOf({ items: [1, 2, 3] }))).toEqual({
+      present: false,
+      reason: 'has no value at items[5] (the list has 3 items)',
+    });
+    expect(run('body.items[-4]', bodyOf({ items: [1, 2, 3] }))).toEqual({
+      present: false,
+      reason: 'has no value at items[-4] (the list has 3 items)',
+    });
+    expect(run('body.items[0]', bodyOf({ items: [] }))).toEqual({
+      present: false,
+      reason: 'has no value at items[0] (the list has 0 items)',
+    });
+    expect(run('body.items[1]', bodyOf({ items: [1] }))).toEqual({
+      present: false,
+      reason: 'has no value at items[1] (the list has 1 item)',
+    });
+    expect(run('first().result.messageId', { first: found({ result: {} }, 3) })).toEqual({
+      present: false,
+      reason: 'has no value at result.messageId ("messageId" is missing)',
+    });
+    expect(run('body.name', bodyOf('text'))).toEqual({
+      present: false,
+      reason: 'has no value at name (the value is a string, not an object)',
+    });
+    expect(run('body.a.b', bodyOf({ a: null }))).toEqual({
+      present: false,
+      reason: 'has no value at a.b (the value is null, not an object)',
+    });
+    expect(run('body.a.b', bodyOf({ a: [1] }))).toEqual({
+      present: false,
+      reason: 'has no value at a.b (the value is a list, not an object)',
+    });
+    expect(run('body.a[0]', bodyOf({ a: { b: 1 } }))).toEqual({
+      present: false,
+      reason: 'has no value at a[0] (the value is an object, not a list)',
+    });
+    expect(run('body.a[*]', bodyOf({ a: 5 }))).toEqual({
+      present: false,
+      reason: 'has no value at a[*] (the value is a number, not a list)',
+    });
+    expect(run('body.a[?@ == 1]', bodyOf({ a: true }))).toEqual({
+      present: false,
+      reason: 'has no value at a[?…] (the value is a boolean, not a list)',
+    });
+    expect(run('body[0]', bodyOf({}))).toEqual({
+      present: false,
+      reason: 'has no value at [0] (the value is an object, not a list)',
+    });
+    expect(run('headers["x-session-token"]', { headers: found({}) })).toEqual({
+      present: false,
+      reason: 'has no value at ["x-session-token"] ("x-session-token" is missing)',
+    });
+  });
+
+  it('reports the first missing segment only', () => {
+    expect(run('body.a.b.c', bodyOf({ a: {} }))).toEqual({
+      present: false,
+      reason: 'has no value at a.b ("b" is missing)',
+    });
+  });
+
+  it('does not read inherited names', () => {
+    expect(run('body.toString', bodyOf({}))).toEqual({
+      present: false,
+      reason: 'has no value at toString ("toString" is missing)',
+    });
+    expect(run('body.constructor', bodyOf({}))).toEqual({
+      present: false,
+      reason: 'has no value at constructor ("constructor" is missing)',
+    });
+    expect(run('body.length', bodyOf([1]))).toEqual({
+      present: false,
+      reason: 'has no value at length (the value is a list, not an object)',
+    });
+  });
+
+  it('reads an own property named __proto__', () => {
+    const value = JSON.parse('{"__proto__": {"a": 1}}') as Value;
+    expect(run('body["__proto__"].a', bodyOf(value))).toEqual({
+      present: true,
+      value: 1,
+      path: '__proto__.a',
+    });
+  });
+});
+
+describe('evaluate comparisons and logic', () => {
+  it('evaluates comparisons to booleans', () => {
+    expect(run('status == 200', { status: found(200) })).toEqual({
+      present: true,
+      value: true,
+      path: '',
+    });
+    expect(run('status >= 300', { status: found(200) })).toEqual({
+      present: true,
+      value: false,
+      path: '',
+    });
+    expect(run('!(status == 200)', { status: found(200) })).toEqual({
+      present: true,
+      value: false,
+      path: '',
+    });
+    expect(
+      run('status == 200 && body.ok || false', { status: found(200), ...bodyOf({ ok: true }) }),
+    ).toEqual({
+      present: true,
+      value: true,
+      path: '',
+    });
+  });
+
+  it('compares with a missing side as false', () => {
+    expect(run('body.nope == 1', bodyOf({}))).toEqual({ present: true, value: false, path: '' });
+    expect(run('body.nope != 1', bodyOf({}))).toEqual({ present: true, value: false, path: '' });
+    expect(run('1 != body.nope', bodyOf({}))).toEqual({ present: true, value: false, path: '' });
+    expect(run('body.nope < 1', bodyOf({}))).toEqual({ present: true, value: false, path: '' });
+  });
+});
+
+describe('holds', () => {
+  it('a condition holds only for present values other than false and null', () => {
+    expect(holdsFor('done', { done: true })).toBe(true);
+    expect(holdsFor('done', { done: 'yes' })).toBe(true);
+    expect(holdsFor('done', { done: 0 })).toBe(true);
+    expect(holdsFor('done', { done: '' })).toBe(true);
+    expect(holdsFor('done', { done: [] })).toBe(true);
+    expect(holdsFor('done', { done: {} })).toBe(true);
+    expect(holdsFor('done', { done: false })).toBe(false);
+    expect(holdsFor('done', { done: null })).toBe(false);
+    expect(holdsFor('done', {})).toBe(false);
+    expect(holdsFor('done', 'not an object')).toBe(false);
+    expect(holdsFor('done', null)).toBe(false);
+    expect(holdsFor('result.ok', { result: { ok: true } })).toBe(true);
+    expect(holdsFor('result.ok', { result: null })).toBe(false);
+    expect(holdsFor('@', true)).toBe(true);
+    expect(holdsFor('@', false)).toBe(false);
+    expect(holdsFor('@', null)).toBe(false);
+  });
+
+  it('treats words that name sources as fields of the item', () => {
+    expect(holdsFor('status == "ok"', { status: 'ok' })).toBe(true);
+    expect(holdsFor('first == 1 && count == 2', { first: 1, count: 2 })).toBe(true);
+    expect(holdsFor('status', {})).toBe(false);
+  });
+
+  it('combines conditions with !, && and ||', () => {
+    expect(holdsFor('!done', {})).toBe(true);
+    expect(holdsFor('!done', { done: true })).toBe(false);
+    expect(holdsFor('!done', { done: false })).toBe(true);
+    expect(holdsFor('type == "A" && ok', { type: 'A', ok: true })).toBe(true);
+    expect(holdsFor('type == "A" && ok', { type: 'A', ok: false })).toBe(false);
+    expect(holdsFor('type == "A" || type == "B"', { type: 'B' })).toBe(true);
+    expect(holdsFor('type == "A" || type == "B"', { type: 'C' })).toBe(false);
+    expect(holdsFor('!(type == "A" || type == "B")', { type: 'C' })).toBe(true);
+    expect(holdsFor('a == 1 && b == 2 || c == 3', { a: 1, c: 3 })).toBe(true);
+  });
+
+  it('malformed items never match', () => {
+    expect(holdsFor('type == "A"', { type: 'A' }, { malformed: true })).toBe(false);
+    expect(holdsFor('!done', {}, { malformed: true })).toBe(false);
+    expect(holdsFor('@', true, { malformed: true })).toBe(false);
+    expect(holdsFor('type == "A"', { type: 'A' }, { malformed: false })).toBe(true);
+  });
+
+  it('@sse fields are readable in a condition', () => {
+    const sse = { event: 'delta', id: '7', retry: 1500 };
+    expect(holdsFor('@sse.event == "delta"', {}, { sse })).toBe(true);
+    expect(holdsFor('@sse.event == "other"', {}, { sse })).toBe(false);
+    expect(holdsFor('@sse.id == "7"', {}, { sse })).toBe(true);
+    expect(holdsFor('@sse.retry == 1500', {}, { sse })).toBe(true);
+    expect(holdsFor('@sse.retry > 1000 && type == "A"', { type: 'A' }, { sse })).toBe(true);
+    expect(holdsFor('@sse.event == "delta"', {}, { sse: { id: '1' } })).toBe(false);
+    expect(holdsFor('@sse.event == "delta"', {}, { sse: undefined })).toBe(false);
+    expect(holdsFor('@sse.event', {}, { sse: undefined })).toBe(false);
+    expect(holdsFor('@sse', {}, { sse: { id: '1' } })).toBe(true);
+    expect(holdsFor('@sse', {}, { sse: undefined })).toBe(false);
+    expect(holdsFor('!@sse.event', {}, { sse: { id: '1' } })).toBe(true);
+  });
+
+  it('reads @sse inside a [?…] of the same condition', () => {
+    expect(
+      holdsFor('items[?@sse.event == "delta"]', { items: [1] }, { sse: { event: 'delta' } }),
+    ).toBe(true);
+    expect(holdsFor('items[?@ > 1] == [2]', { items: [1, 2] }, { sse: undefined })).toBe(true);
+  });
+
+  it('compares with lossless numbers and never coerces', () => {
+    expect(holdsFor('id == 12345678901234567890', { id: 12345678901234567890n })).toBe(true);
+    expect(holdsFor('id == 12345678901234567891', { id: 12345678901234567890n })).toBe(false);
+    expect(holdsFor('id < 12345678901234567891', { id: 12345678901234567890n })).toBe(true);
+    expect(holdsFor('n == 2', { n: 2n })).toBe(true);
+    expect(holdsFor('n < 2.5', { n: 2n })).toBe(true);
+    expect(holdsFor('n == "1"', { n: 1 })).toBe(false);
+    expect(holdsFor('n != "1"', { n: 1 })).toBe(true);
+    expect(holdsFor('n < "2"', { n: 1 })).toBe(false);
+    expect(holdsFor('flag == 1', { flag: true })).toBe(false);
+    expect(holdsFor('name < "b"', { name: 'a' })).toBe(true);
+    expect(holdsFor('name >= "b"', { name: 'a' })).toBe(false);
+    expect(holdsFor('name <= "a"', { name: 'a' })).toBe(true);
+    expect(holdsFor('name > "A"', { name: 'a' })).toBe(true);
+  });
+
+  it('compares objects and lists deeply with ==', () => {
+    expect(holdsFor('pair == [1, "a"]', { pair: [1, 'a'] })).toBe(true);
+    expect(holdsFor('pair == [1, "a"]', { pair: ['a', 1] })).toBe(false);
+    expect(holdsFor('pair != [1, "a"]', { pair: [1, 'b'] })).toBe(true);
+    expect(holdsFor('a == b', { a: { x: [1, { y: 2n }] }, b: { x: [1, { y: 2 }] } })).toBe(true);
+    expect(holdsFor('a == b', { a: { x: 1 }, b: { x: 2 } })).toBe(false);
+  });
+
+  it('treats a missing side of a comparison as false, including !=', () => {
+    expect(holdsFor('nope == 1', {})).toBe(false);
+    expect(holdsFor('nope != 1', {})).toBe(false);
+    expect(holdsFor('nope == null', {})).toBe(false);
+    expect(holdsFor('nope != null', {})).toBe(false);
+    expect(holdsFor('result != null', { result: { ok: true } })).toBe(true);
+    expect(holdsFor('result != null', { result: null })).toBe(false);
+    expect(holdsFor('!(nope == 1)', {})).toBe(true);
+  });
+
+  it('tests membership, substrings, prefixes and patterns', () => {
+    expect(holdsFor('type in ["A", "B"]', { type: 'B' })).toBe(true);
+    expect(holdsFor('type in ["A", "B"]', { type: 'C' })).toBe(false);
+    expect(holdsFor('n in [1, 2]', { n: 2n })).toBe(true);
+    expect(holdsFor('type in ["1"]', { type: 1 })).toBe(false);
+    expect(holdsFor('type in "AB"', { type: 'A' })).toBe(false);
+    expect(holdsFor('type in tags', { type: 'A', tags: ['A'] })).toBe(true);
+    expect(holdsFor('text contains "ell"', { text: 'hello' })).toBe(true);
+    expect(holdsFor('text contains "xyz"', { text: 'hello' })).toBe(false);
+    expect(holdsFor('text contains 1', { text: 'a1' })).toBe(false);
+    expect(holdsFor('tags contains "b"', { tags: ['a', 'b'] })).toBe(true);
+    expect(holdsFor('tags contains "c"', { tags: ['a', 'b'] })).toBe(false);
+    expect(holdsFor('tags contains 2', { tags: [1, 2n] })).toBe(true);
+    expect(holdsFor('obj contains "a"', { obj: { a: 1 } })).toBe(false);
+    expect(holdsFor('text startsWith "he"', { text: 'hello' })).toBe(true);
+    expect(holdsFor('text startsWith "lo"', { text: 'hello' })).toBe(false);
+    expect(holdsFor('text startsWith 1', { text: '1a' })).toBe(false);
+    expect(holdsFor('n startsWith "1"', { n: 12 })).toBe(false);
+    expect(holdsFor('type matches /^RUN_/', { type: 'RUN_STARTED' })).toBe(true);
+    expect(holdsFor('type matches /^RUN_/', { type: 'TEXT' })).toBe(false);
+    expect(holdsFor('type matches /^run_/i', { type: 'RUN_STARTED' })).toBe(true);
+    expect(holdsFor('type matches /^1/', { type: 12 })).toBe(false);
+    expect(holdsFor('type matches "RUN"', { type: 'RUN' })).toBe(false);
+    expect(holdsFor('type matches nope', { type: 'RUN' })).toBe(false);
+  });
+
+  it('a regex whose test is too long never matches in a condition', () => {
+    const long = 'x'.repeat(2_000_000);
+    expect(holdsFor('text matches /x/', { text: long })).toBe(false);
+    expect(holdsFor('text matches /^x+$/', { text: long })).toBe(false);
+    expect(holdsFor('text matches /x/', { text: 'x'.repeat(10) })).toBe(true);
+    expect(holdsFor('!(text matches /x/)', { text: long })).toBe(true);
+  });
+
+  it('evaluates [?…] inside a condition against each element', () => {
+    expect(holdsFor('items[?price > 10]', { items: [{ price: 5 }, { price: 15 }] })).toBe(true);
+    expect(
+      holdsFor('items[?price > 10].price == [15]', { items: [{ price: 5 }, { price: 15 }] }),
+    ).toBe(true);
+    expect(holdsFor('items[*].price == [5, 15]', { items: [{ price: 5 }, { price: 15 }] })).toBe(
+      true,
+    );
+    expect(holdsFor('items[0].price == 5', { items: [{ price: 5 }] })).toBe(true);
+    expect(holdsFor('items[3].price == 5', { items: [{ price: 5 }] })).toBe(false);
+  });
+
+  it('never reads a source from inside a condition', () => {
+    const span = { start: 0, end: 4 };
+    const condition: Expr = { kind: 'source', name: 'body', span };
+    expect(holds(condition, item({ body: 1 }))).toBe(false);
+  });
+});
+
+describe('regular expression caching', () => {
+  it('compiles each regex node once however often it runs', () => {
+    const condition = parse('type matches /^RUN_/i && text matches /a/', 'condition');
+    const filtered = parse('body | match(/b(c)/)');
+    vi.mocked(regex.compilePattern).mockClear();
+    for (let run = 0; run < 50; run += 1) {
+      holds(condition, item({ type: 'run_started', text: 'a' }));
+      evaluate(filtered, sourcesWith({ body: found('abc') }));
+    }
+    expect(vi.mocked(regex.compilePattern)).toHaveBeenCalledTimes(3);
+  });
+
+  it('compiles a regex node of a different expression separately', () => {
+    const first = parse('type matches /^A/', 'condition');
+    const second = parse('type matches /^A/', 'condition');
+    vi.mocked(regex.compilePattern).mockClear();
+    holds(first, item({ type: 'A' }));
+    holds(second, item({ type: 'A' }));
+    expect(vi.mocked(regex.compilePattern)).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('evaluate values nested 10,000 levels deep', () => {
+  it('walks a value nested 10,000 levels deep without overflowing', () => {
+    const deep = nested(10_000, 'leaf');
+    const outcome = run('body.next', bodyOf({ next: deep }));
+    expect(outcome.present).toBe(true);
+    expect(presentValue(outcome)).toBe(deep);
+
+    const json = presentValue(run('body | json', bodyOf(deep)));
+    expect(typeof json === 'string' && json.length).toBe(8 * 10_000 + 6 + 10_000);
+
+    const lists = nestedLists(10_000, 7);
+    const mapped = presentValue(run('body[*]', bodyOf(lists)));
+    expect(Array.isArray(mapped) && mapped.length).toBe(1);
+    expect(presentValue(run('body[0]', bodyOf(lists)))).toBe((lists as Value[])[0]);
+
+    expect(holdsFor('a == b', { a: nested(10_000, 1), b: nested(10_000, 1) })).toBe(true);
+    expect(holdsFor('a == b', { a: nested(10_000, 1), b: nested(10_000, 2) })).toBe(false);
+    expect(
+      holdsFor('a.next.next == b.next.next', { a: nested(10_000, 1), b: nested(10_000, 1) }),
+    ).toBe(true);
+    expect(presentValue(run('body | join(",")', bodyOf([deep, deep])))).toEqual(
+      expect.stringContaining('"leaf"'),
+    );
+  });
+
+  it('evaluates an expression with thousands of chained steps without recursing per step', () => {
+    const path = `body${'.next'.repeat(700)}`;
+    const outcome = run(path, bodyOf(nested(700, 'leaf')));
+    expect(presentValue(outcome)).toBe('leaf');
+    const chain = Array.from({ length: 1_000 }, () => 'a').join('||');
+    expect(holdsFor(chain, { a: true })).toBe(true);
+    expect(holdsFor(chain, { b: true })).toBe(false);
+    const filters = `body${' | default(1)'.repeat(300)}`;
+    expect(run(filters, bodyOf(1)).present).toBe(true);
+  });
+});
