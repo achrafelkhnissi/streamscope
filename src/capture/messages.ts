@@ -21,10 +21,12 @@ export const eventStreamBodyReason =
   'the response is an event stream; use first(…), last(…) or all(…)';
 export const jsonPathLimitReason = 'jsonpath() took too long or used too much memory';
 export const bodyLimitReason = 'evaluating the body took too long or used too much memory';
+export const eventsLimitReason = 'evaluating the events took too long or used too much memory';
 export const bodyUnavailableReason = 'the body is no longer available';
 export const evaluationCancelledReason = 'evaluating the capture was cancelled';
 export const replyUnavailableReason = 'the reply text is no longer available';
 export const eventsUnavailableReason = 'the events are no longer available for this capture';
+export const eventUnavailableReason = 'the event is no longer available for this capture';
 export const noReplyReason = 'the response has no recognised reply';
 export const replyCutOffReason = 'the reply is larger than 1 MiB';
 export const noHeadersReason = 'the response has no headers';
@@ -36,6 +38,7 @@ export const hardReasons: ReadonlySet<string> = new Set([
   eventStreamBodyReason,
   bodyUnavailableReason,
   eventsUnavailableReason,
+  eventUnavailableReason,
   replyUnavailableReason,
   noReplyReason,
   replyCutOffReason,

@@ -2,12 +2,13 @@ import type { StreamEvent } from '../events/model';
 import type { Expr, SourceNode, Value } from '../expressions/ast';
 import { holds, type ConditionItem, type Outcome } from '../expressions/evaluate';
 import { sourcesOf } from '../expressions/parse';
-import type { RunEnd } from '../runs/observer';
+import type { RunAccess, RunEnd } from '../runs/observer';
 import type { ResponseHead } from '../transport/model';
 import {
   evaluateJobs,
   evaluateWith,
   fileBodyBytes,
+  inlineBodyBytes,
   inserted,
   sourceKey,
   type BodyJob,
@@ -20,6 +21,7 @@ import {
   cancelledReason,
   eventsUnavailableReason,
   eventStreamBodyReason,
+  eventUnavailableReason,
   failedReason,
   maxCollectedBytes,
   maxCollectedEvents,
@@ -66,6 +68,9 @@ type HeadNode = Extract<SourceNode, { kind: 'source' }> & { name: keyof HeadValu
 interface Match {
   index: number;
   value: Value;
+  offset: number;
+  length: number;
+  format: 'sse' | 'ndjson';
 }
 
 type Watch =
@@ -107,6 +112,7 @@ interface Tracked {
   readonly budget: Budget;
   watches: Watch[];
   settled: boolean;
+  inFlight: boolean;
 }
 
 interface Collection {
@@ -206,6 +212,34 @@ function headValues(head: ResponseHead): HeadValues {
   };
 }
 
+function matchOf(event: StreamEvent): Match {
+  return {
+    index: event.index,
+    value: event.value,
+    offset: event.offset,
+    length: event.length,
+    format: event.sse === undefined ? 'ndjson' : 'sse',
+  };
+}
+
+function largeMatch(watch: Watch): Match | undefined {
+  return watch.kind !== 'all' &&
+    watch.kind !== 'count' &&
+    watch.match !== undefined &&
+    watch.match.length > inlineBodyBytes
+    ? watch.match
+    : undefined;
+}
+
+function matchCollected(match: Match, path: string | undefined): Collected | undefined {
+  if (path !== undefined) {
+    return { kind: 'ranges', ranges: [match.offset, match.length], index: match.index };
+  }
+  return match.length <= maxSentValueBytes
+    ? { kind: 'values', values: [match.value], index: match.index }
+    : undefined;
+}
+
 function matchedNow(tracked: Tracked): boolean {
   const [watch] = tracked.watches;
   return (
@@ -294,6 +328,8 @@ export class CaptureTracker {
   private rangesEnd = 0;
   private readonly counts: EventCounts = { events: 0, malformed: 0, oversize: 0 };
   private response: HeadValues | undefined;
+  private access: RunAccess | undefined;
+  private readonly inFlight: Promise<void>[] = [];
   private ending: Promise<void> | undefined;
 
   constructor(
@@ -312,6 +348,7 @@ export class CaptureTracker {
         budget: newBudget(),
         watches: sources.filter(isEventNode).map(watchOf),
         settled: false,
+        inFlight: false,
       };
     });
     this.watching = this.tracked.filter((tracked) => tracked.watches.length > 0);
@@ -340,8 +377,9 @@ export class CaptureTracker {
     return retained / 2;
   }
 
-  head(head: ResponseHead): void {
+  head(head: ResponseHead, access?: RunAccess): void {
     this.response = headValues(head);
+    this.access = access;
     for (const tracked of this.tracked) {
       if (!tracked.settled && tracked.timing === 'head') {
         this.settle(tracked, inserted(this.evaluateNow(tracked, headPhase)));
@@ -373,12 +411,18 @@ export class CaptureTracker {
         this.fail(tracked, overflow);
         changed = true;
       } else if (matchedNow(tracked)) {
-        this.settle(tracked, inserted(this.evaluateNow(tracked, eventPhase)));
+        const [watch] = tracked.watches;
+        const large = watch === undefined ? undefined : largeMatch(watch);
+        if (large === undefined) {
+          this.settle(tracked, inserted(this.evaluateNow(tracked, eventPhase)));
+        } else {
+          this.evaluateLater(tracked, large);
+        }
         changed = true;
       }
     }
     if (changed) {
-      this.watching = this.watching.filter((tracked) => !tracked.settled);
+      this.watching = this.watching.filter((tracked) => !tracked.settled && !tracked.inFlight);
     }
   }
 
@@ -394,14 +438,41 @@ export class CaptureTracker {
     return this.ending;
   }
 
+  private evaluateLater(tracked: Tracked, match: Match): void {
+    tracked.inFlight = true;
+    const work = async (): Promise<void> => {
+      const path = await this.access?.spillPath(match.offset + match.length).catch(() => undefined);
+      const subject: BodySubject = { kind: 'events', format: match.format, path, query: undefined };
+      const job = this.job(tracked, { subject, phase: eventPhase, path });
+      if (typeof job === 'string') {
+        this.fail(tracked, job);
+        return;
+      }
+      const results = await evaluateJobs(subject, [job], this.workerFile, {
+        signal: this.access?.signal,
+      });
+      for (const [done, result] of results) {
+        this.settle(done.tracked, result);
+      }
+    };
+    this.inFlight.push(
+      work().catch((error: unknown) => {
+        if (!tracked.settled) {
+          this.fail(tracked, unexpectedReason(error));
+        }
+      }),
+    );
+  }
+
   private async finish(end: RunEnd): Promise<void> {
     this.watching = [];
-    const pending = this.tracked.filter((tracked) => !tracked.settled);
+    const pending = this.tracked.filter((tracked) => !tracked.settled && !tracked.inFlight);
     if (end.kind !== 'completed') {
       for (const tracked of pending) {
         this.fail(tracked, this.endReason(end, tracked.definition.name));
       }
       this.query = undefined;
+      await Promise.all(this.inFlight);
       return;
     }
     const format = end.format === 'sse' || end.format === 'ndjson' ? end.format : undefined;
@@ -412,8 +483,8 @@ export class CaptureTracker {
     const jobs: TrackedJob[] = [];
     for (const tracked of pending) {
       const job = this.job(tracked, subject);
-      if (job === undefined) {
-        this.fail(tracked, eventsUnavailableReason);
+      if (typeof job === 'string') {
+        this.fail(tracked, job);
       } else {
         jobs.push(job);
       }
@@ -424,6 +495,7 @@ export class CaptureTracker {
     for (const [job, result] of results) {
       this.settle(job.tracked, result);
     }
+    await Promise.all(this.inFlight);
   }
 
   private async bodyPhase(
@@ -473,18 +545,27 @@ export class CaptureTracker {
   private job(
     tracked: Tracked,
     { subject, phase, path }: { subject: BodySubject; phase: Phase; path: string | undefined },
-  ): TrackedJob | undefined {
+  ): TrackedJob | string {
     const gathered = new Map<string, Collected>();
     if (phase.events === 'streamed') {
       if (tracked.queries && subject.kind === 'events' && subject.query === undefined) {
-        return undefined;
+        return eventsUnavailableReason;
       }
-      for (const watch of allWatches(tracked)) {
-        const matches = collected(watch.matches, tracked.budget, path);
-        if (matches === undefined) {
-          return undefined;
+      for (const watch of tracked.watches) {
+        const large = largeMatch(watch);
+        if (watch.kind === 'all') {
+          const matches = collected(watch.matches, tracked.budget, path);
+          if (matches === undefined) {
+            return eventsUnavailableReason;
+          }
+          gathered.set(sourceKey(watch.node), matches);
+        } else if (large !== undefined) {
+          const matched = matchCollected(large, path);
+          if (matched === undefined) {
+            return eventUnavailableReason;
+          }
+          gathered.set(sourceKey(watch.node), matched);
         }
-        gathered.set(sourceKey(watch.node), matches);
       }
     }
     return {
@@ -542,12 +623,14 @@ export class CaptureTracker {
       switch (watch.kind) {
         case 'first':
         case 'last':
-          watch.match = { index: event.index, value: event.value };
+          watch.match = matchOf(event);
+          this.reach(event);
           break;
         case 'nth':
           watch.seen += 1;
           if (watch.seen === watch.position) {
-            watch.match = { index: event.index, value: event.value };
+            watch.match = matchOf(event);
+            this.reach(event);
           }
           break;
         case 'count':
@@ -573,6 +656,12 @@ export class CaptureTracker {
       }
     }
     return undefined;
+  }
+
+  private reach(event: StreamEvent): void {
+    if (event.length > inlineBodyBytes) {
+      this.rangesEnd = Math.max(this.rangesEnd, event.offset + event.length);
+    }
   }
 
   private sourceText(tracked: Tracked, node: SourceNode): string {
@@ -629,7 +718,7 @@ export class CaptureTracker {
     }
     if (phase.events === 'streamed') {
       for (const watch of tracked.watches) {
-        if (watch.kind !== 'all') {
+        if (watch.kind !== 'all' && largeMatch(watch) === undefined) {
           known.set(sourceKey(watch.node), this.watchOutcome(tracked, watch));
         }
       }

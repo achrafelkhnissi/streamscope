@@ -10,7 +10,7 @@ import {
 import type { EventKind, JsonValue, SseFields, StreamEvent } from '../../../src/events/model';
 import { SpillArea } from '../../../src/events/spill';
 import { parseExpression } from '../../../src/expressions/parse';
-import type { RunEnd } from '../../../src/runs/observer';
+import type { RunAccess, RunEnd } from '../../../src/runs/observer';
 import type { ResponseHead } from '../../../src/transport/model';
 import { expectNoChild, longestStall, missingWorker, useCaptureWorker } from './worker';
 
@@ -111,6 +111,13 @@ function completed(format: 'ndjson' | 'sse' | 'json' | 'text', options: EndOptio
     signal: new AbortController().signal,
     readBody: (maxBytes) => Promise.resolve((bytes ?? new Uint8Array()).subarray(0, maxBytes)),
     readReply: () => Promise.resolve(options.reply ?? ''),
+  };
+}
+
+function access(path: string | undefined): RunAccess {
+  return {
+    spillPath: () => Promise.resolve(path),
+    signal: new AbortController().signal,
   };
 }
 
@@ -1130,6 +1137,93 @@ describe('CaptureTracker', () => {
     await run.tracker.end(completed('ndjson'));
 
     expect(run.results.get('differ')).toEqual(resolved('true', undefined, ''));
+  });
+
+  it('a first() capture from a 16 MiB event costs the host under 50 ms', async () => {
+    const zeros = (16 * mebibyte - 40) / 2;
+    const line = `{"type":"BIG","items":[${'0,'.repeat(zeros - 1)}0]}\n`;
+    const spill = await spilledEvents([line]);
+    const range = spill.ranges[0] ?? { offset: 0, length: 0 };
+    expect(range.length).toBeGreaterThan(16 * mebibyte - 64);
+    const value = JSON.parse(line) as JsonValue;
+    const run = harness(
+      [
+        capture('last', 'first(type == "BIG").items[-1]'),
+        capture('filtered', 'first(type == "BIG").items[?@ == 0] | json'),
+      ],
+      files().worker,
+    );
+    run.tracker.head(ndjsonHead, access(spill.path));
+
+    const { stallMs } = await longestStall(() => {
+      run.send(value, range);
+      return run.tracker.end(completed('ndjson', { spill: spill.path }));
+    });
+
+    expect(stallMs).toBeLessThan(100);
+    expect(run.results.get('last')).toEqual(resolved('0', 1, 'items[-1]'));
+    expect(run.results.get('filtered')).toEqual(failed('the value is larger than 1 MiB'));
+    await expectNoChild();
+  });
+
+  it('a large matched event is read from the spill file in the child', async () => {
+    const padding = 'x'.repeat(300_000);
+    const spill = await spilledEvents([
+      '{"type":"SMALL"}\n',
+      `${JSON.stringify({ type: 'BIG', id: 'from-file', padding })}\n`,
+    ]);
+    const [small, big] = spill.ranges;
+    if (small === undefined || big === undefined) {
+      throw new Error('expected two ranges');
+    }
+    const definitions = [
+      capture('first', 'first(type == "BIG").id'),
+      capture('nth', 'nth(1, type == "BIG").id'),
+      capture('last', 'last(type == "BIG").id'),
+    ];
+    const spilledRun = harness(definitions, files().worker);
+    const unspilled = harness(definitions, files().worker);
+    const tooLarge = harness(definitions, files().worker);
+    spilledRun.tracker.head(ndjsonHead, access(spill.path));
+    unspilled.tracker.head(ndjsonHead, access(undefined));
+    tooLarge.tracker.head(ndjsonHead, access(undefined));
+    const hostCopy: JsonValue = { type: 'BIG', id: 'host-copy' };
+
+    for (const run of [spilledRun, unspilled]) {
+      run.send({ type: 'SMALL' }, small);
+      run.send(hostCopy, big);
+    }
+    tooLarge.send({ type: 'SMALL' }, small);
+    tooLarge.send(hostCopy, { offset: big.offset, length: 2 * mebibyte });
+    await spilledRun.tracker.end(completed('ndjson', { spill: spill.path }));
+    await unspilled.tracker.end(completed('ndjson'));
+    await tooLarge.tracker.end(completed('ndjson'));
+
+    for (const name of ['first', 'nth', 'last']) {
+      expect(spilledRun.results.get(name)).toEqual(resolved('from-file', 2, 'id'));
+      expect(unspilled.results.get(name)).toEqual(resolved('host-copy', 2, 'id'));
+      expect(tooLarge.results.get(name)).toEqual(
+        failed('the event is no longer available for this capture'),
+      );
+    }
+    await expectNoChild();
+  });
+
+  it('a small matched event stays on the host', async () => {
+    const small = harness([capture('id', 'first(type == "A").id')]);
+    const large = harness([capture('id', 'first(type == "A").id')]);
+    small.tracker.head(ndjsonHead, access('/synthetic/spill/stream.spill'));
+    large.tracker.head(ndjsonHead, access('/synthetic/spill/stream.spill'));
+
+    small.send({ type: 'A', id: 'a-1' }, { offset: 0, length: 256 * 1024 });
+    large.send({ type: 'A', id: 'a-1' }, { offset: 0, length: 256 * 1024 + 1 });
+
+    expect(small.results.get('id')).toEqual(resolved('a-1', 1, 'id'));
+    expect(large.results.size).toBe(0);
+    await large.tracker.end(completed('ndjson', { spill: '/synthetic/spill/stream.spill' }));
+    expect(large.results.get('id')).toEqual(
+      failed('evaluating the events took too long or used too much memory'),
+    );
   });
 
   it("a secret capture's result is marked secret", async () => {

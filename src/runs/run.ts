@@ -386,7 +386,7 @@ export function startRun(
         limits: input.limits,
       });
       Object.assign(state, { head, sent, status: 'receiving', stream: session });
-      observer?.head(head);
+      observer?.head(head, { spillPath, signal: controller.signal });
       notify();
     },
     onData: (chunk) => {

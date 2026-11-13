@@ -10,8 +10,10 @@ import {
   bodyUnavailableReason,
   checkSourceReason,
   evaluationCancelledReason,
+  eventsLimitReason,
   eventsUnavailableReason,
   eventStreamBodyReason,
+  eventUnavailableReason,
   hardReasons,
   jsonPathLimitReason,
   missingQueryReason,
@@ -23,7 +25,8 @@ import {
 import type { CaptureDefinition } from './tracker';
 
 export type Collected =
-  { kind: 'values'; values: readonly Value[] } | { kind: 'ranges'; ranges: readonly number[] };
+  | { kind: 'values'; values: readonly Value[]; index?: number }
+  | { kind: 'ranges'; ranges: readonly number[]; index?: number };
 
 export type BodySubject =
   | { kind: 'body'; bytes: Uint8Array; contentType: string | undefined }
@@ -130,10 +133,6 @@ export function sourceKey(node: SourceNode): string {
 
 export function valuesOnly(collected: Collected): readonly Value[] | undefined {
   return collected.kind === 'values' ? collected.values : undefined;
-}
-
-function needsChild(node: SourceNode): boolean {
-  return node.kind === 'jsonpath' || (node.kind === 'events' && node.name === 'all');
 }
 
 function hasJsonPath(expression: Expr): boolean {
@@ -305,16 +304,22 @@ export function jobEvaluator(
       return { present: false, reason: notAnEventStreamReason };
     }
     const collected = job.collected.get(sourceKey(node));
-    const values = collected === undefined ? undefined : read(collected);
-    if (values !== undefined) {
-      return { present: true, value: values, path: '' };
+    if (collected === undefined) {
+      return {
+        present: false,
+        reason: unavailableSourceReason(job.text.slice(node.span.start, node.span.end)),
+      };
     }
-    return collected === undefined
-      ? {
-          present: false,
-          reason: unavailableSourceReason(job.text.slice(node.span.start, node.span.end)),
-        }
-      : { present: false, reason: eventsUnavailableReason };
+    const values = read(collected);
+    if (collected.index === undefined) {
+      return values === undefined
+        ? { present: false, reason: eventsUnavailableReason }
+        : { present: true, value: values, path: '' };
+    }
+    const [value] = values ?? [];
+    return value === undefined
+      ? { present: false, reason: eventUnavailableReason }
+      : { present: true, value, path: '', event: collected.index };
   };
   return (job) =>
     evaluateWith(
@@ -328,9 +333,12 @@ function unansweredResult(job: BodyJob, cancelled: boolean): Inserted {
   if (cancelled) {
     return { present: false, reason: evaluationCancelledReason };
   }
+  if (hasJsonPath(job.expression)) {
+    return { present: false, reason: jsonPathLimitReason };
+  }
   return {
     present: false,
-    reason: hasJsonPath(job.expression) ? jsonPathLimitReason : bodyLimitReason,
+    reason: readsBody(job.expression) ? bodyLimitReason : eventsLimitReason,
   };
 }
 
@@ -432,9 +440,10 @@ export async function evaluateJobs<Job extends BodyJob>(
   const away: Job[] = [];
   for (const job of jobs) {
     const child =
-      sourcesOf(job.expression).some(
-        (node) => needsChild(node) && !job.known.has(sourceKey(node)),
-      ) ||
+      sourcesOf(job.expression).some((node) => {
+        const key = sourceKey(node);
+        return !job.known.has(key) && (node.kind === 'jsonpath' || job.collected.has(key));
+      }) ||
       (subject.kind !== 'events' && readsBody(job.expression) && !bodyInline());
     (child ? away : inline).push(job);
   }

@@ -14,7 +14,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { SpillFile } from '../../../src/events/spill';
 import { parseHttpFile } from '../../../src/http-file/parse';
 import { describeOutcome, formatBytes } from '../../../src/response/labels';
-import type { RunEnd, RunObserver } from '../../../src/runs/observer';
+import type { RunAccess, RunEnd, RunObserver } from '../../../src/runs/observer';
 import {
   requestKey,
   requestKeyDocument,
@@ -1241,6 +1241,7 @@ describe('the observer sees head, events and exactly one end on every exit path'
   interface Recording {
     observer: RunObserver;
     heads: number[];
+    accesses: RunAccess[];
     events: number[];
     ends: RunEnd[];
   }
@@ -1248,8 +1249,9 @@ describe('the observer sees head, events and exactly one end on every exit path'
   function recording(): Recording {
     const recorded: Recording = {
       observer: {
-        head: (head) => {
+        head: (head, runAccess) => {
           recorded.heads.push(head.status);
+          recorded.accesses.push(runAccess);
         },
         event: (event) => {
           recorded.events.push(event.index);
@@ -1259,6 +1261,7 @@ describe('the observer sees head, events and exactly one end on every exit path'
         },
       },
       heads: [],
+      accesses: [],
       events: [],
       ends: [],
     };
@@ -1308,6 +1311,10 @@ describe('the observer sees head, events and exactly one end on every exit path'
     expect(await end.readReply()).toBe(await run.readReply());
     expect((await end.readBody(1024))?.length).toBe(0);
     expect(end.reply).toEqual({ recognised: true, truncated: false });
+    const runAccess = recorded.accesses[0];
+    expect(runAccess?.signal).toBe(end.signal);
+    expect(await runAccess?.spillPath(1)).toMatch(/\.spill$/);
+    expect(await runAccess?.spillPath(Number.MAX_SAFE_INTEGER)).toBeUndefined();
   });
 
   it('completed: a JSON body that readBody returns whole or cut', async () => {

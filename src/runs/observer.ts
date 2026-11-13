@@ -18,8 +18,13 @@ export type RunEnd =
   | { kind: 'cancelled' }
   | { kind: 'blocked'; message: string };
 
+export interface RunAccess {
+  spillPath: (end: number) => Promise<string | undefined>;
+  signal: AbortSignal;
+}
+
 export interface RunObserver {
-  head(head: ResponseHead): void;
+  head(head: ResponseHead, access: RunAccess): void;
   event(event: StreamEvent): void;
   end(end: RunEnd): void;
 }
