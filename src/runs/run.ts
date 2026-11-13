@@ -103,6 +103,7 @@ export interface RunHandle {
   readBody(maxBytes: number): Promise<Uint8Array | undefined>;
   readRaw(): Promise<string | undefined>;
   readReply(): Promise<string | undefined>;
+  indexBytes(): number;
   release(): Promise<void>;
 }
 
@@ -464,7 +465,7 @@ export function startRun(
       };
     },
     compact: () => {
-      session?.store.release();
+      session?.store.compact();
       if (endedAt === undefined) {
         return;
       }
@@ -503,6 +504,7 @@ export function startRun(
       const bytes = await spillFile?.readSide();
       return bytes === undefined ? undefined : decoder.decode(bytes);
     },
+    indexBytes: () => session?.store.indexBytes ?? 0,
     release: async () => {
       released = true;
       cancel();

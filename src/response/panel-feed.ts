@@ -3,7 +3,7 @@ import type { EventStore } from '../events/store';
 import type { RunHandle, RunSnapshot } from '../runs/run';
 import { classifyContentType } from '../streaming/detect';
 import { renderHeadersDocument } from './headers-document';
-import { capTail, eventText, isEventStream, panelStatus } from './panel-content';
+import { capTail, detailNote, eventText, isEventStream, panelStatus } from './panel-content';
 import {
   panelLimits,
   type PanelBody,
@@ -342,11 +342,13 @@ export class PanelFeed {
         ? { text: unavailableEvent, truncated: false }
         : eventText(event, panelLimits.inlineEventBytes);
     const capped = capText(shown.text, panelLimits.inlineEventBytes);
+    const note = event === undefined ? undefined : detailNote(event, index);
     this.options.post({
       type: 'detail',
       run: this.run.id,
       index,
       text: capped.text,
+      note: note === undefined ? undefined : capText(note, panelLimits.inlineEventBytes).text,
       truncated: shown.truncated || capped.cut,
     });
   }
@@ -409,10 +411,23 @@ export class PanelFeed {
   }
 
   private syncBody(snapshot: RunSnapshot): void {
-    if (isEventStream(snapshot) && this.bodyState.kind !== 'stream') {
-      this.bodyState = { kind: 'stream' };
-      this.bodyChanged = true;
+    const kind = this.bodyState.kind;
+    if (isEventStream(snapshot)) {
+      if (kind !== 'stream') {
+        this.changeBody({ kind: 'stream' });
+      }
+    } else if (snapshot.status === 'receiving') {
+      if (kind === 'none') {
+        this.changeBody({ kind: 'arriving' });
+      }
+    } else if (kind === 'arriving') {
+      this.changeBody({ kind: 'none' });
     }
+  }
+
+  private changeBody(body: PanelBody): void {
+    this.bodyState = body;
+    this.bodyChanged = true;
   }
 
   private tailRows(snapshot: RunSnapshot): PanelRow[] {

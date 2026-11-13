@@ -1,4 +1,4 @@
-import type { JsonValue, StreamEvent } from '../events/model';
+import type { EventKind, JsonValue, StreamEvent } from '../events/model';
 import type { EventStore } from '../events/store';
 import { maxLabelLength } from '../streaming/limits';
 import type { PanelRow } from './panel-protocol';
@@ -11,6 +11,11 @@ const hiddenCharacter =
   /[\u0000-\u0008\u000a-\u001f\u007f-\u009f\u061c\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]/;
 
 type JsonObject = { readonly [key: string]: JsonValue };
+
+const markedKinds: Partial<Record<EventKind, string>> = {
+  malformed: 'malformed',
+  oversize: 'oversize',
+};
 
 function isList(node: readonly JsonValue[] | JsonObject): node is readonly JsonValue[] {
   return Array.isArray(node);
@@ -99,12 +104,13 @@ export function panelRow(
 ): PanelRow {
   const summary = store.summary(index);
   const time = summary?.time ?? event?.time;
+  const kind = summary?.kind ?? event?.kind ?? 'text';
   return {
     index,
     time: time === undefined ? '' : elapsed(time),
-    label: displayText(summary?.label ?? event?.label ?? '', maxLabelLength),
+    label: displayText(summary?.label ?? event?.label ?? markedKinds[kind] ?? '', maxLabelLength),
     preview: event === undefined ? '' : displayText(previewText(event), previewLength),
-    kind: summary?.kind ?? event?.kind ?? 'text',
+    kind,
   };
 }
 

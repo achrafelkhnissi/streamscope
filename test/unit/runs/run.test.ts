@@ -1158,6 +1158,25 @@ describe('release', () => {
     expect(store?.inMemory(32)).toBeUndefined();
   });
 
+  it('drops the index of its events, so nothing can be read back', async () => {
+    const server = await track(startStreamServer());
+    const run = startRun(
+      runInput([`GET ${server.url}/stream?rate=100&seconds=0.3&size=256`]),
+      dependencies,
+    );
+    const store = (await run.done).stream?.store;
+    run.compact();
+    expect(run.indexBytes()).toBe(1024 * 27);
+    expect(store?.summary(32)?.label).toBe('RUN_FINISHED');
+
+    await run.release();
+
+    expect(run.indexBytes()).toBe(0);
+    expect(store?.indexBytes).toBe(0);
+    expect(store?.summary(1)).toBeUndefined();
+    expect(await store?.read(32)).toBeUndefined();
+  });
+
   it('marks the run released and its raw data removed', async () => {
     const server = await track(startStreamServer());
     const run = startRun(

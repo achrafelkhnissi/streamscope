@@ -255,6 +255,13 @@ export function eventNote(
     : undefined;
 }
 
+export function detailNote(event: StreamEvent, index: number): string | undefined {
+  if (event.kind === 'malformed' && event.error !== undefined) {
+    return `Event ${String(index)} is not valid JSON: ${event.error}`;
+  }
+  return event.kind === 'oversize' ? eventNote(event, index, false) : undefined;
+}
+
 export function capTail(text: string, maxBytes: number): { text: string; cut: boolean } {
   let excess = Buffer.byteLength(text) - maxBytes;
   if (excess <= 0) {

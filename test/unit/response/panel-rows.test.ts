@@ -223,6 +223,19 @@ describe('panelRow', () => {
     expect(panelRow(storeOf(item), 1, item).label).toBe('');
   });
 
+  it('names a malformed or oversize event that has no label of its own after its kind', () => {
+    const malformed = event(1, { kind: 'malformed', label: undefined, value: '{"type":' });
+    const oversize = event(2, { kind: 'oversize', label: undefined, value: '{"type":"BIG",' });
+    const labelled = event(3, { kind: 'oversize', label: 'BIG', value: '{"type":"BIG",' });
+    const store = storeOf(malformed, oversize, labelled);
+
+    expect(panelRow(store, 1, malformed).label).toBe('malformed');
+    expect(panelRow(store, 2, oversize).label).toBe('oversize');
+    expect(panelRow(store, 3, labelled).label).toBe('BIG');
+    expect(panelRow(store, 1, undefined).label).toBe('malformed');
+    expect(panelRow(store, 2, undefined).label).toBe('oversize');
+  });
+
   it('strips control and bidi characters from the label', () => {
     const item = event(1, { label: 'a\u202eb\u001bc' });
 

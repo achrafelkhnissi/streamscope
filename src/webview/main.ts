@@ -561,12 +561,18 @@ function toggle(index: number): void {
   }
 }
 
-function showDetail(forRun: number, index: number, text: string, truncated: boolean): void {
+function showDetail(message: Extract<ToPanel, { type: 'detail' }>): void {
+  const { run: forRun, index, text, note: marked, truncated } = message;
   closeDetail();
   const node = document.createElement('div');
   node.className = 'detail';
   node.setAttribute('role', 'group');
   node.setAttribute('aria-label', `Event ${String(index)}`);
+  if (marked !== undefined) {
+    const why = document.createElement('p');
+    why.textContent = marked;
+    node.append(why);
+  }
   const pre = document.createElement('pre');
   pre.tabIndex = 0;
   pre.textContent = text;
@@ -673,7 +679,7 @@ function receive(message: ToPanel): void {
       return;
     case 'detail':
       if (message.run === run && message.index === detailWanted) {
-        showDetail(message.run, message.index, message.text, message.truncated);
+        showDetail(message);
       }
       return;
     case 'select':

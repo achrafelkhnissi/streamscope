@@ -43,12 +43,19 @@ export interface ResponsePanelsOptions {
   save(run: RunHandle, documentUri: vscode.Uri): Promise<void>;
 }
 
+export interface ShowOptions {
+  reveal: boolean;
+  readOnly: boolean;
+  openedAfter?: number;
+}
+
 interface Entry {
   key: string;
   run: RunHandle;
   feed: PanelFeed;
   documentUri: vscode.Uri;
   readOnly: boolean;
+  openedAfter: number | undefined;
   panel: vscode.WebviewPanel | undefined;
   listeners: vscode.Disposable[];
   ready: boolean;
@@ -97,14 +104,11 @@ export class ResponsePanels implements vscode.Disposable {
 
   constructor(private readonly options: ResponsePanelsOptions) {}
 
-  show(
-    run: RunHandle,
-    documentUri: vscode.Uri,
-    options: { reveal: boolean; readOnly: boolean },
-  ): void {
+  show(run: RunHandle, documentUri: vscode.Uri, options: ShowOptions): void {
     const key = run.snapshot().key;
     const existing = this.entries.get(key);
     if (existing?.run === run) {
+      existing.openedAfter = options.openedAfter;
       if (existing.panel === undefined) {
         existing.readOnly = options.readOnly;
         existing.feed = this.feed(key, run, options.readOnly);
@@ -116,6 +120,7 @@ export class ResponsePanels implements vscode.Disposable {
     }
     this.options.presenter.attach(run, documentUri);
     const entry = existing ?? this.create(key, run, documentUri, options.readOnly);
+    entry.openedAfter = options.openedAfter;
     if (existing !== undefined) {
       this.detach(existing);
       existing.run = run;
@@ -140,6 +145,11 @@ export class ResponsePanels implements vscode.Disposable {
       this.revealEntry(entry, true);
     }
     this.updateContext();
+  }
+
+  keepsOpenedRun(run: RunHandle): boolean {
+    const entry = this.entries.get(run.snapshot().key);
+    return entry?.panel !== undefined && entry.run !== run && (entry.openedAfter ?? 0) >= run.id;
   }
 
   reveal(key: string, preserveFocus = false): boolean {
@@ -241,6 +251,7 @@ export class ResponsePanels implements vscode.Disposable {
       feed: this.feed(key, run, readOnly),
       documentUri,
       readOnly,
+      openedAfter: undefined,
       panel: undefined,
       listeners: [],
       ready: false,

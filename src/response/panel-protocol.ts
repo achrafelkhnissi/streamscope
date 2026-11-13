@@ -53,6 +53,7 @@ export interface TextDelta {
 
 export type PanelBody =
   | { kind: 'none' }
+  | { kind: 'arriving' }
   | { kind: 'stream' }
   | { kind: 'unavailable' }
   | { kind: 'text'; language: string; text: string }
@@ -80,7 +81,14 @@ export type ToPanel =
       headers: string | undefined;
     }
   | { type: 'rows'; run: number; rows: PanelRow[] }
-  | { type: 'detail'; run: number; index: number; text: string; truncated: boolean }
+  | {
+      type: 'detail';
+      run: number;
+      index: number;
+      text: string;
+      note: string | undefined;
+      truncated: boolean;
+    }
   | { type: 'select'; view: PanelView }
   | { type: 'expand'; index: number };
 

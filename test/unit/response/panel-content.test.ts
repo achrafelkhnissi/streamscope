@@ -4,6 +4,7 @@ import { StreamSession } from '../../../src/events/session';
 import {
   capTail,
   compactEventJson,
+  detailNote,
   eventNote,
   eventText,
   panelBody,
@@ -399,6 +400,29 @@ describe('eventNote', () => {
     expect(eventNote(event('{"type":"BIG",', { kind: 'oversize' }), 9, false)).toBe(
       'Event 9 is larger than streamscope.stream.maxEventSize, so only its beginning was kept.',
     );
+  });
+});
+
+describe('detailNote', () => {
+  it('gives the parse error of a malformed event', () => {
+    expect(
+      detailNote(
+        event('{"type":', { kind: 'malformed', error: 'Unexpected end of JSON input' }),
+        4,
+      ),
+    ).toBe('Event 4 is not valid JSON: Unexpected end of JSON input');
+  });
+
+  it('says that only the beginning of an oversize event was kept, as its document does', () => {
+    const oversize = event('{"type":"BIG",', { kind: 'oversize' });
+
+    expect(detailNote(oversize, 9)).toBe(eventNote(oversize, 9, false));
+  });
+
+  it('says nothing for any other event', () => {
+    expect(detailNote(event({ type: 'A' }), 3)).toBeUndefined();
+    expect(detailNote(event('plain', { kind: 'text' }), 3)).toBeUndefined();
+    expect(detailNote(event('note', { kind: 'comment' }), 3)).toBeUndefined();
   });
 });
 

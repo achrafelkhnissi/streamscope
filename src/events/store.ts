@@ -31,6 +31,7 @@ interface IndexBlock {
 
 const blockSize = 65_536;
 const firstBlockSize = 1024;
+const bytesPerIndexedEvent = 27;
 const kinds: readonly EventKind[] = ['json', 'text', 'malformed', 'oversize', 'comment'];
 const kindCodes: ReadonlyMap<EventKind, number> = new Map(kinds.map((kind, code) => [kind, code]));
 
@@ -57,10 +58,10 @@ function grownBlock(block: IndexBlock): IndexBlock {
 }
 
 export class EventStore {
-  private readonly blocks: (IndexBlock | undefined)[] = [];
+  private blocks: (IndexBlock | undefined)[] = [];
   private droppedBlocks = 0;
   private total = 0;
-  private readonly ring: (StreamEvent | undefined)[];
+  private ring: (StreamEvent | undefined)[];
   private oldest = 1;
   private ringBytes = 0;
   private readonly labels: string[] = [''];
@@ -72,6 +73,14 @@ export class EventStore {
 
   get count(): number {
     return this.total;
+  }
+
+  get indexBytes(): number {
+    let bytes = 0;
+    for (const block of this.blocks) {
+      bytes += (block?.time.length ?? 0) * bytesPerIndexedEvent;
+    }
+    return bytes;
   }
 
   append(event: StreamEvent): void {
@@ -139,9 +148,18 @@ export class EventStore {
     };
   }
 
-  release(): void {
+  compact(): void {
     this.ring.fill(undefined);
     this.ringBytes = 0;
+  }
+
+  release(): void {
+    this.ring = [];
+    this.ringBytes = 0;
+    this.oldest = this.total + 1;
+    this.blocks = [];
+    this.labels.length = 1;
+    this.labelIds.clear();
   }
 
   private record(event: StreamEvent): void {

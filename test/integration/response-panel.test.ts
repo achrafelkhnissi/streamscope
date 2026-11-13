@@ -65,6 +65,20 @@ function runStatus(run: number): Thenable<string | undefined> {
   return vscode.commands.executeCommand<string | undefined>('streamscope.test.runStatus', run);
 }
 
+function openEvent(key: string, index: number): Thenable<unknown> {
+  return vscode.commands.executeCommand('streamscope.test.openEvent', key, index);
+}
+
+function responseTabs(): vscode.Uri[] {
+  return vscode.window.tabGroups.all
+    .flatMap((group) => group.tabs)
+    .flatMap((tab) =>
+      tab.input instanceof vscode.TabInputText && tab.input.uri.scheme === 'streamscope-response'
+        ? [tab.input.uri]
+        : [],
+    );
+}
+
 async function waitForState(
   check: (state: ResponseState) => boolean,
   what: string,
@@ -362,6 +376,35 @@ describe('the response panel', () => {
     );
 
     assert.equal(state.events, 5);
+  });
+
+  it('says a text body is still arriving and shows it once it ends', async () => {
+    let finish = (): void => undefined;
+    const server = await startHttpServer((_request, response) => {
+      response.writeHead(200, { 'Content-Type': 'text/plain' });
+      response.write('first part\n');
+      finish = () => {
+        response.end('second part\n');
+      };
+    });
+    servers.push(server);
+    await open('arriving.http', [`GET ${server.url}/text`]);
+
+    start();
+    const arriving = await waitForState(
+      (seen) => seen.status === 'receiving' && seen.visible && seen.body === 'arriving',
+      'the body was not shown as still arriving',
+    );
+    finish();
+    const done = await waitForState(
+      (seen) => seen.status === 'completed' && seen.body === 'text',
+      'the body was not shown once it ended',
+    );
+
+    assert.equal(arriving.view, 'body');
+    assert.equal(arriving.bodyText, undefined);
+    assert.equal(done.view, 'body');
+    assert.equal(done.bodyText, 'first part\nsecond part\n');
   });
 
   it('saves a stream as .ndjson with every event', async () => {
@@ -752,7 +795,7 @@ describe('the response panel', () => {
         'the Reply was not read back',
       );
 
-      assert.equal(rawAgain.readOnly, true);
+      assert.equal(rawAgain.readOnly, false);
       assert.equal(rawAgain.rawChars, raw.rawChars);
       assert.equal(replyAgain.replyChars, reply.replyChars);
     });
@@ -873,7 +916,7 @@ describe('the response panel', () => {
           'the Body of the earlier run was not shown',
         );
 
-        assert.equal(reopened.readOnly, true);
+        assert.equal(reopened.readOnly, false);
         assert.equal(reopened.view, 'body');
         assert.equal(reopened.bodyText, JSON.stringify(json, null, 2));
         assert.equal(await bodySource(run), 'spill');
@@ -947,10 +990,10 @@ describe('the response panel', () => {
       );
     });
 
-    it('reopens a running run from history read-only after its panel was closed', async function () {
+    it('reopens the running latest run from history live, with Stop, after its panel was closed', async function () {
       this.timeout(30_000);
       const server = await streamServer();
-      const editor = await open('history-running-reopen.http', [
+      await open('history-running-reopen.http', [
         `GET ${server.url}/stream?rate=100&seconds=30&size=256`,
       ]);
       start();
@@ -964,21 +1007,166 @@ describe('the response panel', () => {
 
       await showHistory(running.run);
       const reopened = await waitForState(
-        (seen) => seen.run === running.run && seen.visible && seen.rendered >= 5,
+        (seen) => seen.run === running.run && seen.visible && seen.active && seen.rendered >= 5,
         'the running run was not reopened',
         10_000,
         running.key,
       );
 
-      assert.equal(reopened.readOnly, true);
-      assert.match(reopened.title ?? '', / · \d{2}:\d{2}:\d{2}$/);
+      assert.equal(reopened.readOnly, false);
+      assert.equal(reopened.readOnlyContext, false);
+      assert.doesNotMatch(reopened.title ?? '', / · \d{2}:\d{2}:\d{2}$/);
       assert.equal(reopened.status, 'receiving');
       assert.equal(panelTabs().length, 1);
-      await vscode.commands.executeCommand('streamscope.stopRequest', editor.document.uri, 0);
+      await vscode.commands.executeCommand('streamscope.stopRequest');
       await until(
         async () => (await runStatus(running.run)) === 'cancelled',
-        'the run did not end cancelled',
+        'Stop in the reopened panel did not end the run',
       );
+    });
+
+    describe('a run reopened from history', () => {
+      async function reopenEarlier(
+        name: string,
+        newer: string,
+      ): Promise<{ earlier: ResponseState; newer: ResponseState; uri: vscode.Uri }> {
+        const server = await streamServer();
+        const { document } = await open(name, [
+          '# @name stream',
+          `GET ${server.url}/stream?rate=100&seconds=0.3&size=256`,
+        ]);
+        const uri = document.uri;
+        await vscode.commands.executeCommand('streamscope.sendRequest', uri, 1);
+        const earlier = await waitForState(
+          (seen) => seen.status === 'completed' && seen.rendered === seen.events,
+          'the earlier run did not complete',
+        );
+        const edit = new vscode.WorkspaceEdit();
+        edit.replace(
+          uri,
+          new vscode.Range(1, 0, 1, document.lineAt(1).text.length),
+          `GET ${server.url}/stream?${newer}`,
+        );
+        await vscode.workspace.applyEdit(edit);
+        await document.save();
+        sending.push(vscode.commands.executeCommand('streamscope.sendRequest', uri, 1));
+        const latest = await waitForState(
+          (seen) => seen.run !== earlier.run && seen.status !== 'sending',
+          'the newer run did not show',
+        );
+        await showHistory(earlier.run);
+        await waitForState(
+          (seen) => seen.run === earlier.run && seen.visible && seen.rendered === seen.events,
+          'the earlier run was not reopened',
+        );
+        return { earlier, newer: latest, uri };
+      }
+
+      it('stays in the panel when the latest run ends', async function () {
+        this.timeout(30_000);
+        const { earlier, newer } = await reopenEarlier(
+          'history-stays-end.http',
+          'rate=100&seconds=1.5&size=256',
+        );
+
+        await until(
+          async () => (await runStatus(newer.run)) === 'completed',
+          'the newer run did not complete',
+        );
+        await new Promise((resolve) => setTimeout(resolve, 500));
+
+        const state = await responseState(earlier.key);
+        assert.equal(state?.run, earlier.run);
+        assert.equal(state.readOnly, true);
+        assert.equal(panelTabs().length, 1);
+      });
+
+      it('stays in the panel when the latest run is stopped from the status bar', async function () {
+        this.timeout(30_000);
+        const { earlier, newer } = await reopenEarlier(
+          'history-stays-stop.http',
+          'rate=100&seconds=30&size=256',
+        );
+
+        await vscode.commands.executeCommand('streamscope.stopRunningRequest');
+        await until(
+          async () => (await runStatus(newer.run)) === 'cancelled',
+          'the status bar did not stop the newer run',
+        );
+        await new Promise((resolve) => setTimeout(resolve, 500));
+
+        const state = await responseState(earlier.key);
+        assert.equal(state?.run, earlier.run);
+        assert.equal(state.readOnly, true);
+      });
+
+      it('keeps its run when the view is switched', async function () {
+        this.timeout(30_000);
+        const { earlier } = await reopenEarlier(
+          'history-stays-view.http',
+          'rate=100&seconds=0.3&size=256',
+        );
+
+        await vscode.commands.executeCommand('streamscope.showResponseView', 'raw');
+        const state = await waitForState(
+          (seen) => seen.view === 'raw' && seen.rawChars > 0,
+          'the Raw view was not shown',
+          10_000,
+          earlier.key,
+        );
+
+        assert.equal(state.run, earlier.run);
+        assert.equal(state.readOnly, true);
+      });
+
+      it('is shown again from its own event document, not the latest run', async function () {
+        this.timeout(30_000);
+        const { earlier } = await reopenEarlier(
+          'history-stays-event.http',
+          'rate=100&seconds=0.3&size=256',
+        );
+        await openEvent(earlier.key, 3);
+        await until(
+          () => responseTabs().some((uri) => uri.path.endsWith('/event-3.json')),
+          'the event document did not open',
+        );
+        await vscode.window.tabGroups.close(panelTabs());
+        await until(
+          async () => (await responseState(earlier.key)) === undefined,
+          'the panel did not close',
+        );
+
+        await vscode.commands.executeCommand('streamscope.showResponse');
+        const shown = await waitForState(
+          (seen) => seen.visible,
+          'Show Response did not show a panel',
+          10_000,
+          earlier.key,
+        );
+
+        assert.equal(shown.run, earlier.run);
+        assert.equal(shown.readOnly, true);
+        assert.ok(
+          responseTabs().some((uri) => uri.path.endsWith('/event-3.json')),
+          'the event document of the shown run was closed',
+        );
+      });
+
+      it('gives way to the latest run when its request is shown', async function () {
+        this.timeout(30_000);
+        const { newer, uri } = await reopenEarlier(
+          'history-gives-way.http',
+          'rate=100&seconds=0.3&size=256',
+        );
+
+        await vscode.commands.executeCommand('streamscope.showResponse', uri, 1);
+        const latest = await waitForState(
+          (seen) => seen.run === newer.run && seen.visible,
+          'the latest run did not come back',
+        );
+
+        assert.equal(latest.readOnly, false);
+      });
     });
 
     it('keeps a run that is still running while older runs are dropped', async function () {

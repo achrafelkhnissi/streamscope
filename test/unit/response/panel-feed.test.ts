@@ -326,7 +326,11 @@ describe('PanelFeed', () => {
     page.set({ bodyKept: false });
     page.feed.refresh();
 
-    expect(page.posted[0]).toMatchObject({ type: 'reset', view: 'body', body: { kind: 'none' } });
+    expect(page.posted[0]).toMatchObject({
+      type: 'reset',
+      view: 'body',
+      body: { kind: 'arriving' },
+    });
     expect(page.last().body).toEqual({ kind: 'stream' });
     expect(page.last().raw).toEqual({ reset: true, text: lines(1, 2) });
     expect(page.posted.at(-1)).toEqual({ type: 'select', view: 'raw' });
@@ -374,7 +378,7 @@ describe('PanelFeed', () => {
     const page = harness({ spill: await spillFile() });
     page.write(lines(1, 10));
     page.session.end();
-    page.session.store.release();
+    page.session.store.compact();
 
     page.feed.start();
     const update = page.last();
@@ -393,7 +397,7 @@ describe('PanelFeed', () => {
     const large = JSON.stringify({ type: 'LARGE', padding: 'x'.repeat(readBackBytes) });
     page.write(`${lines(1, 2)}${large}\n${lines(4, 2)}`);
     page.session.end();
-    page.session.store.release();
+    page.session.store.compact();
     const read = vi.spyOn(page.session.store, 'read');
 
     page.feed.start();
@@ -411,7 +415,7 @@ describe('PanelFeed', () => {
     const page = harness();
     page.write(lines(1, 1000));
     page.feed.start();
-    page.session.store.release();
+    page.session.store.compact();
     let active = 0;
     let most = 0;
     const started: number[] = [];
@@ -456,7 +460,7 @@ describe('PanelFeed', () => {
     const page = harness();
     page.write(lines(1, 1000));
     page.feed.start();
-    page.session.store.release();
+    page.session.store.compact();
     vi.spyOn(page.session.store, 'read').mockRejectedValue(new Error('synthetic EIO'));
 
     await page.feed.window(3, 4, false);
@@ -489,7 +493,7 @@ describe('PanelFeed', () => {
   it('says an event is no longer available when it cannot be read', async () => {
     const page = harness();
     page.write(lines(1, 3));
-    page.session.store.release();
+    page.session.store.compact();
     page.feed.start();
 
     await page.feed.detail(2);
@@ -555,6 +559,82 @@ describe('PanelFeed', () => {
     ).toBe(true);
   });
 
+  it('sends the parse error of a malformed event with its detail', async () => {
+    const page = harness();
+    page.write(`${JSON.stringify({ type: 'OK' })}\n{"type":\n`);
+    page.feed.start();
+
+    await page.feed.detail(1);
+    const valid = page.posted.at(-1);
+    await page.feed.detail(2);
+    const malformed = page.posted.at(-1);
+
+    expect(valid).toMatchObject({ type: 'detail', index: 1, note: undefined });
+    expect(malformed).toMatchObject({ type: 'detail', index: 2, text: '{"type":' });
+    expect(malformed?.type === 'detail' && malformed.note).toMatch(
+      /^Event 2 is not valid JSON: \S/,
+    );
+  });
+
+  it('says why the detail of an oversize event is only its beginning', async () => {
+    const page = harness();
+    page.write(lines(1, 3));
+    page.feed.start();
+    const oversize: StreamEvent = {
+      index: 2,
+      time: 5,
+      offset: 0,
+      length: 20_000_000,
+      line: 2,
+      kind: 'oversize',
+      value: '{"type":"BIG",',
+      label: undefined,
+      sse: undefined,
+      marker: undefined,
+      error: undefined,
+      unterminated: false,
+    };
+    vi.spyOn(page.session.store, 'read').mockResolvedValue(oversize);
+
+    await page.feed.detail(2);
+
+    expect(page.posted.at(-1)).toMatchObject({
+      type: 'detail',
+      index: 2,
+      text: '{"type":"BIG",',
+      note: 'Event 2 is larger than streamscope.stream.maxEventSize, so only its beginning was kept.',
+    });
+  });
+
+  it('caps the note of a detail like its text', async () => {
+    const page = harness();
+    page.write(lines(1, 1));
+    page.feed.start();
+    const error = 'é'.repeat(panelLimits.inlineEventBytes);
+    vi.spyOn(page.session.store, 'read').mockResolvedValue({
+      index: 1,
+      time: 5,
+      offset: 0,
+      length: 8,
+      line: 1,
+      kind: 'malformed',
+      value: '{"type":',
+      label: undefined,
+      sse: undefined,
+      marker: undefined,
+      error,
+      unterminated: false,
+    });
+
+    await page.feed.detail(1);
+    const detail = page.posted.at(-1);
+    const note = detail?.type === 'detail' ? (detail.note ?? '') : '';
+
+    expect(note.startsWith('Event 1 is not valid JSON: éé')).toBe(true);
+    expect(Buffer.byteLength(note)).toBeLessThanOrEqual(panelLimits.inlineEventBytes);
+    expect(Buffer.byteLength(note)).toBeGreaterThan(panelLimits.inlineEventBytes - 2);
+  });
+
   it('sends the headers again only when the run changes state', () => {
     const page = harness();
     page.feed.start();
@@ -570,6 +650,43 @@ describe('PanelFeed', () => {
     expect(changed).toContain('### Timing');
     expect(page.last().headers).toBeUndefined();
     expect(page.last().status).toMatchObject({ state: 'completed', running: false });
+  });
+
+  it('says a body is still arriving while it is received, without leaving Body', () => {
+    const page = harness({ contentType: 'text/plain', bodyKept: true, streamView: 'raw' });
+    page.feed.start();
+    page.write('first part ');
+    page.feed.refresh();
+    const receiving = page.feed.body;
+
+    page.set({ status: 'completed' });
+    page.feed.refresh();
+    const ended = page.last().body;
+    page.feed.setBody({ kind: 'text', language: 'plaintext', text: 'first part second part' });
+
+    expect(page.posted[0]).toMatchObject({
+      type: 'reset',
+      view: 'body',
+      body: { kind: 'arriving' },
+    });
+    expect(receiving).toEqual({ kind: 'arriving' });
+    expect(page.posted.some((message) => message.type === 'select')).toBe(false);
+    expect(ended).toEqual({ kind: 'none' });
+    expect(page.feed.body).toEqual({
+      kind: 'text',
+      language: 'plaintext',
+      text: 'first part second part',
+    });
+    expect(page.feed.view).toBe('body');
+  });
+
+  it('says nothing about the body before the response arrives', () => {
+    const page = harness({ contentType: 'text/plain', bodyKept: true });
+    page.set({ status: 'sending', head: undefined });
+
+    page.feed.start();
+
+    expect(page.posted[0]).toMatchObject({ type: 'reset', body: { kind: 'none' } });
   });
 
   it('sends the formatted body once', () => {

@@ -7,6 +7,7 @@ import {
   type PanelEventKind,
   type PanelRunState,
   type PanelView,
+  type ToPanel,
 } from '../../../src/response/panel-protocol';
 import type { RunStatus } from '../../../src/runs/run';
 
@@ -20,6 +21,17 @@ describe('panel protocol', () => {
   it('lists the same event kinds and run states as the extension side', () => {
     expectTypeOf<PanelEventKind>().toEqualTypeOf<EventKind>();
     expectTypeOf<PanelRunState>().toEqualTypeOf<RunStatus>();
+  });
+
+  it('sends the detail of an event with a note that says why it is marked', () => {
+    expectTypeOf<Extract<ToPanel, { type: 'detail' }>>().toEqualTypeOf<{
+      type: 'detail';
+      run: number;
+      index: number;
+      text: string;
+      note: string | undefined;
+      truncated: boolean;
+    }>();
   });
 
   it('names every view the page can show', () => {

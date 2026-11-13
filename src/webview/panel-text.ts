@@ -70,6 +70,8 @@ export function historyNote(status: PanelStatus | undefined): string {
 
 export function bodyNote(body: PanelBody): string {
   switch (body.kind) {
+    case 'arriving':
+      return 'The body is still arriving. Raw shows it as it arrives.';
     case 'stream':
       return 'This response is a stream. See Events and Raw, or save it.';
     case 'unavailable':

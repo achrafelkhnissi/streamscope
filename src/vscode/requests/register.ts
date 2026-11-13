@@ -285,6 +285,24 @@ export function registerRequestFeatures(
     return panels.active() ?? (await target())?.key;
   };
 
+  const showAttached = (key: string, opened: boolean): boolean => {
+    if (panels.reveal(key)) {
+      return true;
+    }
+    const run = presenter.run(key);
+    const documentUri = presenter.documentUri(key);
+    if (run === undefined || documentUri === undefined) {
+      return false;
+    }
+    const latest = registry.latest(key);
+    panels.show(run, documentUri, {
+      reveal: true,
+      readOnly: run !== latest,
+      openedAfter: opened ? latest?.id : undefined,
+    });
+    return panels.reveal(key);
+  };
+
   const showPanel = (key: string): boolean => {
     const latest = registry.latest(key);
     const shownUri = presenter.documentUri(key);
@@ -297,16 +315,7 @@ export function registerRequestFeatures(
       panels.show(latest, shownUri, { reveal: true, readOnly: false });
       return panels.reveal(key);
     }
-    if (panels.reveal(key)) {
-      return true;
-    }
-    const run = presenter.run(key);
-    const documentUri = presenter.documentUri(key);
-    if (run === undefined || documentUri === undefined) {
-      return false;
-    }
-    panels.show(run, documentUri, { reveal: true, readOnly: false });
-    return panels.reveal(key);
+    return showAttached(key, false);
   };
 
   const send = async (
@@ -376,7 +385,7 @@ export function registerRequestFeatures(
       void showBlocked(document, run);
       return;
     }
-    if (hasResponse(run)) {
+    if (hasResponse(run) && !panels.keepsOpenedRun(handle)) {
       showRun();
     }
     if (shown()) {
@@ -442,7 +451,9 @@ export function registerRequestFeatures(
     const uri = editorUri(argument) ?? vscode.window.activeTextEditor?.document.uri;
     const document = uri?.scheme === responseScheme ? presenter.documentFor(uri) : undefined;
     const key = document?.key ?? (await responseKey(argument, line));
-    if (key === undefined || !showPanel(key)) {
+    const shown =
+      key !== undefined && (document === undefined ? showPanel(key) : showAttached(key, true));
+    if (key === undefined || !shown) {
       void vscode.window.showInformationMessage(noResponseMessage);
       return;
     }
@@ -455,7 +466,12 @@ export function registerRequestFeatures(
 
   const reopenRun = (run: RunHandle): void => {
     const { key } = run.snapshot();
-    panels.show(run, vscode.Uri.parse(requestKeyDocument(key)), { reveal: true, readOnly: true });
+    const latest = registry.latest(key);
+    panels.show(run, vscode.Uri.parse(requestKeyDocument(key)), {
+      reveal: true,
+      readOnly: run !== latest,
+      openedAfter: latest?.id,
+    });
     panels.reveal(key);
   };
 
@@ -505,7 +521,9 @@ export function registerRequestFeatures(
     if (chosen === undefined) {
       return;
     }
-    showPanel(key);
+    if (!panels.reveal(key)) {
+      showPanel(key);
+    }
     panels.selectView(key, chosen);
   };
 
@@ -571,6 +589,15 @@ export function registerRequestFeatures(
         typeof id === 'number' ? statuses.get(id) : undefined,
       ),
       vscode.commands.registerCommand('streamscope.test.closeResponseTabs', closeResponseTabs),
+      vscode.commands.registerCommand(
+        'streamscope.test.openEvent',
+        async (key?: unknown, index?: unknown) => {
+          const run = typeof key === 'string' ? presenter.run(key) : undefined;
+          if (run !== undefined && typeof index === 'number') {
+            await presenter.openEvent(run, index, { preview: false });
+          }
+        },
+      ),
       vscode.commands.registerCommand('streamscope.test.bodySource', (id?: unknown) =>
         typeof id === 'number' ? history.find(id)?.snapshot().bodySource : undefined,
       ),

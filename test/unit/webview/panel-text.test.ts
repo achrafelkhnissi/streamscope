@@ -85,6 +85,12 @@ describe('bodyNote', () => {
     expect(bodyNote({ kind: 'text', language: 'json', text: '{}' })).toBe('');
   });
 
+  it('points a body that is still arriving to Raw', () => {
+    expect(bodyNote({ kind: 'arriving' })).toBe(
+      'The body is still arriving. Raw shows it as it arrives.',
+    );
+  });
+
   it('says when the body can no longer be read', () => {
     expect(bodyNote({ kind: 'unavailable' })).toBe('This body is no longer available.');
   });

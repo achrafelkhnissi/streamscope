@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { RunHistory } from '../../../src/runs/history';
+import { maxHistoryIndexBytes, RunHistory } from '../../../src/runs/history';
 import type { RunHandle, RunSnapshot } from '../../../src/runs/run';
 
 interface FakeRun extends RunHandle {
@@ -8,7 +8,7 @@ interface FakeRun extends RunHandle {
 
 const anyRun = (): boolean => true;
 
-function fakeRun(id: number): FakeRun {
+function fakeRun(id: number, indexBytes = 0): FakeRun {
   return {
     id,
     done: new Promise<RunSnapshot>(() => undefined),
@@ -22,8 +22,11 @@ function fakeRun(id: number): FakeRun {
     readBody: () => Promise.resolve(undefined),
     readRaw: () => Promise.resolve(undefined),
     readReply: () => Promise.resolve(undefined),
+    indexBytes: () => indexBytes,
   };
 }
+
+const mebibyte = 1_048_576;
 
 describe('RunHistory', () => {
   it('keeps the newest runs, newest first', () => {
@@ -204,6 +207,64 @@ describe('RunHistory', () => {
     expect(history.list().map((run) => run.id)).toEqual([6, 5, 4]);
     expect(runs.slice(0, 3).every((run) => run.release.mock.calls.length === 1)).toBe(true);
     expect(runs.slice(3).every((run) => run.release.mock.calls.length === 0)).toBe(true);
+  });
+
+  it('bounds the index memory of evictable runs at 32 MiB', () => {
+    expect(maxHistoryIndexBytes).toBe(33_554_432);
+  });
+
+  it('evicts the oldest evictable runs while their index bytes pass 32 MiB, below the run limit', () => {
+    const history = new RunHistory(50, anyRun);
+    const runs = [1, 2, 3, 4].map((id) => fakeRun(id, 12 * mebibyte));
+
+    for (const run of runs.slice(0, 3)) {
+      history.add(run);
+    }
+
+    expect(history.list()).toHaveLength(3);
+    expect(runs.every((run) => run.release.mock.calls.length === 0)).toBe(true);
+
+    history.add(runs[3] as FakeRun);
+
+    expect(history.list().map((run) => run.id)).toEqual([4, 3, 2]);
+    expect(runs[0]?.release).toHaveBeenCalledTimes(1);
+    expect(runs.slice(1).every((run) => run.release.mock.calls.length === 0)).toBe(true);
+  });
+
+  it('keeps evictable runs holding exactly 32 MiB of index and evicts one byte more', () => {
+    const exact = new RunHistory(50, anyRun);
+    for (const run of [
+      fakeRun(1, maxHistoryIndexBytes / 2),
+      fakeRun(2, maxHistoryIndexBytes / 2),
+      fakeRun(3),
+    ]) {
+      exact.add(run);
+    }
+
+    expect(exact.list()).toHaveLength(3);
+
+    const over = new RunHistory(50, anyRun);
+    const oldest = fakeRun(4, maxHistoryIndexBytes / 2);
+    for (const run of [oldest, fakeRun(5, maxHistoryIndexBytes / 2 + 1), fakeRun(6)]) {
+      over.add(run);
+    }
+
+    expect(over.list().map((run) => run.id)).toEqual([6, 5]);
+    expect(oldest.release).toHaveBeenCalledTimes(1);
+  });
+
+  it('counts and evicts only runs the predicate does not protect', () => {
+    const shown = fakeRun(1, 100 * mebibyte);
+    const runs = [shown, fakeRun(2, 20 * mebibyte), fakeRun(3, 20 * mebibyte), fakeRun(4)];
+    const history = new RunHistory(50, (run) => run !== shown);
+
+    for (const run of runs) {
+      history.add(run);
+    }
+
+    expect(history.list().map((run) => run.id)).toEqual([4, 3, 1]);
+    expect(shown.release).not.toHaveBeenCalled();
+    expect(runs[1]?.release).toHaveBeenCalledTimes(1);
   });
 
   it('never evicts the run it is adding, whatever the predicate says', () => {
