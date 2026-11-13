@@ -6,6 +6,8 @@ export type BoundedText = { ok: true; text: string } | { ok: false };
 
 export const maxInsertedLength = 1_048_576;
 
+export const valueTooLargeReason = 'the value is larger than 1 MiB';
+
 interface ListFrame {
   readonly items: readonly Value[];
   index: number;

@@ -3,10 +3,12 @@ import type { Expr, Value } from '../../../src/expressions/ast';
 import {
   evaluate,
   holds,
+  textTooLongReason,
   type ConditionItem,
   type Outcome,
   type Sources,
 } from '../../../src/expressions/evaluate';
+import { valueTooLargeReason } from '../../../src/expressions/insert';
 import { parseExpression, type ExpressionContext } from '../../../src/expressions/parse';
 import * as regex from '../../../src/expressions/regex';
 
@@ -16,6 +18,7 @@ vi.mock('../../../src/expressions/regex', async (importOriginal) => {
 });
 
 const tooLong = 'the text is too long for this regular expression';
+const tooLarge = 'the value is larger than 1 MiB';
 
 function parse(text: string, context: ExpressionContext = 'capture'): Expr {
   const result = parseExpression(text, context);
@@ -287,20 +290,107 @@ describe('evaluate paths', () => {
     });
   });
 
-  it('names the result that is not a list when a wildcard or filter maps over items', () => {
-    expect(run('body.items[*][*]', bodyOf(catalog))).toEqual({
-      present: false,
-      reason: 'has no value at items[*][*] (the value is an object, not a list) in result 1',
+  it('a wildcard on an object yields its member values in insertion order', () => {
+    const answers = bodyOf({ obj: { b: 1, a: 2, c: { x: 1 } }, none: {} });
+    expect(run('body.obj[*]', answers)).toEqual({
+      present: true,
+      value: [1, 2, { x: 1 }],
+      path: 'obj[*]',
     });
-    expect(run('body.items[?price > 5][?id == 3]', bodyOf(catalog))).toEqual({
+    expect(run('body.obj[*][0]', answers)).toEqual({ present: true, value: 1, path: 'obj[*][0]' });
+    expect(run('body.obj[*][-1].x', answers)).toEqual({
+      present: true,
+      value: 1,
+      path: 'obj[*][-1].x',
+    });
+    expect(run('body.none[*]', answers)).toEqual({ present: true, value: [], path: 'none[*]' });
+    expect(run('body[*]', bodyOf({ first: 'a', second: 'b' }))).toEqual({
+      present: true,
+      value: ['a', 'b'],
+      path: '[*]',
+    });
+  });
+
+  it('a filter on an object filters its member values', () => {
+    const answers = bodyOf({ scores: { ann: 3, bob: 9, cy: 12 } });
+    expect(run('body.scores[?@ > 5]', answers)).toEqual({
+      present: true,
+      value: [9, 12],
+      path: 'scores[?…]',
+    });
+    expect(run('body.scores[?@ > 50]', answers)).toEqual({
+      present: true,
+      value: [],
+      path: 'scores[?…]',
+    });
+    expect(
+      run(
+        'body.users[?active].name',
+        bodyOf({
+          users: { u1: { active: true, name: 'Ann' }, u2: { active: false, name: 'Bob' } },
+        }),
+      ),
+    ).toEqual({ present: true, value: ['Ann'], path: 'users[?…].name' });
+    expect(
+      run(
+        'body.users[?active][0].name',
+        bodyOf({
+          users: { u1: { active: false, name: 'Ann' }, u2: { active: true, name: 'Bob' } },
+        }),
+      ),
+    ).toEqual({ present: true, value: 'Bob', path: 'users[?…][0].name' });
+  });
+
+  it('a wildcard or filter after a list flattens the member values of object items', () => {
+    const teams: Value[] = [
+      { name: 'a', roster: { lead: 'ann', dev: 'bob' } },
+      { name: 'b', roster: { lead: 'cy' } },
+      { name: 'c', roster: {} },
+    ];
+    expect(run('body.teams[*].roster[*]', bodyOf({ teams }))).toEqual({
+      present: true,
+      value: ['ann', 'bob', 'cy'],
+      path: 'teams[*].roster[*]',
+    });
+    expect(run('body.teams[*].roster[?@ != "ann"]', bodyOf({ teams }))).toEqual({
+      present: true,
+      value: ['bob', 'cy'],
+      path: 'teams[*].roster[?…]',
+    });
+    expect(run('body.items[*][*]', bodyOf(catalog))).toEqual({
+      present: true,
+      value: [1, 5, ['a', 'b'], 2, 15, ['c'], 3, 25, []],
+      path: 'items[*][*]',
+    });
+    expect(run('body.items[?price > 5][?@ > 10]', bodyOf(catalog))).toEqual({
+      present: true,
+      value: [15, 25],
+      path: 'items[?…][?…]',
+    });
+    expect(run('all()[*]', { all: found([{ a: 1, b: [2] }, { c: 3 }]) })).toEqual({
+      present: true,
+      value: [1, [2], 3],
+      path: '[*]',
+    });
+  });
+
+  it('names the result that is neither a list nor an object when a wildcard or filter maps over items', () => {
+    expect(run('body.items[*][*]', bodyOf({ items: [{ a: 1 }, 2] }))).toEqual({
       present: false,
-      reason: 'has no value at items[?…][?…] (the value is an object, not a list) in result 1',
+      reason:
+        'has no value at items[*][*] (the value is a number, not a list or an object) in result 2',
     });
     expect(
       run('body.items[*].tags[*]', bodyOf({ items: [{ tags: ['a'] }, { tags: 'b' }] })),
     ).toEqual({
       present: false,
-      reason: 'has no value at items[*].tags[*] (the value is a string, not a list) in result 2',
+      reason:
+        'has no value at items[*].tags[*] (the value is a string, not a list or an object) in result 2',
+    });
+    expect(run('body.items[*].tags[?@ == "a"]', bodyOf({ items: [{ tags: null }] }))).toEqual({
+      present: false,
+      reason:
+        'has no value at items[*].tags[?…] (the value is null, not a list or an object) in result 1',
     });
   });
 
@@ -351,9 +441,9 @@ describe('evaluate paths', () => {
       present: false,
       reason: 'has no value at [5] (the list has 3 items)',
     });
-    expect(run('all(type == "X")[*].result.id', answers)).toEqual({
+    expect(run('all(type == "X")[*].result', answers)).toEqual({
       present: false,
-      reason: 'has no value at [*] (the value is an object, not a list) in result 1',
+      reason: 'has no value at [*].result (the value is a string, not an object) in result 1',
     });
     expect(run('all()', { all: found([]) })).toEqual({ present: true, value: [], path: '' });
     expect(run('all(type == "X").result.id', { all: found([]) })).toEqual({
@@ -406,6 +496,65 @@ describe('evaluate paths', () => {
       sourcesWith({ first: found({ result: { id: 'abc' } }, 3) }),
     );
     expect(filtered).toEqual({ present: true, value: 'a', path: 'result.id', event: 3 });
+  });
+
+  it('reads a header name without regard to case, dotted or in brackets', () => {
+    const headers = { headers: found({ 'x-session-token': 'abc', authorization: 'Bearer t' }) };
+    expect(run('headers["x-session-token"]', headers)).toEqual({
+      present: true,
+      value: 'abc',
+      path: '["x-session-token"]',
+    });
+    expect(run('headers["X-Session-Token"]', headers)).toEqual({
+      present: true,
+      value: 'abc',
+      path: '["x-session-token"]',
+    });
+    expect(run('headers.Authorization', headers)).toEqual({
+      present: true,
+      value: 'Bearer t',
+      path: 'authorization',
+    });
+    expect(run('headers.authorization | match(/^Bearer (.+)$/)', headers)).toEqual({
+      present: true,
+      value: 't',
+      path: 'authorization',
+    });
+    expect(run('headers["X-Missing"]', headers)).toEqual({
+      present: false,
+      reason: 'has no value at ["x-missing"] ("x-missing" is missing)',
+    });
+  });
+
+  it('lowercases only the first name step after headers', () => {
+    expect(run('headers.Outer.Inner', { headers: found({ outer: { Inner: 1 } }) })).toEqual({
+      present: true,
+      value: 1,
+      path: 'outer.Inner',
+    });
+    expect(run('headers.Outer.inner', { headers: found({ outer: { Inner: 1 } }) })).toEqual({
+      present: false,
+      reason: 'has no value at outer.inner ("inner" is missing)',
+    });
+  });
+
+  it('keeps the case of names after other sources', () => {
+    expect(
+      run('cookies.SessionId', { cookies: found({ SessionId: 'c', sessionid: 'x' }) }),
+    ).toEqual({
+      present: true,
+      value: 'c',
+      path: 'SessionId',
+    });
+    expect(run('body.Token', bodyOf({ Token: 'a', token: 'b' }))).toEqual({
+      present: true,
+      value: 'a',
+      path: 'Token',
+    });
+    expect(run('body["X-Id"]', bodyOf({ 'x-id': 1 }))).toEqual({
+      present: false,
+      reason: 'has no value at ["X-Id"] ("X-Id" is missing)',
+    });
   });
 
   it('hands every source node to Sources and never computes one itself', () => {
@@ -474,8 +623,10 @@ describe('evaluate paths', () => {
   });
 
   it('has no value for a bare regular expression', () => {
-    const outcome = run('/abc/');
-    expect(outcome.present).toBe(false);
+    expect(run('/abc/')).toEqual({
+      present: false,
+      reason: 'has no value (a regular expression is not a value)',
+    });
   });
 });
 
@@ -660,8 +811,10 @@ describe('evaluate filters', () => {
       filter: { kind: 'match', pattern: '(', flags: '' },
       span,
     };
-    const outcome = evaluate(filter, sourcesWith({}));
-    expect(outcome.present).toBe(false);
+    expect(evaluate(filter, sourcesWith({}))).toEqual({
+      present: false,
+      reason: 'has no value (the regular expression is not valid: Unterminated group.)',
+    });
     const condition: Expr = {
       kind: 'compare',
       operator: 'matches',
@@ -713,11 +866,11 @@ describe('evaluate missing values', () => {
     });
     expect(run('body.a[*]', bodyOf({ a: 5 }))).toEqual({
       present: false,
-      reason: 'has no value at a[*] (the value is a number, not a list)',
+      reason: 'has no value at a[*] (the value is a number, not a list or an object)',
     });
     expect(run('body.a[?@ == 1]', bodyOf({ a: true }))).toEqual({
       present: false,
-      reason: 'has no value at a[?…] (the value is a boolean, not a list)',
+      reason: 'has no value at a[?…] (the value is a boolean, not a list or an object)',
     });
     expect(run('body[0]', bodyOf({}))).toEqual({
       present: false,
@@ -796,7 +949,11 @@ describe('evaluate comparisons and logic', () => {
     expect(outcome('body.nope == body.other')).toEqual(result(true));
     expect(outcome('body.nope != body.other')).toEqual(result(false));
     expect(outcome('body.nope < 1')).toEqual(result(false));
-    expect(outcome('body.nope >= body.other')).toEqual(result(false));
+    expect(outcome('body.nope > body.other')).toEqual(result(false));
+    expect(outcome('body.nope <= body.other')).toEqual(result(true));
+    expect(outcome('body.nope >= body.other')).toEqual(result(true));
+    expect(outcome('body.nope <= 1')).toEqual(result(false));
+    expect(outcome('1 >= body.nope')).toEqual(result(false));
     expect(outcome('body.a == 1')).toEqual(result(true));
     expect(outcome('body.a != 1')).toEqual(result(false));
   });
@@ -914,11 +1071,27 @@ describe('holds', () => {
     expect(holdsFor('nope == /a/', {})).toBe(false);
   });
 
+  it('<= and >= are true when both sides are missing and false when one is', () => {
+    expect(holdsFor('nope <= other', {})).toBe(true);
+    expect(holdsFor('nope >= other', {})).toBe(true);
+    expect(holdsFor('nope <= 1', {})).toBe(false);
+    expect(holdsFor('1 <= nope', {})).toBe(false);
+    expect(holdsFor('nope >= 1', {})).toBe(false);
+    expect(holdsFor('1 >= nope', {})).toBe(false);
+    expect(holdsFor('nope <= other', { other: 1 })).toBe(false);
+    expect(holdsFor('nope <= /a/', {})).toBe(false);
+    expect(holdsFor('nope >= /a/', {})).toBe(false);
+  });
+
   it('a missing side makes every other comparison false', () => {
-    for (const operator of ['<', '<=', '>', '>=']) {
+    for (const operator of ['<', '>']) {
       expect(holdsFor(`nope ${operator} 1`, {})).toBe(false);
       expect(holdsFor(`1 ${operator} nope`, {})).toBe(false);
       expect(holdsFor(`nope ${operator} other`, {})).toBe(false);
+    }
+    for (const operator of ['<=', '>=']) {
+      expect(holdsFor(`nope ${operator} 1`, {})).toBe(false);
+      expect(holdsFor(`1 ${operator} nope`, {})).toBe(false);
     }
     expect(holdsFor('nope in [1]', {})).toBe(false);
     expect(holdsFor('1 in nope', {})).toBe(false);
@@ -1041,9 +1214,15 @@ describe('holds', () => {
   });
 });
 
+describe('reason constants', () => {
+  it('name the fixed reasons', () => {
+    expect(textTooLongReason).toBe(tooLong);
+    expect(valueTooLargeReason).toBe(tooLarge);
+  });
+});
+
 describe('evaluate size limit', () => {
   const kilobyte = 'x'.repeat(1_000);
-  const tooLarge = 'the value is larger than 1 MiB';
 
   it('json fails above 1 MiB', () => {
     expect(run('body | json', bodyOf(Array.from({ length: 2_000 }, () => kilobyte)))).toEqual({

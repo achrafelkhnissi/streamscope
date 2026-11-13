@@ -1,6 +1,6 @@
 import type { CompareOperator, Expr, Filter, SourceNode, Step, Value } from './ast';
 import { compareValues, equalValues } from './compare';
-import { compactJson, insertText, maxInsertedLength } from './insert';
+import { compactJson, insertText, maxInsertedLength, valueTooLargeReason } from './insert';
 import { compilePattern, type CompileResult } from './regex';
 import { isList, isObject } from './value';
 
@@ -40,9 +40,9 @@ interface Walk {
   missing: Absent | undefined;
 }
 
+export const textTooLongReason = 'the text is too long for this regular expression';
+
 const identifier = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
-const textTooLong = 'the text is too long for this regular expression';
-const valueTooLarge = 'the value is larger than 1 MiB';
 const silent: Absent = Object.freeze({ present: false, reason: '' });
 const yes: Present = Object.freeze({ present: true, value: true, path: '' });
 const no: Present = Object.freeze({ present: true, value: false, path: '' });
@@ -104,6 +104,13 @@ function readName(input: Value, name: string): Value | undefined {
   return isObject(input) && Object.hasOwn(input, name) ? input[name] : undefined;
 }
 
+function members(input: Value): readonly Value[] | undefined {
+  if (isList(input)) {
+    return input;
+  }
+  return isObject(input) ? Object.values(input) : undefined;
+}
+
 function readIndex(input: Value, index: number): Value | undefined {
   if (!isList(input)) {
     return undefined;
@@ -118,6 +125,8 @@ function stepFailure(input: Value, step: Step, path: string, suffix: string): Ab
     detail = isObject(input)
       ? `${JSON.stringify(step.name)} is missing`
       : `the value is ${kindOf(input)}, not an object`;
+  } else if (step.kind !== 'index') {
+    detail = `the value is ${kindOf(input)}, not a list or an object`;
   } else if (!isList(input)) {
     detail = `the value is ${kindOf(input)}, not a list`;
   } else {
@@ -214,12 +223,17 @@ function comparison(node: CompareNode, scope: Scope): boolean {
     case '!=':
       return !equality(node, scope);
     default: {
-      const left = evaluateNode(node.left, scope);
-      if (!left.present) {
+      if (node.left.kind === 'regex' || node.right.kind === 'regex') {
         return false;
       }
+      const left = evaluateNode(node.left, scope);
       const right = evaluateNode(node.right, scope);
-      return right.present && relate(node.operator, left.value, right.value);
+      if (!left.present || !right.present) {
+        return (
+          !left.present && !right.present && (node.operator === '<=' || node.operator === '>=')
+        );
+      }
+      return relate(node.operator, left.value, right.value);
     }
   }
 }
@@ -291,12 +305,16 @@ function mapStep(walk: Walk, step: Exclude<Step, IndexStep>, path: string, scope
         mapped.push(next);
         continue;
       }
-    } else if (isList(item)) {
-      const kept = step.kind === 'wildcard' ? item : filterWhere(item, step.condition, scope);
-      for (const element of kept) {
-        mapped.push(element);
+    } else {
+      const children = members(item);
+      if (children !== undefined) {
+        const kept =
+          step.kind === 'wildcard' ? children : filterWhere(children, step.condition, scope);
+        for (const element of kept) {
+          mapped.push(element);
+        }
+        continue;
       }
-      continue;
     }
     walk.missing = scope.explain
       ? stepFailure(item, step, path, ` in result ${String(position + 1)}`)
@@ -322,11 +340,13 @@ function applyStep(walk: Walk, step: Step, scope: Scope): void {
       next = readIndex(walk.value, step.index);
       break;
     case 'wildcard':
-      next = isList(walk.value) ? walk.value : undefined;
+      next = members(walk.value);
       break;
-    case 'where':
-      next = isList(walk.value) ? filterWhere(walk.value, step.condition, scope) : undefined;
+    case 'where': {
+      const children = members(walk.value);
+      next = children === undefined ? undefined : filterWhere(children, step.condition, scope);
       break;
+    }
   }
   if (next === undefined) {
     walk.missing = scope.explain ? stepFailure(walk.value, step, path, '') : silent;
@@ -384,7 +404,7 @@ function applyFilter(walk: Walk, filter: Filter, scope: Scope): void {
       }
       const joined = joinText(value, filter.separator);
       if (joined === undefined) {
-        lose(walk, scope, () => valueTooLarge);
+        lose(walk, scope, () => valueTooLargeReason);
       } else {
         walk.value = joined;
       }
@@ -395,7 +415,7 @@ function applyFilter(walk: Walk, filter: Filter, scope: Scope): void {
       if (json.ok) {
         walk.value = json.text;
       } else {
-        lose(walk, scope, () => valueTooLarge);
+        lose(walk, scope, () => valueTooLargeReason);
       }
       return;
     }
@@ -413,7 +433,7 @@ function applyFilter(walk: Walk, filter: Filter, scope: Scope): void {
       }
       const found = compiled.pattern.firstMatch(value);
       if (found === 'too-long') {
-        lose(walk, scope, () => textTooLong);
+        lose(walk, scope, () => textTooLongReason);
       } else if (found === undefined) {
         lose(walk, scope, () =>
           noValue(path, `the text does not match /${filter.pattern}/${filter.flags}`),
@@ -446,12 +466,20 @@ function evaluateChain(node: ChainNode, scope: Scope): Outcome {
         missing: undefined,
       }
     : { value: null, path: '', event: undefined, fanned: false, missing: start };
+  const headers = root.kind === 'source' && root.name === 'headers';
   for (let index = links.length - 1; index >= 0; index -= 1) {
     const link = links[index] as ChainNode;
     if (link.kind === 'filter') {
       applyFilter(walk, link.filter, scope);
     } else if (walk.missing === undefined) {
-      applyStep(walk, link.step, scope);
+      const { step } = link;
+      applyStep(
+        walk,
+        headers && index === links.length - 1 && step.kind === 'name'
+          ? { kind: 'name', name: step.name.toLowerCase() }
+          : step,
+        scope,
+      );
     }
   }
   return walk.missing ?? present(walk.value, walk.path, walk.event);

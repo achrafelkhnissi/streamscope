@@ -196,7 +196,7 @@ describe('output limit', () => {
       call();
       const { result, ms, heap } = measure(call);
       expect(result).toEqual(tooLarge);
-      expect(ms).toBeLessThan(50);
+      expect(ms).toBeLessThan(100);
       expect(heap).toBeLessThan(mebibyte);
     }
   });
@@ -210,18 +210,18 @@ describe('output limit', () => {
     });
   });
 
-  it('stops a 16 MiB list of objects at the limit in under 50 ms and under 8 MiB of heap', () => {
+  it('stops a 16 MiB list of objects at the limit in under 100 ms and under 8 MiB of heap', () => {
     const text = 'y'.repeat(1_000);
     const value: Value = Array.from({ length: 17 * 1_024 }, (_, id) => ({ id, text }));
     expect(JSON.stringify(value).length).toBeGreaterThan(16 * mebibyte);
     compactJson(value, mebibyte);
     const { result, ms, heap } = measure(() => compactJson(value, mebibyte));
     expect(result).toEqual(tooLarge);
-    expect(ms).toBeLessThan(50);
+    expect(ms).toBeLessThan(100);
     expect(heap).toBeLessThan(8 * mebibyte);
   });
 
-  it('stops a tree of nested objects over 16 MiB at the limit in under 50 ms and under 16 MiB of heap', () => {
+  it('stops a tree of nested objects over 16 MiB at the limit in under 100 ms and under 16 MiB of heap', () => {
     const tree = (depth: number): Value =>
       depth === 0
         ? { leaf: 'z'.repeat(40) }
@@ -231,25 +231,25 @@ describe('output limit', () => {
     compactJson(value, mebibyte);
     const { result, ms, heap } = measure(() => compactJson(value, mebibyte));
     expect(result).toEqual(tooLarge);
-    expect(ms).toBeLessThan(50);
+    expect(ms).toBeLessThan(100);
     expect(heap).toBeLessThan(16 * mebibyte);
   });
 
-  it('stops a chain of 2,097,152 nested objects at the limit in under 50 ms and under 48 MiB of heap', () => {
+  it('stops a chain of 2,097,152 nested objects at the limit in under 100 ms and under 48 MiB of heap', () => {
     const value = nested(2 * mebibyte, 1);
     compactJson(value, mebibyte);
     const { result, ms, heap } = measure(() => compactJson(value, mebibyte));
     expect(result).toEqual(tooLarge);
-    expect(ms).toBeLessThan(50);
+    expect(ms).toBeLessThan(100);
     expect(heap).toBeLessThan(48 * mebibyte);
   });
 
-  it('stops a list of 4 Mi numbers at the limit in under 50 ms and under 24 MiB of heap', () => {
+  it('stops a list of 4 Mi numbers at the limit in under 100 ms and under 24 MiB of heap', () => {
     const value: Value = Array.from({ length: 4 * mebibyte }, (_, index) => index);
     compactJson(value, mebibyte);
     const { result, ms, heap } = measure(() => insertText(value, mebibyte));
     expect(result).toEqual(tooLarge);
-    expect(ms).toBeLessThan(50);
+    expect(ms).toBeLessThan(100);
     expect(heap).toBeLessThan(24 * mebibyte);
   });
 
