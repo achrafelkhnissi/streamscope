@@ -1,6 +1,6 @@
 import type { CompareOperator, Expr, Filter, SourceNode, Step, Value } from './ast';
 import { compareValues, equalValues } from './compare';
-import { compactJson, insertText } from './insert';
+import { compactJson, insertText, maxInsertedLength } from './insert';
 import { compilePattern, type CompileResult } from './regex';
 import { isList, isObject } from './value';
 
@@ -23,6 +23,7 @@ type Absent = Extract<Outcome, { present: false }>;
 type ChainNode = Extract<Expr, { kind: 'access' | 'filter' }>;
 type LogicalNode = Extract<Expr, { kind: 'logical' }>;
 type CompareNode = Extract<Expr, { kind: 'compare' }>;
+type NameStep = Extract<Step, { kind: 'name' }>;
 
 interface Scope {
   readonly sources: Sources;
@@ -41,6 +42,7 @@ interface Walk {
 
 const identifier = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
 const textTooLong = 'the text is too long for this regular expression';
+const valueTooLarge = 'the value is larger than 1 MiB';
 const silent: Absent = Object.freeze({ present: false, reason: '' });
 const yes: Present = Object.freeze({ present: true, value: true, path: '' });
 const no: Present = Object.freeze({ present: true, value: false, path: '' });
@@ -148,12 +150,12 @@ function sseValue(sse: NonNullable<ConditionItem['sse']>): Value {
   return fields;
 }
 
-function relate(operator: Exclude<CompareOperator, 'matches'>, left: Value, right: Value): boolean {
+function relate(
+  operator: Exclude<CompareOperator, 'matches' | '==' | '!='>,
+  left: Value,
+  right: Value,
+): boolean {
   switch (operator) {
-    case '==':
-      return equalValues(left, right);
-    case '!=':
-      return !equalValues(left, right);
     case '<':
       return compareValues(left, right) === -1;
     case '>':
@@ -191,16 +193,35 @@ function matches(node: CompareNode, scope: Scope): boolean {
   return compiled.ok && compiled.pattern.test(left.value) === true;
 }
 
-function comparison(node: CompareNode, scope: Scope): boolean {
-  if (node.operator === 'matches') {
-    return matches(node, scope);
-  }
-  const left = evaluateNode(node.left, scope);
-  if (!left.present) {
+function equality(node: CompareNode, scope: Scope): boolean {
+  if (node.left.kind === 'regex' || node.right.kind === 'regex') {
     return false;
   }
+  const left = evaluateNode(node.left, scope);
   const right = evaluateNode(node.right, scope);
-  return right.present && relate(node.operator, left.value, right.value);
+  if (!left.present || !right.present) {
+    return !left.present && !right.present;
+  }
+  return equalValues(left.value, right.value);
+}
+
+function comparison(node: CompareNode, scope: Scope): boolean {
+  switch (node.operator) {
+    case 'matches':
+      return matches(node, scope);
+    case '==':
+      return equality(node, scope);
+    case '!=':
+      return !equality(node, scope);
+    default: {
+      const left = evaluateNode(node.left, scope);
+      if (!left.present) {
+        return false;
+      }
+      const right = evaluateNode(node.right, scope);
+      return right.present && relate(node.operator, left.value, right.value);
+    }
+  }
 }
 
 function logical(node: LogicalNode, scope: Scope): boolean {
@@ -237,75 +258,94 @@ function truthy(node: Expr, scope: Scope): boolean {
       return comparison(node, scope);
     default: {
       const outcome = evaluateNode(node, scope);
-      return outcome.present && outcome.value !== false && outcome.value !== null;
+      return (
+        outcome.present &&
+        outcome.value !== false &&
+        outcome.value !== null &&
+        !(isList(outcome.value) && outcome.value.length === 0)
+      );
     }
   }
 }
 
-function filterWhere(list: readonly Value[], condition: Expr, scope: Scope, out: Value[]): void {
+function filterWhere(list: readonly Value[], condition: Expr, scope: Scope): Value[] {
   const inner: Scope = { sources: scope.sources, sse: scope.sse, explain: false, item: undefined };
+  const kept: Value[] = [];
   for (const element of list) {
     inner.item = element;
     if (truthy(condition, inner)) {
-      out.push(element);
+      kept.push(element);
     }
   }
+  return kept;
 }
 
-function expand(input: Value, step: Step, scope: Scope, outputs: Value[]): boolean {
-  switch (step.kind) {
-    case 'name':
-    case 'index': {
-      const next = step.kind === 'name' ? readName(input, step.name) : readIndex(input, step.index);
-      if (next === undefined) {
-        return false;
-      }
-      outputs.push(next);
-      return true;
+function mapName(walk: Walk, step: NameStep, path: string, scope: Scope): void {
+  const items = walk.value as readonly Value[];
+  const names: Value[] = [];
+  for (let position = 0; position < items.length; position += 1) {
+    const item = items[position] as Value;
+    const next = readName(item, step.name);
+    if (next === undefined) {
+      walk.missing = scope.explain
+        ? stepFailure(item, step, path, ` in result ${String(position + 1)}`)
+        : silent;
+      return;
     }
-    case 'wildcard':
-      if (!isList(input)) {
-        return false;
-      }
-      for (const element of input) {
-        outputs.push(element);
-      }
-      return true;
-    case 'where':
-      if (!isList(input)) {
-        return false;
-      }
-      filterWhere(input, step.condition, scope, outputs);
-      return true;
+    names.push(next);
   }
+  walk.value = names;
+  walk.path = path;
 }
 
 function applyStep(walk: Walk, step: Step, scope: Scope): void {
   const path = scope.explain ? appendStep(walk.path, step) : '';
-  if (!walk.fanned && (step.kind === 'name' || step.kind === 'index')) {
-    const next =
-      step.kind === 'name' ? readName(walk.value, step.name) : readIndex(walk.value, step.index);
-    if (next === undefined) {
-      walk.missing = scope.explain ? stepFailure(walk.value, step, path, '') : silent;
-    } else {
-      walk.value = next;
-      walk.path = path;
-    }
+  if (step.kind === 'name' && walk.fanned) {
+    mapName(walk, step, path, scope);
     return;
   }
-  const inputs = walk.fanned ? (walk.value as readonly Value[]) : [walk.value];
-  const outputs: Value[] = [];
-  for (let position = 0; position < inputs.length; position += 1) {
-    const input = inputs[position] as Value;
-    if (!expand(input, step, scope, outputs)) {
-      const suffix = walk.fanned ? ` in result ${String(position + 1)}` : '';
-      walk.missing = scope.explain ? stepFailure(input, step, path, suffix) : silent;
-      return;
-    }
+  let next: Value | undefined;
+  switch (step.kind) {
+    case 'name':
+      next = readName(walk.value, step.name);
+      break;
+    case 'index':
+      next = readIndex(walk.value, step.index);
+      break;
+    case 'wildcard':
+      next = isList(walk.value) ? walk.value : undefined;
+      break;
+    case 'where':
+      next = isList(walk.value) ? filterWhere(walk.value, step.condition, scope) : undefined;
+      break;
   }
-  walk.value = outputs;
+  if (next === undefined) {
+    walk.missing = scope.explain ? stepFailure(walk.value, step, path, '') : silent;
+    return;
+  }
+  walk.value = next;
   walk.path = path;
-  walk.fanned = walk.fanned || step.kind === 'wildcard' || step.kind === 'where';
+  walk.fanned = step.kind === 'wildcard' || step.kind === 'where';
+}
+
+function joinText(items: readonly Value[], separator: string): string | undefined {
+  const parts: string[] = [];
+  let length = 0;
+  for (const item of items) {
+    if (parts.length > 0) {
+      length += separator.length;
+    }
+    if (length > maxInsertedLength) {
+      return undefined;
+    }
+    const text = insertText(item, maxInsertedLength - length);
+    if (!text.ok) {
+      return undefined;
+    }
+    length += text.text.length;
+    parts.push(text.text);
+  }
+  return parts.join(separator);
 }
 
 function lose(walk: Walk, scope: Scope, reason: () => string): void {
@@ -328,16 +368,28 @@ function applyFilter(walk: Walk, filter: Filter, scope: Scope): void {
   }
   const { value, path } = walk;
   switch (filter.kind) {
-    case 'join':
-      if (isList(value)) {
-        walk.value = value.map((item) => insertText(item)).join(filter.separator);
-      } else {
+    case 'join': {
+      if (!isList(value)) {
         lose(walk, scope, () => noValue(path, `join needs a list, not ${kindOf(value)}`));
+        return;
+      }
+      const joined = joinText(value, filter.separator);
+      if (joined === undefined) {
+        lose(walk, scope, () => valueTooLarge);
+      } else {
+        walk.value = joined;
       }
       return;
-    case 'json':
-      walk.value = compactJson(value);
+    }
+    case 'json': {
+      const json = compactJson(value, maxInsertedLength);
+      if (json.ok) {
+        walk.value = json.text;
+      } else {
+        lose(walk, scope, () => valueTooLarge);
+      }
       return;
+    }
     case 'match': {
       if (typeof value !== 'string') {
         lose(walk, scope, () => noValue(path, `match needs a string, not ${kindOf(value)}`));
