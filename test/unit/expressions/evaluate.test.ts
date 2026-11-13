@@ -241,27 +241,66 @@ describe('evaluate paths', () => {
     });
   });
 
-  it('a further wildcard or filter applies to the list', () => {
-    const answers = bodyOf(catalog);
-    expect(run('body.items[*][*].id', answers)).toEqual({
+  it('a wildcard after a list maps over each item and flattens one level', () => {
+    expect(run('body.items[*].tags[*]', bodyOf(catalog))).toEqual({
       present: true,
-      value: [1, 2, 3],
-      path: 'items[*][*].id',
-    });
-    expect(run('body.items[?price > 5][?id == 3]', answers)).toEqual({
-      present: true,
-      value: [{ id: 3, price: 25, tags: [] }],
-      path: 'items[?…][?…]',
-    });
-    expect(run('body.items[*].tags[*]', answers)).toEqual({
-      present: true,
-      value: [['a', 'b'], ['c'], []],
+      value: ['a', 'b', 'c'],
       path: 'items[*].tags[*]',
     });
-    expect(run('body.items[?price > 5][?id == 3][0].id', answers)).toEqual({
+    expect(run('body.items[*].tags[*][0]', bodyOf(catalog))).toEqual({
       present: true,
-      value: 3,
-      path: 'items[?…][?…][0].id',
+      value: 'a',
+      path: 'items[*].tags[*][0]',
+    });
+    expect(run('body.items[*].tags[*]', bodyOf({ items: [{ tags: [] }, { tags: [] }] }))).toEqual({
+      present: true,
+      value: [],
+      path: 'items[*].tags[*]',
+    });
+  });
+
+  it('a filter after a list maps over each item and flattens one level', () => {
+    const items = [
+      { a: 1, tags: ['x', 'y'] },
+      { a: 2, tags: ['x'] },
+      { a: 1, tags: ['z', 'x'] },
+    ];
+    expect(run('body.items[?a == 1].tags[?@ == "x"]', bodyOf({ items }))).toEqual({
+      present: true,
+      value: ['x', 'x'],
+      path: 'items[?…].tags[?…]',
+    });
+    expect(run('body.items[*].tags[?@ != "x"]', bodyOf({ items }))).toEqual({
+      present: true,
+      value: ['y', 'z'],
+      path: 'items[*].tags[?…]',
+    });
+    expect(run('body.items[?a == 1][0].tags', bodyOf({ items }))).toEqual({
+      present: true,
+      value: ['x', 'y'],
+      path: 'items[?…][0].tags',
+    });
+    expect(run('body.items[?a == 1].tags[?@ == "q"]', bodyOf({ items }))).toEqual({
+      present: true,
+      value: [],
+      path: 'items[?…].tags[?…]',
+    });
+  });
+
+  it('names the result that is not a list when a wildcard or filter maps over items', () => {
+    expect(run('body.items[*][*]', bodyOf(catalog))).toEqual({
+      present: false,
+      reason: 'has no value at items[*][*] (the value is an object, not a list) in result 1',
+    });
+    expect(run('body.items[?price > 5][?id == 3]', bodyOf(catalog))).toEqual({
+      present: false,
+      reason: 'has no value at items[?…][?…] (the value is an object, not a list) in result 1',
+    });
+    expect(
+      run('body.items[*].tags[*]', bodyOf({ items: [{ tags: ['a'] }, { tags: 'b' }] })),
+    ).toEqual({
+      present: false,
+      reason: 'has no value at items[*].tags[*] (the value is a string, not a list) in result 2',
     });
   });
 
@@ -313,9 +352,8 @@ describe('evaluate paths', () => {
       reason: 'has no value at [5] (the list has 3 items)',
     });
     expect(run('all(type == "X")[*].result.id', answers)).toEqual({
-      present: true,
-      value: ['a', 'b', 'c'],
-      path: '[*].result.id',
+      present: false,
+      reason: 'has no value at [*] (the value is an object, not a list) in result 1',
     });
     expect(run('all()', { all: found([]) })).toEqual({ present: true, value: [], path: '' });
     expect(run('all(type == "X").result.id', { all: found([]) })).toEqual({
@@ -323,6 +361,26 @@ describe('evaluate paths', () => {
       value: [],
       path: 'result.id',
     });
+  });
+
+  it('all(…).delta is still a list of deltas', () => {
+    const events: Value[] = [
+      { type: 'x', delta: 'He' },
+      { type: 'y', delta: 'no' },
+      { type: 'x', delta: 'llo' },
+    ];
+    expect(
+      run('all(type == "x").delta', { all: found([events[0] as Value, events[2] as Value]) }),
+    ).toEqual({
+      present: true,
+      value: ['He', 'llo'],
+      path: 'delta',
+    });
+    expect(
+      run('all(type == "x").delta | join("")', {
+        all: found([events[0] as Value, events[2] as Value]),
+      }),
+    ).toEqual({ present: true, value: 'Hello', path: 'delta' });
   });
 
   it('names the result that lacks the path when mapping', () => {
@@ -887,6 +945,17 @@ describe('holds', () => {
     expect(holdsFor('items[?id == "x"][0]', items)).toBe(false);
     expect(holdsFor('!items[?id == "x"]', items)).toBe(true);
     expect(holdsFor('items[?id == "x"] || items[?id == "a"]', items)).toBe(true);
+  });
+
+  it('an empty flattened result does not satisfy a condition, a non-empty one does', () => {
+    expect(holdsFor('items[*].tags[*]', { items: [{ tags: [] }, { tags: [] }] })).toBe(false);
+    expect(holdsFor('items[*].tags[*]', { items: [{ tags: [] }, { tags: ['a'] }] })).toBe(true);
+    expect(holdsFor('items[?a == 1].tags[?@ == "x"]', { items: [{ a: 1, tags: ['y'] }] })).toBe(
+      false,
+    );
+    expect(holdsFor('items[?a == 1].tags[?@ == "x"]', { items: [{ a: 1, tags: ['x'] }] })).toBe(
+      true,
+    );
   });
 
   it('a non-empty filter result does', () => {

@@ -23,7 +23,7 @@ type Absent = Extract<Outcome, { present: false }>;
 type ChainNode = Extract<Expr, { kind: 'access' | 'filter' }>;
 type LogicalNode = Extract<Expr, { kind: 'logical' }>;
 type CompareNode = Extract<Expr, { kind: 'compare' }>;
-type NameStep = Extract<Step, { kind: 'name' }>;
+type IndexStep = Extract<Step, { kind: 'index' }>;
 
 interface Scope {
   readonly sources: Sources;
@@ -280,28 +280,37 @@ function filterWhere(list: readonly Value[], condition: Expr, scope: Scope): Val
   return kept;
 }
 
-function mapName(walk: Walk, step: NameStep, path: string, scope: Scope): void {
+function mapStep(walk: Walk, step: Exclude<Step, IndexStep>, path: string, scope: Scope): void {
   const items = walk.value as readonly Value[];
-  const names: Value[] = [];
+  const mapped: Value[] = [];
   for (let position = 0; position < items.length; position += 1) {
     const item = items[position] as Value;
-    const next = readName(item, step.name);
-    if (next === undefined) {
-      walk.missing = scope.explain
-        ? stepFailure(item, step, path, ` in result ${String(position + 1)}`)
-        : silent;
-      return;
+    if (step.kind === 'name') {
+      const next = readName(item, step.name);
+      if (next !== undefined) {
+        mapped.push(next);
+        continue;
+      }
+    } else if (isList(item)) {
+      const kept = step.kind === 'wildcard' ? item : filterWhere(item, step.condition, scope);
+      for (const element of kept) {
+        mapped.push(element);
+      }
+      continue;
     }
-    names.push(next);
+    walk.missing = scope.explain
+      ? stepFailure(item, step, path, ` in result ${String(position + 1)}`)
+      : silent;
+    return;
   }
-  walk.value = names;
+  walk.value = mapped;
   walk.path = path;
 }
 
 function applyStep(walk: Walk, step: Step, scope: Scope): void {
   const path = scope.explain ? appendStep(walk.path, step) : '';
-  if (step.kind === 'name' && walk.fanned) {
-    mapName(walk, step, path, scope);
+  if (walk.fanned && step.kind !== 'index') {
+    mapStep(walk, step, path, scope);
     return;
   }
   let next: Value | undefined;
