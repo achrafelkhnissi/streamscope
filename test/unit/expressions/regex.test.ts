@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
-import { checkFlags, compilePattern, type CompiledPattern } from '../../../src/expressions/regex';
+import {
+  checkFlags,
+  checkPatternCached,
+  compilePattern,
+  type CompiledPattern,
+} from '../../../src/expressions/regex';
 
 interface Found {
   match: string;
@@ -690,50 +695,98 @@ describe('the case-folding cache', () => {
   });
 });
 
-describe('the compiled pattern cache', () => {
-  it('returns the same result for the same pattern and flags', () => {
-    const result = compilePattern('cached+(x)', 'iu');
+describe('compilePattern', () => {
+  it('builds a new matcher on every call', () => {
+    const first = compilePattern('fresh+(x)', 'iu');
+    const second = compilePattern('fresh+(x)', 'iu');
 
-    expect(compilePattern('cached+(x)', 'iu')).toBe(result);
-    expect(result.ok).toBe(true);
+    expect(first.ok && second.ok).toBe(true);
+    expect(second).not.toBe(first);
+    expect(second.ok && first.ok && second.pattern !== first.pattern).toBe(true);
+  });
+});
+
+describe('the pattern validation cache', () => {
+  function collect(): void {
+    (globalThis as unknown as { gc: () => void }).gc();
+  }
+
+  it('answers a valid pattern with ok and nothing else', () => {
+    expect(checkPatternCached('valid+(x)', 'iu')).toStrictEqual({ ok: true });
   });
 
-  it('keeps a rejection too', () => {
-    const result = compilePattern('(cached', 'u');
+  it('answers a rejected pattern as compilePattern does', () => {
+    const rejected: [string, string][] = [
+      [String.raw`(a)\1`, ''],
+      ['(?=a)b', 'u'],
+      ['(unclosed', ''],
+      ['a', 'g'],
+      ['a', 'ii'],
+      ['a'.repeat(501), ''],
+    ];
 
-    expect(compilePattern('(cached', 'u')).toBe(result);
-    expect(result.ok).toBe(false);
+    for (const [pattern, flags] of rejected) {
+      const direct = compilePattern(pattern, flags);
+
+      expect(direct.ok, pattern).toBe(false);
+      expect(checkPatternCached(pattern, flags), pattern).toStrictEqual(direct);
+      expect(checkPatternCached(pattern, flags), pattern).toStrictEqual(direct);
+    }
+  });
+
+  it('returns the same outcome for the same pattern and flags', () => {
+    const outcome = checkPatternCached('cached+(x)', 'iu');
+    const rejection = checkPatternCached('(cached', 'u');
+
+    expect(checkPatternCached('cached+(x)', 'iu')).toBe(outcome);
+    expect(checkPatternCached('(cached', 'u')).toBe(rejection);
+    expect(rejection.ok).toBe(false);
   });
 
   it('keeps the flags and the pattern apart', () => {
-    const plain = compile('cased', '');
-    const folded = compile('cased', 'i');
-
-    expect(folded).not.toBe(plain);
-    expect(plain.test('CASED')).toBe(false);
-    expect(folded.test('CASED')).toBe(true);
-    expect(compilePattern('i/cased', '')).not.toBe(compilePattern('cased', 'i'));
+    expect(checkPatternCached('cased', 'i')).not.toBe(checkPatternCached('cased', ''));
+    expect(checkPatternCached('i/cased', '')).not.toBe(checkPatternCached('cased', 'i'));
+    expect(checkPatternCached('(cased', '').ok).toBe(false);
+    expect(checkPatternCached('cased', '').ok).toBe(true);
   });
 
   it('does not keep a pattern over 500 characters or an unsupported flag', () => {
     const long = 'a'.repeat(501);
 
-    expect(compilePattern(long, '')).toEqual(compilePattern(long, ''));
-    expect(compilePattern(long, '')).not.toBe(compilePattern(long, ''));
-    expect(compilePattern('a', 'g')).not.toBe(compilePattern('a', 'g'));
+    expect(checkPatternCached(long, '')).toEqual(checkPatternCached(long, ''));
+    expect(checkPatternCached(long, '')).not.toBe(checkPatternCached(long, ''));
+    expect(checkPatternCached('a', 'g')).not.toBe(checkPatternCached('a', 'g'));
   });
 
-  it('keeps at most 256 compiled patterns and evicts the oldest', () => {
+  it('keeps at most 256 entries and evicts the oldest', () => {
     const pattern = (index: number): string => `bound${String(index)}x`;
-    const results = Array.from({ length: 256 }, (_, index) => compilePattern(pattern(index), ''));
+    const outcomes = Array.from({ length: 256 }, (_, index) =>
+      checkPatternCached(pattern(index), ''),
+    );
 
-    expect(compilePattern(pattern(0), '')).toBe(results[0]);
+    expect(checkPatternCached(pattern(0), '')).toBe(outcomes[0]);
 
-    compilePattern(pattern(256), '');
+    checkPatternCached(pattern(256), '');
 
-    expect(compilePattern(pattern(0), '')).not.toBe(results[0]);
-    expect(compilePattern(pattern(2), '')).toBe(results[2]);
-    expect(compilePattern(pattern(1), '')).not.toBe(results[1]);
+    expect(checkPatternCached(pattern(0), '')).not.toBe(outcomes[0]);
+    expect(checkPatternCached(pattern(2), '')).toBe(outcomes[2]);
+    expect(checkPatternCached(pattern(1), '')).not.toBe(outcomes[1]);
+  });
+
+  it('retains no matcher, however many patterns it has checked and run', () => {
+    const subject = distinct(256);
+    collect();
+    const before = process.memoryUsage().heapUsed;
+
+    for (let index = 0; index < 256; index += 1) {
+      const pattern = `${String.raw`\W?`.repeat(65)}!${String(index)}`;
+
+      expect(checkPatternCached(pattern, 'iu')).toStrictEqual({ ok: true });
+      compile(pattern, 'iu').test(subject);
+    }
+    collect();
+
+    expect(process.memoryUsage().heapUsed - before).toBeLessThan(4 * 1024 * 1024);
   });
 });
 

@@ -297,13 +297,22 @@ function structureProblem(query: string, withPatterns: boolean): JsonPathProblem
   }
 }
 
-export function checkJsonPath(query: string): JsonPathProblem | undefined {
+export interface KnownCheck {
+  problem: JsonPathProblem | undefined;
+}
+
+export function knownJsonPathCheck(query: string): KnownCheck | undefined {
   if (query.length > maxQueryLength) {
-    return limitProblem(query);
+    return { problem: limitProblem(query) };
   }
   const cached = checkedQueries.get(query);
-  if (cached !== undefined) {
-    return cached ?? undefined;
+  return cached === undefined ? undefined : { problem: cached ?? undefined };
+}
+
+export function checkJsonPath(query: string): JsonPathProblem | undefined {
+  const known = knownJsonPathCheck(query);
+  if (known !== undefined) {
+    return known.problem;
   }
   const problem = limitProblem(query) ?? structureProblem(query, true);
   if (problem?.message !== complexMessage) {

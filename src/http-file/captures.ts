@@ -1,5 +1,5 @@
 import type { Expr } from '../expressions/ast';
-import { checkJsonPath } from '../expressions/jsonpath';
+import { checkJsonPath, knownJsonPathCheck, type KnownCheck } from '../expressions/jsonpath';
 import { parseExpression, sourcesOf, type ExpressionContext } from '../expressions/parse';
 import type {
   CaptureDirective,
@@ -12,6 +12,9 @@ import type {
 import { span } from './ranges';
 
 const maxCaptures = 64;
+const jsonPathBudgetMs = 10;
+const uncheckedMessage =
+  'Some jsonpath() queries in this request were not checked yet; they are checked as you edit.';
 
 const capturePattern = /^(?:(secret)\s+)?([A-Za-z_]\w*)\s*=\s*(\S(?:.*\S)?)$/d;
 
@@ -20,65 +23,108 @@ export interface ExpressionCheck {
   diagnostics: ParseDiagnostic[];
 }
 
-function problem(code: DiagnosticCode, message: string, range: Range): ParseDiagnostic {
-  return { code, message, severity: 'error', range };
-}
+export type Clock = () => number;
 
-function expressionProblem(
-  start: Position,
-  from: number,
-  to: number,
+function problem(
+  code: DiagnosticCode,
   message: string,
+  range: Range,
+  severity: 'error' | 'warning' = 'error',
 ): ParseDiagnostic {
-  return problem(
-    'invalid-expression',
-    message,
-    span(start.line, start.character + from, start.character + to),
-  );
+  return { code, message, severity, range };
 }
 
-function jsonPathProblems(text: string, start: Position, expression: Expr): ParseDiagnostic[] {
-  const problems: ParseDiagnostic[] = [];
-  for (const node of sourcesOf(expression)) {
-    if (node.kind !== 'jsonpath') {
-      continue;
+function inExpression(start: Position, from: number, to: number): Range {
+  return span(start.line, start.character + from, start.character + to);
+}
+
+export class JsonPathBudget {
+  private spent = 0;
+
+  constructor(private readonly now: Clock) {}
+
+  check(query: string): KnownCheck | undefined {
+    const known = knownJsonPathCheck(query);
+    if (known !== undefined || this.spent >= jsonPathBudgetMs) {
+      return known;
     }
-    const found = checkJsonPath(node.query);
-    if (found === undefined) {
-      continue;
-    }
-    const { start: open, end: close } = node.querySpan;
-    if (text.slice(open + 1, close - 1).includes('\\')) {
-      problems.push(expressionProblem(start, open, close, found.message));
-    } else {
-      const from = open + 1 + found.offset;
-      const width = (node.query.codePointAt(found.offset) ?? 0) > 0xffff ? 2 : 1;
-      problems.push(expressionProblem(start, from, from + width, found.message));
-    }
+    const started = this.now();
+    const found = checkJsonPath(query);
+    this.spent += this.now() - started;
+    return { problem: found };
   }
-  return problems;
 }
 
-export function checkExpression(
-  text: string,
-  start: Position,
-  context: ExpressionContext,
-): ExpressionCheck {
-  const result = parseExpression(text, context);
-  if (!result.ok) {
-    const { message, span: failed } = result.error;
+export class RequestChecks {
+  private warned = false;
+
+  constructor(private readonly budget: JsonPathBudget) {}
+
+  expression(text: string, start: Position, context: ExpressionContext): ExpressionCheck {
+    const result = parseExpression(text, context);
+    if (!result.ok) {
+      const { message, span: failed } = result.error;
+      return {
+        expression: undefined,
+        diagnostics: [
+          problem('invalid-expression', message, inExpression(start, failed.start, failed.end)),
+        ],
+      };
+    }
     return {
-      expression: undefined,
-      diagnostics: [expressionProblem(start, failed.start, failed.end, message)],
+      expression: result.expr,
+      diagnostics: this.jsonPathProblems(text, start, result.expr),
     };
   }
-  return { expression: result.expr, diagnostics: jsonPathProblems(text, start, result.expr) };
+
+  private jsonPathProblems(text: string, start: Position, expression: Expr): ParseDiagnostic[] {
+    const problems: ParseDiagnostic[] = [];
+    for (const node of sourcesOf(expression)) {
+      if (node.kind !== 'jsonpath') {
+        continue;
+      }
+      const { start: open, end: close } = node.querySpan;
+      const checked = this.budget.check(node.query);
+      if (checked === undefined) {
+        if (!this.warned) {
+          this.warned = true;
+          problems.push(
+            problem(
+              'unchecked-expression',
+              uncheckedMessage,
+              inExpression(start, open, close),
+              'warning',
+            ),
+          );
+        }
+        continue;
+      }
+      const found = checked.problem;
+      if (found === undefined) {
+        continue;
+      }
+      if (text.slice(open + 1, close - 1).includes('\\')) {
+        problems.push(
+          problem('invalid-expression', found.message, inExpression(start, open, close)),
+        );
+      } else {
+        const from = open + 1 + found.offset;
+        const width = (node.query.codePointAt(found.offset) ?? 0) > 0xffff ? 2 : 1;
+        problems.push(
+          problem('invalid-expression', found.message, inExpression(start, from, from + width)),
+        );
+      }
+    }
+    return problems;
+  }
 }
 
 export class CaptureReader {
   readonly captures: CaptureDirective[] = [];
   private readonly names = new Set<string>();
   private lines = 0;
+
+  constructor(private readonly checks: RequestChecks) {}
 
   read(directive: Directive): ParseDiagnostic[] {
     this.lines += 1;
@@ -117,7 +163,7 @@ export class CaptureReader {
       );
     }
     this.names.add(name);
-    const checked = checkExpression(expressionText, expressionStart, 'capture');
+    const checked = this.checks.expression(expressionText, expressionStart, 'capture');
     this.captures.push({
       secret: match[1] !== undefined,
       name,

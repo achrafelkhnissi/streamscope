@@ -1,5 +1,5 @@
 import { parseDuration } from '../runs/duration';
-import { checkExpression } from './captures';
+import type { RequestChecks } from './captures';
 import type { DiagnosticCode, Directive, ParseDiagnostic } from './model';
 
 export const requestNamePattern = /^\w+$/;
@@ -23,7 +23,10 @@ function problem(
   return [{ code, message, severity, range }];
 }
 
-export function directiveDiagnostics(directive: Directive): ParseDiagnostic[] {
+export function directiveDiagnostics(
+  directive: Directive,
+  checks: RequestChecks,
+): ParseDiagnostic[] {
   const { kind, argument } = directive;
   if (kind === 'name' && !requestNamePattern.test(argument)) {
     return problem(
@@ -35,12 +38,12 @@ export function directiveDiagnostics(directive: Directive): ParseDiagnostic[] {
   if (kind === 'expect') {
     return argument === ''
       ? problem(directive, 'empty-expect', 'Expected an expression after "# @expect".')
-      : checkExpression(argument, directive.argumentRange.start, 'expect').diagnostics;
+      : checks.expression(argument, directive.argumentRange.start, 'expect').diagnostics;
   }
   if (kind === 'until') {
     return argument === ''
       ? problem(directive, 'empty-until', 'Expected an event condition after "# @until".')
-      : checkExpression(argument, directive.argumentRange.start, 'condition').diagnostics;
+      : checks.expression(argument, directive.argumentRange.start, 'condition').diagnostics;
   }
   if (kind === 'stream' && !streamFormats.has(argument)) {
     return problem(

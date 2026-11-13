@@ -105,6 +105,7 @@ export type DiagnosticCode =
   | 'invalid-expression'
   | 'duplicate-capture'
   | 'too-many-captures'
+  | 'unchecked-expression'
   | 'empty-expect'
   | 'invalid-stream'
   | 'invalid-timeout'

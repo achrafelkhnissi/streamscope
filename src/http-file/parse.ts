@@ -1,4 +1,4 @@
-import { CaptureReader } from './captures';
+import { CaptureReader, JsonPathBudget, RequestChecks, type Clock } from './captures';
 import { directiveDiagnostics, requestNamePattern } from './directives';
 import {
   directiveKinds,
@@ -334,6 +334,7 @@ function parseBlock(
   lines: readonly string[],
   block: Block,
   diagnostics: ParseDiagnostic[],
+  budget: JsonPathBudget,
 ): HttpRequest[] {
   const directives: Directive[] = [];
   let requestLineIndex: number | undefined;
@@ -351,10 +352,13 @@ function parseBlock(
     }
     break;
   }
-  const reader = new CaptureReader();
+  const checks = new RequestChecks(budget);
+  const reader = new CaptureReader(checks);
   for (const directive of directives) {
     diagnostics.push(
-      ...(directive.kind === 'capture' ? reader.read(directive) : directiveDiagnostics(directive)),
+      ...(directive.kind === 'capture'
+        ? reader.read(directive)
+        : directiveDiagnostics(directive, checks)),
     );
   }
   const firstDirective = directives[0];
@@ -422,10 +426,17 @@ function referenceDiagnostics(lines: readonly string[]): ParseDiagnostic[] {
   );
 }
 
-export function parseHttpFile(text: string): HttpFile {
+function wallClock(): number {
+  return performance.now();
+}
+
+export function parseHttpFile(text: string, clock: Clock = wallClock): HttpFile {
   const lines = text.split(/\r?\n/);
   const diagnostics: ParseDiagnostic[] = [];
-  const requests = splitBlocks(lines).flatMap((block) => parseBlock(lines, block, diagnostics));
+  const budget = new JsonPathBudget(clock);
+  const requests = splitBlocks(lines).flatMap((block) =>
+    parseBlock(lines, block, diagnostics, budget),
+  );
   return {
     requests,
     fileVariables: lines.flatMap((line, index) => parseFileVariable(line, index, lines)),

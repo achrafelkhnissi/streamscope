@@ -8,7 +8,7 @@ import {
   type RegexToken,
   type Token,
 } from './lexer';
-import { compilePattern } from './regex';
+import { checkPatternCached } from './regex';
 
 export type ExpressionContext = 'capture' | 'expect' | 'condition';
 
@@ -426,7 +426,7 @@ class Parser {
   }
 
   private checkRegex(token: RegexToken): void {
-    const result = compilePattern(token.pattern, token.flags);
+    const result = checkPatternCached(token.pattern, token.flags);
     if (!result.ok) {
       const patternEnd = token.span.start + 1 + token.pattern.length;
       const start = Math.min(token.span.start + 1 + result.offset, patternEnd);

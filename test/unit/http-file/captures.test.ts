@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { checkJsonPath } from '../../../src/expressions/jsonpath';
 import type { DiagnosticCode } from '../../../src/http-file/model';
 import { parseHttpFile } from '../../../src/http-file/parse';
@@ -640,26 +640,31 @@ describe('parseHttpFile # @expect and # @until', () => {
   });
 });
 
-describe('parseHttpFile capture parsing speed', () => {
-  function maximalQuery(index: number): string {
-    const unit = `match(@.a, 'a+b${String(index)}')`;
-    const terms: string[] = [];
-    let length = '$[?]'.length;
-    while (length + unit.length + 4 <= 384) {
-      terms.push(unit);
-      length += unit.length + 4;
-    }
-    return `$[?${terms.join(' || ')}]`;
+function maximalQuery(index: number): string {
+  const unit = `match(@.a, 'a+b${String(index)}')`;
+  const terms: string[] = [];
+  let length = '$[?]'.length;
+  while (length + unit.length + 4 <= 384) {
+    terms.push(unit);
+    length += unit.length + 4;
   }
+  return `$[?${terms.join(' || ')}]`;
+}
 
-  const lines = Array.from(
-    { length: 64 },
-    (_, index) => `# @capture c${String(index)} = jsonpath("${maximalQuery(index)}")`,
-  );
-  const content = [...lines, request].join('\n');
+function steppedClock(step: number): () => number {
+  let now = 0;
+  return () => {
+    now += step;
+    return now;
+  };
+}
 
+const uncheckedMessage =
+  'Some jsonpath() queries in this request were not checked yet; they are checked as you edit.';
+
+describe('parseHttpFile capture parsing speed', () => {
   it('uses queries of the maximal length, valid and distinct', () => {
-    const queries = lines.map((_, index) => maximalQuery(index));
+    const queries = Array.from({ length: 64 }, (_, index) => maximalQuery(index));
 
     expect(new Set(queries).size).toBe(64);
     for (const query of queries) {
@@ -669,15 +674,178 @@ describe('parseHttpFile capture parsing speed', () => {
     }
   });
 
-  it('parses 64 captures with maximal jsonpath() queries in under 100 ms the second time', () => {
-    const first = parseHttpFile(content);
-    const started = performance.now();
-    const second = parseHttpFile(content);
-    const elapsed = performance.now() - started;
+  it('parses 64 captures with maximal jsonpath() queries within 100 ms every time and finishes checking them', () => {
+    const lines = Array.from(
+      { length: 64 },
+      (_, index) => `# @capture c${String(index)} = jsonpath("${maximalQuery(2000 + index)}")`,
+    );
+    const content = [...lines, request].join('\n');
+    let diagnostics = parseHttpFile(content).diagnostics;
 
-    expect(first.diagnostics).toEqual([]);
-    expect(second.requests[0]?.captures).toHaveLength(64);
-    expect(second.diagnostics).toEqual([]);
-    expect(elapsed).toBeLessThan(100);
+    for (let parses = 0; parses < 500 && diagnostics.length > 0; parses += 1) {
+      const started = performance.now();
+      const file = parseHttpFile(content);
+      const elapsed = performance.now() - started;
+
+      expect(elapsed).toBeLessThan(100);
+      expect(file.requests[0]?.captures).toHaveLength(64);
+      diagnostics = file.diagnostics;
+    }
+
+    expect(diagnostics).toEqual([]);
+  });
+});
+
+describe('parseHttpFile jsonpath() time budget', () => {
+  function queryLine(name: string, index: number, query = `$.${name}.q${String(index)}`): string {
+    return `# @capture ${name}${String(index)} = jsonpath("${query}")`;
+  }
+
+  it('a file of worst-case queries parses within the budget', () => {
+    const content = Array.from({ length: 20 }, (_, group) =>
+      [
+        '###',
+        ...Array.from(
+          { length: 64 },
+          (_, index) =>
+            `# @capture c${String(index)} = jsonpath("${maximalQuery(10_000 + group * 64 + index)}")`,
+        ),
+        request,
+      ].join('\n'),
+    ).join('\n');
+
+    const first = parseHttpFile(content);
+
+    expect(first.requests).toHaveLength(20);
+    expect(first.diagnostics.length).toBeGreaterThan(0);
+    for (let parses = 0; parses < 5; parses += 1) {
+      const started = performance.now();
+      const file = parseHttpFile(content);
+      const elapsed = performance.now() - started;
+
+      expect(elapsed, `parse ${String(parses)}`).toBeLessThan(100);
+      expect(new Set(file.diagnostics.map((diagnostic) => diagnostic.code))).toEqual(
+        new Set(['unchecked-expression']),
+      );
+    }
+  });
+
+  it('queries left unchecked get one warning per request', () => {
+    const lines = [
+      ...Array.from({ length: 5 }, (_, index) => queryLine('a', index)),
+      '# @expect jsonpath("$.a.expect") == 1',
+      request,
+      '',
+      '###',
+      queryLine('b', 0),
+      queryLine('b', 1),
+      request,
+      '',
+      '###',
+      '# @capture c = status',
+      request,
+    ];
+    const file = parseHttpFile(lines.join('\n'), steppedClock(4));
+    const literal = (line: number): { start: number; end: number } => {
+      const text = lines[line] ?? '';
+      const start = text.indexOf('"');
+      return { start, end: text.lastIndexOf('"') + 1 };
+    };
+
+    expect(file.diagnostics).toEqual([
+      {
+        code: 'unchecked-expression',
+        message: uncheckedMessage,
+        severity: 'warning',
+        range: at(3, literal(3).start, literal(3).end),
+      },
+      {
+        code: 'unchecked-expression',
+        message: uncheckedMessage,
+        severity: 'warning',
+        range: at(9, literal(9).start, literal(9).end),
+      },
+    ]);
+    expect(file.requests.map((found) => found.captures.length)).toEqual([5, 2, 1]);
+  });
+
+  it('counts a query of # @expect against the same budget and the same warning', () => {
+    const lines = [
+      queryLine('x', 0),
+      queryLine('x', 1),
+      queryLine('x', 2),
+      '# @expect jsonpath("$.x.expect") == 1',
+      queryLine('x', 3),
+      request,
+    ];
+    const file = parseHttpFile(lines.join('\n'), steppedClock(4));
+    const expectLine = lines[3] ?? '';
+
+    expect(file.diagnostics).toEqual([
+      expect.objectContaining({
+        code: 'unchecked-expression',
+        range: at(3, expectLine.indexOf('"'), expectLine.lastIndexOf('"') + 1),
+      }),
+    ]);
+  });
+
+  it('does not warn when every query fits in the budget', () => {
+    const file = parseHttpFile(
+      [queryLine('fit', 0), queryLine('fit', 1), request].join('\n'),
+      steppedClock(4),
+    );
+
+    expect(file.diagnostics).toEqual([]);
+  });
+
+  it('does not charge a query for a result that is already known', () => {
+    const lines = [queryLine('free', 0), queryLine('free', 1), request].join('\n');
+    parseHttpFile(lines);
+    const clock = vi.fn(steppedClock(4));
+
+    expect(parseHttpFile(lines, clock).diagnostics).toEqual([]);
+    expect(clock).not.toHaveBeenCalled();
+  });
+
+  it('always checks the first query, however slow the clock', () => {
+    const file = parseHttpFile(
+      [queryLine('one', 0, '$.one.a b'), queryLine('one', 1), request].join('\n'),
+      steppedClock(1000),
+    );
+
+    expect(file.diagnostics.map((diagnostic) => diagnostic.code)).toEqual([
+      'invalid-expression',
+      'unchecked-expression',
+    ]);
+  });
+
+  it('checks the remaining queries in later parses as the cache fills', () => {
+    const lines = Array.from({ length: 8 }, (_, index) =>
+      queryLine('later', index, index === 5 ? '$.later.q5 b' : undefined),
+    );
+    const content = [...lines, request].join('\n');
+    const summary = (file: ReturnType<typeof parseHttpFile>) =>
+      file.diagnostics.map((diagnostic) => [diagnostic.code, diagnostic.range.start.line]);
+
+    expect(summary(parseHttpFile(content, steppedClock(4)))).toEqual([['unchecked-expression', 3]]);
+    expect(summary(parseHttpFile(content, steppedClock(4)))).toEqual([
+      ['invalid-expression', 5],
+      ['unchecked-expression', 6],
+    ]);
+    expect(summary(parseHttpFile(content, steppedClock(4)))).toEqual([['invalid-expression', 5]]);
+
+    const clock = vi.fn(steppedClock(4));
+
+    expect(summary(parseHttpFile(content, clock))).toEqual([['invalid-expression', 5]]);
+    expect(clock).not.toHaveBeenCalled();
+  });
+
+  it('keeps the capture of an unchecked query', () => {
+    const lines = Array.from({ length: 6 }, (_, index) => queryLine('kept', index));
+    const [found] = parseHttpFile([...lines, request].join('\n'), steppedClock(4)).requests;
+
+    expect(found?.captures.map((capture) => capture.expression?.kind)).toEqual(
+      Array<string>(6).fill('jsonpath'),
+    );
   });
 });

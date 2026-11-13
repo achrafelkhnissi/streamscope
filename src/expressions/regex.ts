@@ -18,7 +18,7 @@ const groupName = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
 const modifierCharacter = /[A-Za-z-]/;
 const letter = /^[A-Za-z]$/;
 const syntaxCharacters = '^$\\.*+?()[]{}|/';
-const compiledPatterns = new BoundedCache<CompileResult>(maxCachedPatterns);
+const checkedPatterns = new BoundedCache<PatternCheck>(maxCachedPatterns);
 
 const opChar = 0;
 const opAny = 1;
@@ -78,6 +78,9 @@ export interface CompiledPattern {
 export type CompileResult =
   | { ok: true; pattern: CompiledPattern }
   | { ok: false; message: string; offset: number; length: number };
+
+export type PatternCheck =
+  { ok: true } | { ok: false; message: string; offset: number; length: number };
 
 export interface FlagProblem {
   index: number;
@@ -171,16 +174,6 @@ export function compilePattern(pattern: string, flags: string): CompileResult {
       length: pattern.length - maxPatternLength,
     };
   }
-  const key = `${flags}/${pattern}`;
-  let result = compiledPatterns.get(key);
-  if (result === undefined) {
-    result = build(pattern, flags);
-    compiledPatterns.set(key, result);
-  }
-  return result;
-}
-
-function build(pattern: string, flags: string): CompileResult {
   const mode: Mode = {
     ignoreCase: flags.includes('i'),
     multiline: flags.includes('m'),
@@ -197,6 +190,23 @@ function build(pattern: string, flags: string): CompileResult {
     }
     throw error;
   }
+}
+
+function outcome(result: CompileResult): PatternCheck {
+  return result.ok ? { ok: true } : result;
+}
+
+export function checkPatternCached(pattern: string, flags: string): PatternCheck {
+  if (pattern.length > maxPatternLength || checkFlags(flags) !== undefined) {
+    return outcome(compilePattern(pattern, flags));
+  }
+  const key = `${flags}/${pattern}`;
+  let check = checkedPatterns.get(key);
+  if (check === undefined) {
+    check = outcome(compilePattern(pattern, flags));
+    checkedPatterns.set(key, check);
+  }
+  return check;
 }
 
 function at<T>(items: ArrayLike<T>, index: number): T {
