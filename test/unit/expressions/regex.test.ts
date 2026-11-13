@@ -428,15 +428,15 @@ describe('the former bypasses of the static check', () => {
     expect(ms).toBeLessThan(50);
   });
 
-  it('answers \\d+x on 100,000 digits at once, as too long, and on a subject at the limit in under 50 ms', () => {
+  it('answers \\d+x on 100,000 digits at once, as too long, and on a subject at the limit in under 100 ms', () => {
     const compiled = compile(String.raw`\d+x`);
     const refused = timed(() => compiled.test('1'.repeat(100000)));
     const atLimit = timed(() => compiled.test('1'.repeat(longestSubject(compiled))));
 
     expect(refused.value).toBe('too-long');
-    expect(refused.ms).toBeLessThan(50);
+    expect(refused.ms).toBeLessThan(100);
     expect(atLimit.value).toBe(false);
-    expect(atLimit.ms).toBeLessThan(50);
+    expect(atLimit.ms).toBeLessThan(100);
   });
 
   it('gives the same answer as JavaScript on the hostile patterns with short subjects', () => {

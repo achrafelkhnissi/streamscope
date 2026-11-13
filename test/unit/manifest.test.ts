@@ -87,7 +87,7 @@ describe('extension manifest', () => {
     expect(manifest.files).toContain('dist/extension.js');
   });
 
-  it('ships the bundle, format worker, response page, language files, changelog and license', () => {
+  it('ships the bundle, format worker, response page, language files, changelog, license and third-party notices', () => {
     expect(manifest.files).toEqual([
       'dist/extension.js',
       'dist/format-worker.js',
@@ -96,6 +96,7 @@ describe('extension manifest', () => {
       'language-configuration.json',
       'CHANGELOG.md',
       'LICENSE',
+      'ThirdPartyNotices.txt',
     ]);
   });
 

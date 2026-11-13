@@ -47,10 +47,14 @@ describe('JSONPath Compliance Test Suite', () => {
         failures.push(`${entry.name}: ${JSON.stringify(entry.selector)} was rejected`);
         continue;
       }
-      const nodes = queryJsonPath(entry.document ?? null, entry.selector);
-      if (!expectedResults(entry).some((candidate) => isDeepStrictEqual(nodes, candidate))) {
+      const outcome = queryJsonPath(entry.document ?? null, entry.selector);
+      if (!outcome.ok) {
+        failures.push(`${entry.name}: ${JSON.stringify(entry.selector)} failed: ${outcome.reason}`);
+      } else if (
+        !expectedResults(entry).some((candidate) => isDeepStrictEqual(outcome.nodes, candidate))
+      ) {
         failures.push(
-          `${entry.name}: ${JSON.stringify(entry.selector)} gave ${JSON.stringify(nodes)}`,
+          `${entry.name}: ${JSON.stringify(entry.selector)} gave ${JSON.stringify(outcome.nodes)}`,
         );
       }
     }
@@ -60,17 +64,10 @@ describe('JSONPath Compliance Test Suite', () => {
     expect(selected).toBe(466);
   });
 
-  it('makes queryJsonPath throw for every invalid selector', () => {
+  it('makes queryJsonPath return a reason for every invalid selector', () => {
     const accepted = suite.tests
       .filter((entry) => entry.invalid_selector === true)
-      .filter((entry) => {
-        try {
-          queryJsonPath(entry.document ?? null, entry.selector);
-          return true;
-        } catch {
-          return false;
-        }
-      })
+      .filter((entry) => queryJsonPath(entry.document ?? null, entry.selector).ok)
       .map((entry) => entry.name);
 
     expect(accepted).toEqual([]);

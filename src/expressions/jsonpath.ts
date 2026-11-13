@@ -1,5 +1,6 @@
 import {
   CSTTranslator,
+  JSONPathEvaluateError,
   JSONPathParseError,
   evaluate,
   functions,
@@ -14,6 +15,10 @@ export interface JsonPathProblem {
   offset: number;
 }
 
+export type JsonPathResult = { ok: true; nodes: readonly Value[] } | { ok: false; reason: string };
+
+type Container = readonly Value[] | { readonly [key: string]: Value };
+
 interface CompiledPatterns {
   whole?: CompiledPattern | null;
   partial?: CompiledPattern | null;
@@ -21,6 +26,7 @@ interface CompiledPatterns {
 
 const maxPatternLength = 500;
 const maxCachedPatterns = 256;
+const maxDepth = 1000;
 const patternFlags = 'u';
 
 const compiledPatterns = new Map<string, CompiledPatterns>();
@@ -186,6 +192,55 @@ export function checkJsonPath(query: string): JsonPathProblem | undefined {
   return checkPatterns(query);
 }
 
-export function queryJsonPath(value: Value, query: string): readonly Value[] {
-  return evaluate<Value>(value, query, { functions: patternFunctions, trace: false });
+function isContainer(value: Value): value is Container {
+  return typeof value === 'object' && value !== null;
+}
+
+function isList(container: Container): container is readonly Value[] {
+  return Array.isArray(container);
+}
+
+function exceedsDepth(root: Value, limit: number): boolean {
+  let level = 0;
+  let frontier: Container[] = isContainer(root) ? [root] : [];
+  while (frontier.length > 0) {
+    level += 1;
+    if (level > limit) {
+      return true;
+    }
+    const next: Container[] = [];
+    for (const container of frontier) {
+      for (const child of isList(container) ? container : Object.values(container)) {
+        if (isContainer(child)) {
+          next.push(child);
+        }
+      }
+    }
+    frontier = next;
+  }
+  return false;
+}
+
+export function queryJsonPath(value: Value, query: string): JsonPathResult {
+  if (exceedsDepth(value, maxDepth)) {
+    return {
+      ok: false,
+      reason: 'the value is nested too deeply for jsonpath() (more than 1,000 levels)',
+    };
+  }
+  try {
+    const nodes = evaluate<Value>(value, query, { functions: patternFunctions, trace: false });
+    return { ok: true, nodes };
+  } catch (error) {
+    if (error instanceof JSONPathParseError) {
+      return {
+        ok: false,
+        reason: `invalid JSONPath: ${checkJsonPath(query)?.message ?? error.message}`,
+      };
+    }
+    if (error instanceof JSONPathEvaluateError) {
+      return { ok: false, reason: `jsonpath() failed: ${error.cause?.message ?? error.message}` };
+    }
+    throw error;
+  }
 }

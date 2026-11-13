@@ -52,7 +52,8 @@
     "syntaxes/http.tmLanguage.json",
     "language-configuration.json",
     "CHANGELOG.md",
-    "LICENSE"
+    "LICENSE",
+    "ThirdPartyNotices.txt"
   ],
   "capabilities": {
     "untrustedWorkspaces": {
