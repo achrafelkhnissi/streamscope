@@ -39,6 +39,11 @@ export interface RunCaptures {
   lookup: CaptureLookup;
   observer(run: { id: number; label: string; wallStartedAt: number }): RunObserver | undefined;
   begin(run: { id: number; key: string; label: string; startedAt: number }): void;
+  settle(
+    waits: readonly CaptureWait[],
+    runId: number,
+    signal: AbortSignal,
+  ): Promise<readonly CaptureWait[]>;
   wait(
     waits: readonly CaptureWait[],
     runId: number,

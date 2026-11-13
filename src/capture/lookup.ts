@@ -74,9 +74,11 @@ export function captureLookup(
         return lookupResult(entry);
       }
       const producer = firstProducers(file).get(captureName);
-      return producer === undefined
-        ? undefined
-        : { kind: 'not-run', label: producerLabel(producer), producerName: producer.name };
+      if (producer === undefined) {
+        return undefined;
+      }
+      const label = producerLabel(producer);
+      return { kind: 'not-run', label, producerName: label };
     },
     response: (requestName, reference) => responses.get(responseKey(requestName, reference)),
   };

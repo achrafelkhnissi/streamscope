@@ -96,6 +96,7 @@ describe('panelStatus', () => {
 
     expect(waiting.state).toBe('waiting');
     expect(waiting.running).toBe(true);
+    expect(waiting.text).toBe('120 ms · Waiting for startRun › threadId');
   });
 
   it('gives the size and time of a body response', () => {

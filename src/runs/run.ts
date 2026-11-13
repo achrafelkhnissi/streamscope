@@ -90,13 +90,12 @@ export interface RunInput {
   request: HttpRequest;
   bodyFiles: Omit<BodyFileContext, 'restricted'>;
   settings: RequestSettings;
-  variables: Omit<VariableSources, 'system' | 'restricted'>;
+  variables: Omit<VariableSources, 'system' | 'restricted' | 'captures'>;
   restricted: boolean;
   confirmSend: (() => Promise<boolean>) | undefined;
   spill: SpillArea | undefined;
   limits: StreamLimits;
-  observer?: RunObserver;
-  captures?: RunCaptures;
+  captures: RunCaptures;
   waitTimeoutMs: number;
 }
 
@@ -141,6 +140,7 @@ type Prepared =
 const timeoutMessage = 'Expected a duration such as 500ms, 30s or 5m.';
 const maxWaitRounds = 4;
 const blockingCodes: ReadonlySet<DiagnosticCode> = new Set([
+  'invalid-capture',
   'invalid-expression',
   'duplicate-capture',
   'too-many-captures',
@@ -270,7 +270,8 @@ export function startRun(
   let endedAt: number | undefined;
   let session: StreamSession | undefined;
   let spillFile: SpillFile | undefined;
-  let observer = input.observer;
+  let observer: RunObserver | undefined;
+  let observed = false;
   let markHead = (): void => undefined;
   const headArrived = new Promise<void>((resolve) => {
     markHead = resolve;
@@ -408,11 +409,10 @@ export function startRun(
     return { kind: 'cancelled' };
   };
   const observe = (): RunObserver | undefined => {
-    observer ??= captures?.observer({
-      id,
-      label: input.label,
-      wallStartedAt: state.wallStartedAt,
-    });
+    if (!observed) {
+      observed = true;
+      observer = captures.observer({ id, label: input.label, wallStartedAt: state.wallStartedAt });
+    }
     return observer;
   };
   const finish = (changes: Partial<RunState>): RunSnapshot => {
@@ -493,7 +493,7 @@ export function startRun(
   const prepare = async (blocking: readonly ResolutionProblem[]): Promise<Prepared> => {
     const resolution = resolveRequest(input.file, request, {
       ...input.variables,
-      captures: captures?.lookup ?? input.variables.captures,
+      captures: captures.lookup,
       system: dependencies.system,
       restricted: input.restricted,
     });
@@ -532,9 +532,6 @@ export function startRun(
   };
 
   const waitFor = (waits: readonly CaptureWait[]): Promise<CaptureWaitOutcome> => {
-    if (captures === undefined) {
-      throw new Error('A run without captures cannot wait for one.');
-    }
     const [first] = waits;
     Object.assign(state, {
       status: 'waiting',
@@ -549,22 +546,30 @@ export function startRun(
     if (wasCancelled()) {
       return finish({ status: 'cancelled' });
     }
-    captures?.begin({ id, key: input.key, label: input.label, startedAt: state.startedAt });
+    captures.begin({ id, key: input.key, label: input.label, startedAt: state.startedAt });
     const blocking = [...timeoutProblems(), ...expressionProblems(input.file, request)];
     let prepared = await prepare(blocking);
-    for (let round = 1; prepared.kind === 'waiting'; round += 1) {
-      if (round > maxWaitRounds) {
-        return finish({
-          status: 'blocked',
-          problems: [{ message: changingMessage(input.label), range: request.requestLine.range }],
-        });
-      }
-      const waited = await waitFor(prepared.waits);
+    let rounds = 0;
+    while (prepared.kind === 'waiting') {
+      const remaining = await captures.settle(prepared.waits, id, controller.signal);
       if (wasCancelled()) {
         return finish({ status: 'cancelled' });
       }
-      if (!waited.ok) {
-        return finish({ status: 'blocked', problems: [waited.problem] });
+      if (remaining.length > 0) {
+        rounds += 1;
+        if (rounds > maxWaitRounds) {
+          return finish({
+            status: 'blocked',
+            problems: [{ message: changingMessage(input.label), range: request.requestLine.range }],
+          });
+        }
+        const waited = await waitFor(remaining);
+        if (wasCancelled()) {
+          return finish({ status: 'cancelled' });
+        }
+        if (!waited.ok) {
+          return finish({ status: 'blocked', problems: [waited.problem] });
+        }
       }
       prepared = await prepare(blocking);
     }

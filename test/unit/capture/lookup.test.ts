@@ -148,12 +148,12 @@ describe('captureLookup', () => {
     expect(lookup.bare('note')).toEqual({
       kind: 'not-run',
       label: 'Summarise',
-      producerName: undefined,
+      producerName: 'Summarise',
     });
     expect(lookup.bare('summary')).toEqual({
       kind: 'not-run',
       label: 'POST https://••••••@api.example.test/agent/summary',
-      producerName: undefined,
+      producerName: 'POST https://••••••@api.example.test/agent/summary',
     });
   });
 

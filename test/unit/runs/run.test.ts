@@ -22,6 +22,7 @@ import {
   requestKey,
   requestKeyDocument,
   startRun,
+  type RunHandle,
   type RunInput,
   type RunSnapshot,
   type RunStatus,
@@ -33,7 +34,7 @@ import { startStreamServer } from '../../support/stream-server';
 import { collect } from '../../support/memory';
 import { missingWorker } from '../capture/worker';
 import { waitFor } from '../transport/harness';
-import { dependencies, runInput, useSpillArea } from './support';
+import { dependencies, runInput, useSpillArea, withObserver } from './support';
 
 const servers: LocalServer[] = [];
 const spillArea = useSpillArea();
@@ -647,7 +648,7 @@ describe('startRun streaming', () => {
     };
 
     const run = startRun(
-      { ...runInput([`GET ${server.url}/paced`]), spill: undefined, observer },
+      withObserver({ ...runInput([`GET ${server.url}/paced`]), spill: undefined }, observer),
       dependencies,
     );
     await waitFor(() => run.snapshot().receivedBytes > 0);
@@ -1370,7 +1371,7 @@ describe('the observer sees head, events and exactly one end on every exit path'
     transport?: Transport,
   ): Promise<{ snapshot: RunSnapshot; run: ReturnType<typeof startRun> }> {
     const run = startRun(
-      { ...input, observer: recorded.observer },
+      withObserver(input, recorded.observer),
       transport === undefined ? dependencies : { ...dependencies, transport },
     );
     const snapshot = await run.done;
@@ -1518,7 +1519,7 @@ describe('the observer sees head, events and exactly one end on every exit path'
     );
     const recorded = recording();
     const run = startRun(
-      { ...runInput([`GET ${server.url}`]), observer: recorded.observer },
+      withObserver(runInput([`GET ${server.url}`]), recorded.observer),
       dependencies,
     );
     await waitFor(() => recorded.events.length === 1, 2000);
@@ -1536,7 +1537,7 @@ describe('the observer sees head, events and exactly one end on every exit path'
     const server = await track(startHttpServer((_request, response) => response.end()));
     const recorded = recording();
     const run = startRun(
-      { ...runInput([`GET ${server.url}`]), observer: recorded.observer },
+      withObserver(runInput([`GET ${server.url}`]), recorded.observer),
       dependencies,
     );
 
@@ -1647,7 +1648,12 @@ describe('waiting for captured values', () => {
     }
   });
 
-  function capturing(registry: CaptureRegistry, lines: string[], index: number): RunInput {
+  function capturing(
+    registry: CaptureRegistry,
+    lines: string[],
+    index: number,
+    runs: (key: string) => RunHandle | undefined = () => undefined,
+  ): RunInput {
     const input = runInput(lines, { index });
     return {
       ...input,
@@ -1659,9 +1665,16 @@ describe('waiting for captured values', () => {
         file: input.file,
         request: input.request,
         workerFile: missingWorker,
-        runs: () => undefined,
+        runs,
       }),
     };
+  }
+
+  function headerOf(request: { rawHeaders: string[] }, name: string): string | undefined {
+    const at = request.rawHeaders.findIndex(
+      (header, index) => index % 2 === 0 && header.toLowerCase() === name,
+    );
+    return at === -1 ? undefined : request.rawHeaders[at + 1];
   }
 
   function resolved(text: string, runId: number): CaptureResult {
@@ -1933,6 +1946,186 @@ describe('waiting for captured values', () => {
         range: at(9, 3, 18),
         producer: 'startRun',
       },
+    ]);
+  });
+
+  it('a bare name the request also captures reads a newer capture from another request', async () => {
+    const api = await track(
+      startHttpServer((_request, response) => {
+        response.writeHead(200, { 'Content-Type': 'application/json' });
+        response.end('{"threadId":"thread-continued"}');
+      }),
+    );
+    const registry = new CaptureRegistry();
+    const continueKey = `${documentUri}\n@continue`;
+    const lines = [
+      '# @name startRun',
+      '# @capture threadId = body.threadId',
+      'POST https://api.example.test/agent/run',
+      '',
+      '###',
+      '# @name continue',
+      '# @capture threadId = body.threadId',
+      `GET ${api.url}/continue`,
+      'X-Thread: {{threadId}}',
+    ];
+    const producerResolves = (id: number, text: string): void => {
+      registry.begin(
+        { id, key: startKey, label: 'startRun', startedAt: performance.now() },
+        threadId,
+      );
+      registry.update(id, 'threadId', resolved(text, id));
+    };
+    const send = async (): Promise<void> => {
+      const run = startRun(capturing(registry, lines, 1), dependencies);
+      const sent = await run.done;
+      expect(sent.problems).toEqual([]);
+      await waitFor(() => {
+        const entry = registry.get(continueKey, 'threadId');
+        return entry?.runId === run.id && entry.result.state === 'resolved';
+      });
+    };
+
+    producerResolves(-1, 'thread-1');
+    await send();
+    producerResolves(-2, 'thread-2');
+    await send();
+    await send();
+
+    expect(api.requests.map((request) => headerOf(request, 'x-thread'))).toEqual([
+      'thread-1',
+      'thread-2',
+      'thread-continued',
+    ]);
+  });
+
+  it('a malformed # @capture line blocks the request with its diagnostic', async () => {
+    const server = await track(startHttpServer((_request, response) => response.end()));
+    const lines = ['# @name startRun', '# @capture threadId', `POST ${server.url}/agent/run`];
+    const [diagnostic] = parseHttpFile(lines.join('\n')).diagnostics.filter(
+      (candidate) => candidate.code === 'invalid-capture',
+    );
+
+    const blocked = await startRun(capturing(new CaptureRegistry(), lines, 0), dependencies).done;
+
+    expect(diagnostic).toBeDefined();
+    expect(blocked.status).toBe('blocked');
+    expect(blocked.problems).toEqual([{ message: diagnostic?.message, range: diagnostic?.range }]);
+    expect(server.sockets.opened).toBe(0);
+  });
+
+  describe('response references', () => {
+    const loginKey = `${documentUri}\n@login`;
+    const lines = (api: LocalServer): string[] => [
+      '# @name login',
+      `POST ${api.url}/login`,
+      '',
+      '###',
+      '# @name continue',
+      `GET ${api.url}/continue`,
+      'X-Session: {{login.response.headers.X-Session}}',
+    ];
+
+    async function sessionServer(): Promise<LocalServer> {
+      return track(
+        startHttpServer((_request, response) => {
+          response.writeHead(200, { 'X-Session': 'session-1' });
+          response.end('ok');
+        }),
+      );
+    }
+
+    it('one whose producer is done sends without waiting', async () => {
+      const api = await sessionServer();
+      const registry = new CaptureRegistry();
+      const login = startRun(capturing(registry, lines(api), 0), dependencies);
+      await login.done;
+      const statuses: RunStatus[] = [];
+
+      const sent = await startRun(
+        capturing(registry, lines(api), 1, (key) => (key === loginKey ? login : undefined)),
+        dependencies,
+        (snapshot) => statuses.push(snapshot.status),
+      ).done;
+
+      expect(sent.status).toBe('completed');
+      expect(statuses).not.toContain('waiting');
+      expect(headerOf(api.requests[1] ?? { rawHeaders: [] }, 'x-session')).toBe('session-1');
+    });
+
+    it('one to a request that never ran blocks at once, without waiting', async () => {
+      const api = await sessionServer();
+      const statuses: RunStatus[] = [];
+
+      const blocked = await startRun(
+        capturing(new CaptureRegistry(), lines(api), 1),
+        dependencies,
+        (snapshot) => statuses.push(snapshot.status),
+      ).done;
+
+      expect(statuses).not.toContain('waiting');
+      expect(blocked.problems).toEqual([
+        {
+          message:
+            '`{{login.response.headers.X-Session}}` comes from login, which has not run in this session.',
+          range: at(6, 11, 47),
+          producer: 'login',
+        },
+      ]);
+      expect(api.requests).toEqual([]);
+    });
+
+    it('one to the run itself blocks at once, without waiting', async () => {
+      const api = await sessionServer();
+      const statuses: RunStatus[] = [];
+      const own = [
+        '# @name continue',
+        `GET ${api.url}/continue`,
+        'X-Session: {{continue.response.headers.X-Session}}',
+      ];
+      const self: RunHandle = startRun(
+        capturing(new CaptureRegistry(), own, 0, () => self),
+        dependencies,
+        (snapshot) => statuses.push(snapshot.status),
+      );
+      const blocked = await self.done;
+
+      expect(statuses).not.toContain('waiting');
+      expect(blocked.problems).toEqual([
+        { message: 'continue cannot use its own response.', range: at(2, 11, 50) },
+      ]);
+      expect(api.requests).toEqual([]);
+    });
+  });
+
+  it('a wait inside a <@ body file that times out points at the file', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const registry = new CaptureRegistry();
+    pendingProducer(registry, -1);
+    const folder = bodyFolder('template.json', '{"thread":"{{startRun.threadId}}"}');
+    const lines = [
+      ...followUp.slice(0, 6),
+      'POST https://api.example.test/continue',
+      'Content-Type: application/json',
+      '',
+      '<@ ./template.json',
+    ];
+
+    const consumer = startRun(
+      {
+        ...capturing(registry, lines, 1),
+        bodyFiles: { documentDir: folder, containmentRoot: folder },
+      },
+      dependencies,
+    );
+    await vi.waitFor(() => {
+      expect(consumer.snapshot().status).toBe('waiting');
+    });
+    await vi.advanceTimersByTimeAsync(30_000);
+    const blocked = await consumer.done;
+
+    expect(blocked.problems).toEqual([
+      { message: 'startRun › threadId did not arrive within 30 s.', range: at(9, 3, 18) },
     ]);
   });
 

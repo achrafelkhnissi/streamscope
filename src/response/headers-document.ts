@@ -1,7 +1,7 @@
 import { maskHeaders, maskUrl, maskValues } from '../masking/masking';
 import type { RunSnapshot } from '../runs/run';
 import type { Headers, Timing } from '../transport/model';
-import { formatBytes, formatDuration } from './labels';
+import { formatBytes, formatDuration, waitingText } from './labels';
 
 function headerLines(headers: Headers): string[] {
   return maskHeaders(headers).map(([name, value]) => `${name}: ${value}`);
@@ -45,6 +45,8 @@ function opening(run: RunSnapshot): string[][] {
       return status.length > 0
         ? status
         : [['### Cancelled', `Cancelled after ${formatDuration(run.elapsedMs)}.`]];
+    case 'waiting':
+      return [['### Waiting', `${waitingText(run)}.`]];
     default:
       return status.length > 0 ? status : [['### Sending']];
   }

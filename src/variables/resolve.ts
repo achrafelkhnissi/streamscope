@@ -21,9 +21,10 @@ export interface ResolutionProblem {
   producer?: string;
 }
 
-export type CaptureWait =
+export type CaptureWait = (
   | { kind: 'capture'; request: string; name: string; label: string }
-  | { kind: 'response'; requestName: string; reference: string };
+  | { kind: 'response'; requestName: string; reference: string }
+) & { range?: Range };
 
 export interface CapturedValue {
   label: string;
@@ -136,7 +137,7 @@ function failure(
   };
 }
 
-function waitKey(wait: CaptureWait): string {
+export function waitKey(wait: CaptureWait): string {
   return JSON.stringify(
     wait.kind === 'capture'
       ? [wait.kind, wait.request, wait.name]

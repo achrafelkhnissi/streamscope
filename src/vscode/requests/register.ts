@@ -156,7 +156,9 @@ function producerAction(
   if (producer === undefined) {
     return undefined;
   }
-  const request = file.requests.find(({ name }) => name === producer);
+  const request =
+    file.requests.find(({ name }) => name === producer) ??
+    file.requests.find((candidate) => requestLabel(candidate) === producer);
   return request === undefined
     ? undefined
     : {

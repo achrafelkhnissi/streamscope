@@ -80,7 +80,6 @@ export async function variablesFor(
         ? await readDotenv(document.uri, catalog.active)
         : { kind: 'missing' },
     processEnv: restricted ? {} : process.env,
-    captures: emptyCaptureLookup,
   };
   if (restricted) {
     return { variables, insecureEnvironment: catalog.insecure };
@@ -94,6 +93,7 @@ export async function variablesFor(
   }
   for (const name of referencedSecrets(file, request, {
     ...variables,
+    captures: emptyCaptureLookup,
     system: inertSystem,
     restricted,
   })) {

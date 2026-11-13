@@ -106,11 +106,13 @@ async function evaluated(
   subject: BodySubject,
   { expression, text }: { expression: Expr; text: string },
   known: ReadonlyMap<string, Outcome>,
+  signal: AbortSignal | undefined,
 ): Promise<ReferenceResult> {
   const [answer] = await evaluateJobs(
     subject,
     [{ name, expression, text, known, collected: noneCollected }],
     run.workerFile,
+    { signal },
   );
   if (answer === undefined) {
     throw new Error('evaluateJobs returned no result for the reference');
@@ -122,6 +124,7 @@ async function evaluated(
 export async function evaluateResponseReference(
   run: ReferencedRun,
   reference: string,
+  signal?: AbortSignal,
 ): Promise<ReferenceResult> {
   const translation = translate(run.label, reference);
   if (!translation.ok) {
@@ -146,6 +149,7 @@ export async function evaluateResponseReference(
       subject,
       translation,
       headersKnown(translation.expression, head),
+      signal,
     );
   }
   await run.done;
@@ -156,5 +160,5 @@ export async function evaluateResponseReference(
   const subject = await bodySubject(run);
   return typeof subject === 'string'
     ? { ok: false, reason: subject }
-    : evaluated(run, reference, subject, translation, new Map());
+    : evaluated(run, reference, subject, translation, new Map(), signal);
 }

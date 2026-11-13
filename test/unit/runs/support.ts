@@ -2,12 +2,16 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach } from 'vitest';
+import { CaptureRegistry } from '../../../src/capture/registry';
+import { CaptureService } from '../../../src/capture/service';
 import { SpillArea } from '../../../src/events/spill';
 import { parseHttpFile } from '../../../src/http-file/parse';
+import type { RunCaptures, RunObserver } from '../../../src/runs/observer';
 import type { RequestSettings, RunDependencies, RunInput } from '../../../src/runs/run';
 import { defaultStreamLimits } from '../../../src/streaming/limits';
-import { emptyCaptureLookup, type VariableSources } from '../../../src/variables/sources';
+import type { VariableSources } from '../../../src/variables/sources';
 import { NodeTransport } from '../../../src/transport/node-transport';
+import { missingWorker } from '../capture/worker';
 
 let currentSpillArea: SpillArea | undefined;
 
@@ -42,14 +46,13 @@ export const defaultSettings: RequestSettings = {
   insecureEnvironment: false,
 };
 
-export const emptyVariables: Omit<VariableSources, 'system' | 'restricted'> = {
+export const emptyVariables: Omit<VariableSources, 'system' | 'restricted' | 'captures'> = {
   environmentName: undefined,
   environment: new Map(),
   shared: new Map(),
   secrets: new Map(),
   dotenv: { kind: 'missing' },
   processEnv: {},
-  captures: emptyCaptureLookup,
 };
 
 export const dependencies: RunDependencies = {
@@ -91,6 +94,35 @@ export function runInput(
     confirmSend: options.confirmSend,
     spill: spillArea(),
     limits: defaultStreamLimits,
+    captures: new CaptureService({
+      registry: new CaptureRegistry(),
+      documentUri: 'file:///requests.http',
+      file,
+      request,
+      workerFile: missingWorker,
+      runs: () => undefined,
+    }),
     waitTimeoutMs: 30_000,
+  };
+}
+
+export function withObserver(input: RunInput, observer: RunObserver): RunInput {
+  const captures: RunCaptures = input.captures;
+  return {
+    ...input,
+    captures: {
+      lookup: captures.lookup,
+      begin: (run) => {
+        captures.begin(run);
+      },
+      settle: (waits, runId, signal) => captures.settle(waits, runId, signal),
+      wait: (waits, runId, options) => captures.wait(waits, runId, options),
+      observer: (run) => {
+        if (captures.observer(run) !== undefined) {
+          throw new Error('withObserver takes a request without # @capture lines');
+        }
+        return observer;
+      },
+    },
   };
 }

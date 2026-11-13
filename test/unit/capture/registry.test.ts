@@ -157,6 +157,20 @@ describe('CaptureRegistry', () => {
     expect(registry.latest('messageId')).toMatchObject({ runId: 4, request: continueKey });
   });
 
+  it('latest(name, except) leaves out one request', () => {
+    const registry = new CaptureRegistry();
+    registry.begin(run(1, startKey, 'startRun', 100), threadId);
+    registry.begin(run(2, summaryKey, 'summary', 200), threadId);
+    registry.begin(run(3, continueKey, 'continue', 300), threadId);
+
+    expect(registry.latest('threadId', continueKey)).toMatchObject({
+      runId: 2,
+      request: summaryKey,
+    });
+    expect(registry.latest('threadId', summaryKey)).toMatchObject({ runId: 3 });
+    expect(registry.latest('messageId', continueKey)).toBeUndefined();
+  });
+
   it('an update from a superseded run is ignored', () => {
     const registry = new CaptureRegistry();
     const changes: CaptureEntry[] = [];

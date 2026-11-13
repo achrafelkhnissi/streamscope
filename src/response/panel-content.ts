@@ -3,7 +3,7 @@ import { maskValues } from '../masking/masking';
 import type { RawData, RunSnapshot } from '../runs/run';
 import { formatLabel } from '../streaming/detect';
 import { formatBody } from './format-body';
-import { formatBytes, formatDuration } from './labels';
+import { formatBytes, formatDuration, waitingText } from './labels';
 import { panelLimits, type PanelBody, type PanelStatus } from './panel-protocol';
 
 type JsonObject = { readonly [key: string]: JsonValue };
@@ -66,7 +66,9 @@ export function panelStatus(run: RunSnapshot): PanelStatus {
       ? run.failure?.message
       : run.status === 'blocked'
         ? run.problems[0]?.message
-        : undefined;
+        : run.status === 'waiting'
+          ? waitingText(run)
+          : undefined;
   if (reason !== undefined && reason !== '') {
     parts.push(reason);
   }

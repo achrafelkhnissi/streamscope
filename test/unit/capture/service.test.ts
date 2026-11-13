@@ -6,8 +6,10 @@ import { parseHttpFile } from '../../../src/http-file/parse';
 import type { HttpFile } from '../../../src/http-file/model';
 import { requestKey } from '../../../src/runs/run';
 import type { ResponseHead } from '../../../src/transport/model';
+import { describeReference } from '../../../src/variables/inspect';
 import type { CaptureWait } from '../../../src/variables/resolve';
-import { missingWorker } from './worker';
+import { testSources } from '../variables/sources';
+import { expectNoChild, missingWorker, useCaptureWorker } from './worker';
 
 const documentUri = 'file:///agent.http';
 const lines = [
@@ -54,6 +56,7 @@ function service(
   registry: CaptureRegistry,
   index: number,
   runs: (key: string) => ProducerRun | undefined = () => undefined,
+  workerFile = missingWorker,
 ): CaptureService {
   const request = file.requests[index];
   if (!request) {
@@ -64,16 +67,16 @@ function service(
     documentUri,
     file,
     request,
-    workerFile: missingWorker,
+    workerFile,
     runs,
   });
 }
 
-function resolved(text: string, runId: number): CaptureResult {
+function resolved(text: string, runId: number, secret = false): CaptureResult {
   return {
     state: 'resolved',
     text,
-    secret: false,
+    secret,
     provenance: { runId, event: 1, path: 'threadId', time: 0 },
   };
 }
@@ -129,6 +132,10 @@ function producerRun(id: number, label = 'startRun'): FakeRun {
 
 function signal(): AbortSignal {
   return new AbortController().signal;
+}
+
+function responseWait(reference: string, requestName = 'startRun'): CaptureWait {
+  return { kind: 'response', requestName, reference };
 }
 
 afterEach(() => {
@@ -267,6 +274,43 @@ describe('CaptureService', () => {
     expect(registry.get(continueKey, 'threadId')?.result).toEqual({ state: 'pending' });
   });
 
+  it("a bare name the request also captures reads the newer of its previous value and another request's capture", () => {
+    const registry = new CaptureRegistry();
+    const producer = service(registry, 0);
+    const answer = (id: number) => {
+      const captures = service(registry, 1);
+      captures.begin({ id, key: continueKey, label: 'continue', startedAt: id });
+      return captures.lookup.bare('threadId');
+    };
+
+    producer.begin({ id: 60, key: startKey, label: 'startRun', startedAt: 60 });
+    expect(answer(61)).toEqual({
+      kind: 'pending',
+      request: startKey,
+      label: 'startRun',
+      name: 'threadId',
+    });
+
+    registry.update(60, 'threadId', { state: 'failed', reason: 'the stream ended' });
+    expect(answer(62)).toEqual({
+      kind: 'failed',
+      message: 'startRun › threadId failed: the stream ended.',
+    });
+
+    registry.update(62, 'threadId', resolved('thread-own', 62));
+    expect(answer(63)).toMatchObject({ kind: 'value', text: 'thread-own' });
+
+    producer.begin({ id: 64, key: startKey, label: 'startRun', startedAt: 64 });
+    registry.update(64, 'threadId', resolved('thread-1', 64));
+    expect(answer(65)).toMatchObject({ kind: 'value', text: 'thread-1' });
+
+    registry.update(65, 'threadId', { state: 'failed', reason: 'the body has no threadId' });
+    expect(answer(66)).toEqual({
+      kind: 'failed',
+      message: 'continue › threadId failed: the body has no threadId.',
+    });
+  });
+
   it('the previous values and evaluated responses live only until the observer is taken', async () => {
     const registry = new CaptureRegistry();
     const producer = producerRun(13);
@@ -312,7 +356,7 @@ describe('CaptureService', () => {
     expect(captures.lookup.response('startRun', 'response.headers.X-Session')).toEqual({
       kind: 'value',
       text: 'session-1',
-      secret: false,
+      secret: true,
       label: 'startRun',
       provenance: {
         runId: 16,
@@ -371,7 +415,7 @@ describe('CaptureService', () => {
     });
     expect(captures.lookup.response('continue', 'response.body.*')).toEqual({
       kind: 'failed',
-      message: 'continue cannot use its own capture response.body.*.',
+      message: 'continue cannot use its own response.',
     });
   });
 
@@ -392,5 +436,170 @@ describe('CaptureService', () => {
       },
     });
     expect(vi.getTimerCount()).toBe(0);
+  });
+});
+
+describe('CaptureService.settle', () => {
+  it('evaluates response references whose producer is done and keeps every other wait', async () => {
+    const registry = new CaptureRegistry();
+    service(registry, 0).begin({ id: 40, key: startKey, label: 'startRun', startedAt: 40 });
+    const finished = producerRun(41, 'login');
+    finished.arrive(head([['X-Session', 'session-1']]));
+    finished.end('completed');
+    const running = producerRun(42);
+    const captures = service(registry, 1, (key) =>
+      key === startKey ? running : key === `${documentUri}\n@login` ? finished : undefined,
+    );
+    captures.begin({ id: 43, key: continueKey, label: 'continue', startedAt: 43 });
+    const login = responseWait('response.headers.X-Session', 'login');
+
+    const remaining = await captures.settle([threadWait, login, sessionWait], 43, signal());
+
+    expect(remaining).toEqual([threadWait, sessionWait]);
+    expect(captures.lookup.response('login', 'response.headers.X-Session')).toMatchObject({
+      kind: 'value',
+      text: 'session-1',
+    });
+    expect(captures.lookup.response('startRun', 'response.headers.X-Session')).toBeUndefined();
+  });
+
+  it('answers a request that never ran and the run itself at once', async () => {
+    const own = producerRun(44, 'continue');
+    const captures = service(new CaptureRegistry(), 1, (key) =>
+      key === continueKey ? own : undefined,
+    );
+    captures.begin({ id: 44, key: continueKey, label: 'continue', startedAt: 44 });
+    const self = responseWait('response.body.*', 'continue');
+
+    expect(await captures.settle([sessionWait, self], 44, signal())).toEqual([]);
+    expect(captures.lookup.response('startRun', 'response.headers.X-Session')).toEqual({
+      kind: 'not-run',
+      label: 'startRun',
+      producerName: 'startRun',
+    });
+    expect(captures.lookup.response('continue', 'response.body.*')).toEqual({
+      kind: 'failed',
+      message: 'continue cannot use its own response.',
+    });
+  });
+
+  it('reads a header reference once the head is there, without waiting for the end', async () => {
+    const producer = producerRun(45);
+    producer.arrive(head([['X-Session', 'session-1']]));
+    const captures = service(new CaptureRegistry(), 1, () => producer);
+    captures.begin({ id: 46, key: continueKey, label: 'continue', startedAt: 46 });
+    const body = responseWait('response.body.*');
+
+    expect(await captures.settle([sessionWait, body], 46, signal())).toEqual([body]);
+    expect(captures.lookup.response('startRun', 'response.headers.X-Session')).toMatchObject({
+      kind: 'value',
+      text: 'session-1',
+    });
+  });
+});
+
+describe('response references and secrets', () => {
+  const files = useCaptureWorker();
+
+  it('a value is sensitive when its header or last JSONPath name looks like a credential', async () => {
+    const producer = producerRun(50);
+    producer.arrive(
+      head([
+        ['Content-Type', 'application/json'],
+        ['Authorization', 'Bearer synthetic-bearer'],
+        ['X-Request-Id', 'request-1'],
+      ]),
+    );
+    producer.end('completed', '{"data":{"accessToken":"synthetic-access"},"id":"item-1"}');
+    const captures = service(new CaptureRegistry(), 1, () => producer, files().worker);
+    captures.begin({ id: 51, key: continueKey, label: 'continue', startedAt: 51 });
+    const references = [
+      'response.headers.Authorization',
+      'response.headers.X-Request-Id',
+      "response.body.$.data['accessToken']",
+      'response.body.$.id',
+    ];
+
+    await captures.settle(
+      references.map((reference) => responseWait(reference)),
+      51,
+      signal(),
+    );
+
+    expect(
+      references.map((reference) => {
+        const result = captures.lookup.response('startRun', reference);
+        return result?.kind === 'value' ? [result.text, result.secret] : result;
+      }),
+    ).toEqual([
+      ['Bearer synthetic-bearer', true],
+      ['request-1', false],
+      ['synthetic-access', true],
+      ['item-1', false],
+    ]);
+  });
+
+  it("a value is sensitive when it equals a secret capture of the producer's run", async () => {
+    const registry = new CaptureRegistry();
+    service(registry, 0).begin({ id: 52, key: startKey, label: 'startRun', startedAt: 52 });
+    registry.update(52, 'sessionToken', resolved('synthetic-session', 52, true));
+    const producer = producerRun(52);
+    producer.arrive(
+      head([
+        ['X-Echo', 'synthetic-session'],
+        ['X-Plain', 'plain-1'],
+      ]),
+    );
+    const captures = service(registry, 1, () => producer);
+    captures.begin({ id: 53, key: continueKey, label: 'continue', startedAt: 53 });
+
+    await captures.settle(
+      [responseWait('response.headers.X-Echo'), responseWait('response.headers.X-Plain')],
+      53,
+      signal(),
+    );
+
+    expect(captures.lookup.response('startRun', 'response.headers.X-Echo')).toMatchObject({
+      text: 'synthetic-session',
+      secret: true,
+    });
+    expect(captures.lookup.response('startRun', 'response.headers.X-Plain')).toMatchObject({
+      text: 'plain-1',
+      secret: false,
+    });
+  });
+
+  it('a sensitive response value is masked when the reference is described', async () => {
+    const producer = producerRun(54);
+    producer.arrive(head([['Authorization', 'Bearer synthetic-bearer']]));
+    const captures = service(new CaptureRegistry(), 1, () => producer);
+    captures.begin({ id: 55, key: continueKey, label: 'continue', startedAt: 55 });
+    await captures.settle([responseWait('response.headers.Authorization')], 55, signal());
+
+    expect(
+      describeReference(
+        file,
+        'startRun.response.headers.Authorization',
+        testSources({ captures: captures.lookup }),
+      ),
+    ).toMatchObject({ kind: 'value', value: '••••••', sensitive: true });
+  });
+
+  it('stopping a response evaluation kills its JSONPath child', async () => {
+    const producer = producerRun(56);
+    producer.arrive(head([['Content-Type', 'application/json']]));
+    producer.end('completed', '{"token":"synthetic-token"}');
+    const hanging = files().script('hanging', 'setInterval(() => undefined, 1000);');
+    const captures = service(new CaptureRegistry(), 1, () => producer, hanging);
+    captures.begin({ id: 57, key: continueKey, label: 'continue', startedAt: 57 });
+    const controller = new AbortController();
+    setTimeout(() => {
+      controller.abort();
+    }, 100);
+
+    await captures.settle([responseWait('response.body.$.token')], 57, controller.signal);
+
+    await expectNoChild();
+    expect(captures.lookup.response('startRun', 'response.body.$.token')).toBeUndefined();
   });
 });

@@ -153,6 +153,10 @@ export function ownCaptureReason(label: string, name: string): string {
   return `${label} cannot use its own capture ${name}.`;
 }
 
+export function ownResponseReason(label: string): string {
+  return `${label} cannot use its own response.`;
+}
+
 export function waitCycleReason(labels: readonly string[]): string {
   return `${listText(labels)} wait for each other's captures.`;
 }

@@ -2,9 +2,10 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
+import { evaluationCancelledReason } from '../../../src/capture/messages';
 import { evaluateResponseReference, type ReferencedRun } from '../../../src/capture/references';
 import type { ResponseHead } from '../../../src/transport/model';
-import { missingWorker, useCaptureWorker } from './worker';
+import { expectNoChild, missingWorker, useCaptureWorker } from './worker';
 
 const encoder = new TextEncoder();
 const mebibyte = 1_048_576;
@@ -67,6 +68,23 @@ function bodyFile(name: string, text: string): { path: string; length: number } 
 
 describe('evaluateResponseReference', () => {
   const files = useCaptureWorker();
+
+  it('an aborted reference kills its JSONPath child', async () => {
+    const hanging = files().script('hanging', 'setInterval(() => undefined, 1000);');
+    const controller = new AbortController();
+    const run = referenced({ body: '{"token":"token-1"}', workerFile: hanging });
+
+    const evaluating = evaluateResponseReference(run, 'response.body.$.token', controller.signal);
+    setTimeout(() => {
+      controller.abort();
+    }, 100);
+
+    await expect(evaluating).resolves.toStrictEqual({
+      ok: false,
+      reason: evaluationCancelledReason,
+    });
+    await expectNoChild();
+  });
 
   it('reads response.body.$.x with JSONPath', async () => {
     const run = referenced({

@@ -186,6 +186,39 @@ describe('waiting for captured values', () => {
     );
   });
 
+  it('the blocked toast offers Run for an unnamed producer too', async () => {
+    const server = await serve();
+    const uri = await open('unnamed.http', [
+      '### Start an unnamed run',
+      '# @capture unnamedThread = first(type == "RUN_STARTED").threadId',
+      `GET ${server.url}/stream?seconds=0`,
+      '',
+      '###',
+      `GET ${server.url}/continue?thread={{unnamedThread}}`,
+    ]);
+
+    await send(uri, 5);
+    const blocked = await vscode.commands.executeCommand<BlockedActions | undefined>(
+      'streamscope.test.blockedActions',
+    );
+
+    assert.ok(blocked, 'no blocked notification was shown');
+    assert.equal(
+      blocked.message,
+      'Not sent: `{{unnamedThread}}` comes from Start an unnamed run, which has not run in this session. (line 6).',
+    );
+    assert.deepEqual(blocked.actions, ['Run Start an unnamed run', 'Go to Line']);
+    assert.equal(server.requests.length, 0);
+    const run = blocked.run;
+    assert.ok(run, 'the toast has no Run action');
+    await vscode.commands.executeCommand(run.command, ...run.arguments);
+
+    assert.deepEqual(
+      server.requests.map((request) => request.url),
+      ['/stream?seconds=0'],
+    );
+  });
+
   it('a re-send replaces a waiting run', async () => {
     const server = await serve();
     const uri = await open('resend.http', agentFile(server, 'resent', 'delayMs=1500&seconds=0'));

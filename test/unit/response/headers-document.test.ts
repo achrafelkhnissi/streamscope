@@ -139,6 +139,20 @@ describe('renderHeadersDocument', () => {
     ).toBe(['### Cancelled', 'Cancelled after 2.1 s.', ''].join('\n'));
   });
 
+  it('renders a run waiting for a captured value', () => {
+    expect(
+      renderHeadersDocument(
+        snapshot({
+          status: 'waiting',
+          waitingFor: 'startRun › threadId',
+          head: undefined,
+          sent: undefined,
+          timing: undefined,
+        }),
+      ),
+    ).toBe(['### Waiting', 'Waiting for startRun › threadId.', ''].join('\n'));
+  });
+
   it('renders a blocked run with its problems and lines', () => {
     expect(
       renderHeadersDocument(

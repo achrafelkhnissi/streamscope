@@ -10,7 +10,7 @@ import { parseExpression } from '../../../src/expressions/parse';
 import type { RunObserver } from '../../../src/runs/observer';
 import { startRun, type RunDependencies } from '../../../src/runs/run';
 import { startHttpServer, type LocalServer } from '../../support/servers';
-import { dependencies, runInput, useSpillArea } from '../runs/support';
+import { dependencies, runInput, useSpillArea, withObserver } from '../runs/support';
 import { longestStall, missingWorker } from './worker';
 
 const mebibyte = 1_048_576;
@@ -192,7 +192,7 @@ async function trackedRun(url: string, definitions: CaptureDefinition[]): Promis
     backpressure: tracker,
   };
   const pacing: Pacing = { pauses: 0, deliveredWhilePaused: 0 };
-  const run = startRun({ ...runInput([`GET ${url}`]), observer }, pacedDependencies(pacing));
+  const run = startRun(withObserver(runInput([`GET ${url}`]), observer), pacedDependencies(pacing));
   const snapshot = await run.done;
   await ended;
   const endedAt = performance.now();
@@ -325,7 +325,10 @@ describe('ordinary captures on a fast stream', () => {
         backpressure: tracker,
       };
 
-      const run = startRun({ ...runInput([`GET ${server.url}/agent`]), observer }, dependencies);
+      const run = startRun(
+        withObserver(runInput([`GET ${server.url}/agent`]), observer),
+        dependencies,
+      );
       const snapshot = await run.done;
       await ended;
 

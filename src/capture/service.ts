@@ -1,17 +1,19 @@
 import type { HttpFile, HttpRequest } from '../http-file/model';
+import { isSensitiveHeader, looksLikeCredential } from '../masking/masking';
 import type { CaptureWaitOutcome, RunCaptures, RunObserver } from '../runs/observer';
 import type { ResponseHead } from '../transport/model';
 import { responseSelector } from '../variables/references';
-import type { CaptureWait, ResolutionProblem } from '../variables/resolve';
+import { waitKey, type CaptureWait, type ResolutionProblem } from '../variables/resolve';
 import type { CaptureLookup, CaptureLookupResult } from '../variables/sources';
 import { captureLookup, lookupResult, namedRequestKey, responseKey } from './lookup';
 import {
   captureFailedMessage,
   ownCaptureReason,
+  ownResponseReason,
   waitCancelledReason,
   waitTimeoutReason,
 } from './messages';
-import { evaluateResponseReference, type ReferencedRun, type ReferenceResult } from './references';
+import { evaluateResponseReference, type ReferencedRun } from './references';
 import { CaptureWaitError, type CaptureEntry, type CaptureRegistry } from './registry';
 import { CaptureTracker, type CaptureDefinition } from './tracker';
 
@@ -75,10 +77,51 @@ function referencedRun(run: ProducerRun, workerFile: string): ReferencedRun {
   };
 }
 
-function waitKey(wait: CaptureWait): string {
-  return wait.kind === 'capture'
-    ? `capture\n${wait.request}\n${wait.name}`
-    : `response\n${wait.requestName}\n${wait.reference}`;
+const finishedStates: ReadonlySet<string> = new Set([
+  'completed',
+  'failed',
+  'cancelled',
+  'blocked',
+]);
+const memberNames = /\.([A-Za-z_$][\w$-]*)|\[\s*'([^']*)'\s*\]|\[\s*"([^"]*)"\s*\]/g;
+
+type Located =
+  { kind: 'answered'; result: CaptureLookupResult } | { kind: 'producer'; run: ProducerRun };
+
+function distinct(waits: readonly CaptureWait[]): CaptureWait[] {
+  return [...new Map(waits.map((wait) => [waitKey(wait), wait])).values()];
+}
+
+function lastMemberName(query: string): string | undefined {
+  let last: string | undefined;
+  for (const match of query.matchAll(memberNames)) {
+    last = match[1] ?? match[2] ?? match[3];
+  }
+  return last;
+}
+
+function sensitiveName(wait: ResponseWait): boolean {
+  const selector = responseSelector(wait.requestName, wait.reference);
+  if (!selector.ok) {
+    return false;
+  }
+  if (selector.part === 'head') {
+    return isSensitiveHeader(selector.header) || looksLikeCredential(selector.header);
+  }
+  const name = selector.query === undefined ? undefined : lastMemberName(selector.query);
+  return name !== undefined && looksLikeCredential(name);
+}
+
+function readsHead(wait: ResponseWait): boolean {
+  const selector = responseSelector(wait.requestName, wait.reference);
+  return selector.ok && selector.part === 'head';
+}
+
+function startedLater(entry: CaptureEntry, other: CaptureEntry): boolean {
+  return (
+    entry.runStartedAt > other.runStartedAt ||
+    (entry.runStartedAt === other.runStartedAt && entry.runId > other.runId)
+  );
 }
 
 function within<T>(
@@ -124,8 +167,14 @@ export class CaptureService implements RunCaptures {
     );
     const base = captureLookup(options.registry, options.documentUri, options.file, this.responses);
     this.lookup = {
-      request: (requestName, captureName) => this.ownValue(base.request(requestName, captureName)),
-      bare: (captureName) => this.ownValue(base.bare(captureName)),
+      request: (requestName, captureName) => {
+        const result = base.request(requestName, captureName);
+        return this.isOwn(result) ? this.previousValue(result.label, captureName) : result;
+      },
+      bare: (captureName) => {
+        const result = base.bare(captureName);
+        return this.isOwn(result) ? this.newerValue(result.label, captureName) : result;
+      },
       response: (requestName, reference) => base.response(requestName, reference),
     };
   }
@@ -135,7 +184,7 @@ export class CaptureService implements RunCaptures {
     const names = new Set(this.definitions.map((definition) => definition.name));
     this.key = run.key;
     for (const entry of registry.forRequest(run.key)) {
-      if (entry.result.state === 'resolved' && names.has(entry.name)) {
+      if (entry.result.state !== 'pending' && names.has(entry.name)) {
         this.previous.set(entry.name, entry);
       }
     }
@@ -174,6 +223,35 @@ export class CaptureService implements RunCaptures {
     };
   }
 
+  async settle(
+    waits: readonly CaptureWait[],
+    runId: number,
+    signal: AbortSignal,
+  ): Promise<readonly CaptureWait[]> {
+    const remaining: CaptureWait[] = [];
+    const evaluations: Promise<void>[] = [];
+    for (const wait of distinct(waits)) {
+      if (wait.kind === 'capture') {
+        remaining.push(wait);
+        continue;
+      }
+      const located = this.locate(wait, runId);
+      if (located.kind === 'answered') {
+        this.answer(wait, located.result);
+      } else if (this.ready(wait, located.run)) {
+        evaluations.push(
+          this.evaluate(wait, located.run, signal).then((result) => {
+            this.answer(wait, result);
+          }),
+        );
+      } else {
+        remaining.push(wait);
+      }
+    }
+    await Promise.all(evaluations);
+    return remaining;
+  }
+
   async wait(
     waits: readonly CaptureWait[],
     runId: number,
@@ -189,11 +267,10 @@ export class CaptureService implements RunCaptures {
     } else {
       signal.addEventListener('abort', cancel, { once: true });
     }
-    const distinct = new Map(waits.map((wait) => [waitKey(wait), wait]));
     const problems: ResolutionProblem[] = [];
     try {
       await Promise.all(
-        [...distinct.values()].map((wait) =>
+        distinct(waits).map((wait) =>
           this.waitFor(wait, runId, timeoutMs, stop.signal).catch((error: unknown) => {
             if (!(error instanceof CaptureWaitError)) {
               throw error;
@@ -211,14 +288,50 @@ export class CaptureService implements RunCaptures {
     return problem === undefined ? { ok: true } : { ok: false, problem };
   }
 
-  private ownValue(result: CaptureLookupResult | undefined): CaptureLookupResult | undefined {
-    if (result?.kind !== 'pending' || result.request !== this.key) {
-      return result;
-    }
-    const previous = this.previous.get(result.name);
+  private isOwn(
+    result: CaptureLookupResult | undefined,
+  ): result is Extract<CaptureLookupResult, { kind: 'pending' }> {
+    return result?.kind === 'pending' && result.request === this.key;
+  }
+
+  private previousValue(label: string, name: string): CaptureLookupResult {
+    const previous = this.previous.get(name);
     return previous === undefined
-      ? { kind: 'failed', message: ownCaptureReason(result.label, result.name) }
+      ? { kind: 'failed', message: ownCaptureReason(label, name) }
       : lookupResult(previous);
+  }
+
+  private newerValue(label: string, name: string): CaptureLookupResult {
+    const other = this.options.registry.latest(name, this.key);
+    const previous = this.previous.get(name);
+    if (other === undefined || (previous !== undefined && startedLater(previous, other))) {
+      return this.previousValue(label, name);
+    }
+    return lookupResult(other);
+  }
+
+  private answer(wait: ResponseWait, result: CaptureLookupResult | undefined): void {
+    if (result !== undefined) {
+      this.responses.set(responseKey(wait.requestName, wait.reference), result);
+    }
+  }
+
+  private locate(wait: ResponseWait, runId: number): Located {
+    const label = wait.requestName;
+    const { documentUri, runs } = this.options;
+    const run = runs(namedRequestKey(documentUri, label));
+    if (run === undefined) {
+      return { kind: 'answered', result: { kind: 'not-run', label, producerName: label } };
+    }
+    if (run.id === runId) {
+      return { kind: 'answered', result: { kind: 'failed', message: ownResponseReason(label) } };
+    }
+    return { kind: 'producer', run };
+  }
+
+  private ready(wait: ResponseWait, producer: ProducerRun): boolean {
+    const { status, head } = producer.snapshot();
+    return finishedStates.has(status) || (readsHead(wait) && head !== undefined);
   }
 
   private async waitFor(
@@ -231,38 +344,41 @@ export class CaptureService implements RunCaptures {
       await this.options.registry.wait(wait.request, wait.name, runId, { timeoutMs, signal });
       return;
     }
-    this.responses.set(
-      responseKey(wait.requestName, wait.reference),
-      await this.response(wait, runId, timeoutMs, signal),
+    const located = this.locate(wait, runId);
+    if (located.kind === 'answered') {
+      this.answer(wait, located.result);
+      return;
+    }
+    const producer = located.run;
+    const arrived = readsHead(wait)
+      ? Promise.race([producer.headArrived, producer.done])
+      : producer.done;
+    this.answer(
+      wait,
+      await within(
+        arrived.then(() => this.evaluate(wait, producer, signal)),
+        timeoutMs,
+        signal,
+        wait.requestName,
+        wait.reference,
+      ),
     );
   }
 
-  private async response(
+  private async evaluate(
     wait: ResponseWait,
-    runId: number,
-    timeoutMs: number,
+    producer: ProducerRun,
     signal: AbortSignal,
-  ): Promise<CaptureLookupResult> {
+  ): Promise<CaptureLookupResult | undefined> {
     const { requestName: label, reference } = wait;
-    const { documentUri, runs, workerFile } = this.options;
-    const producer = runs(namedRequestKey(documentUri, label));
-    if (producer === undefined) {
-      return { kind: 'not-run', label, producerName: label };
+    const result = await evaluateResponseReference(
+      referencedRun(producer, this.options.workerFile),
+      reference,
+      signal,
+    );
+    if (signal.aborted) {
+      return undefined;
     }
-    if (producer.id === runId) {
-      return { kind: 'failed', message: ownCaptureReason(label, reference) };
-    }
-    const selector = responseSelector(label, reference);
-    const ready =
-      selector.ok && selector.part === 'head'
-        ? Promise.race([producer.headArrived, producer.done])
-        : producer.done;
-    const evaluate = async (): Promise<ReferenceResult> => {
-      await ready;
-      signal.throwIfAborted();
-      return evaluateResponseReference(referencedRun(producer, workerFile), reference);
-    };
-    const result = await within(evaluate(), timeoutMs, signal, label, reference);
     if (!result.ok) {
       return { kind: 'failed', message: captureFailedMessage(label, reference, result.reason) };
     }
@@ -270,7 +386,7 @@ export class CaptureService implements RunCaptures {
     return {
       kind: 'value',
       text: result.text,
-      secret: false,
+      secret: sensitiveName(wait) || this.secretOf(wait, producer.id, result.text),
       label,
       provenance: {
         runId: producer.id,
@@ -279,6 +395,16 @@ export class CaptureService implements RunCaptures {
         time: wallStartedAt + elapsedMs,
       },
     };
+  }
+
+  private secretOf(wait: ResponseWait, producerId: number, text: string): boolean {
+    const { registry, documentUri } = this.options;
+    return registry
+      .forRequest(namedRequestKey(documentUri, wait.requestName))
+      .some(
+        ({ secret, runId, result }) =>
+          secret && runId === producerId && result.state === 'resolved' && result.text === text,
+      );
   }
 
   private problem(wait: CaptureWait, message: string): ResolutionProblem {
@@ -290,6 +416,6 @@ export class CaptureService implements RunCaptures {
     const reference = request.variableReferences.find((candidate) =>
       expressions.includes(candidate.expression),
     );
-    return { message, range: reference?.range ?? request.requestLine.range };
+    return { message, range: wait.range ?? reference?.range ?? request.requestLine.range };
   }
 }

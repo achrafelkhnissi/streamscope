@@ -125,7 +125,7 @@ async function bodyParts(
       parts.push(built.part, { kind: 'bytes', bytes: Buffer.from(lineEnding) });
     } else {
       problems.push(...built.problems.map((problem) => ({ ...problem, range: part.pathRange })));
-      waits.push(...built.waits);
+      waits.push(...built.waits.map((wait) => ({ ...wait, range: part.pathRange })));
     }
   }
   return { parts, problems, waits };

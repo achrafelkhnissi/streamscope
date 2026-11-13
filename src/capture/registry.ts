@@ -147,9 +147,12 @@ export class CaptureRegistry {
     return this.requests.get(request)?.entries.get(name);
   }
 
-  latest(name: string): CaptureEntry | undefined {
+  latest(name: string, except?: string): CaptureEntry | undefined {
     let latest: RequestCaptures | undefined;
     for (const captures of this.declaring.get(name) ?? []) {
+      if (captures.key === except) {
+        continue;
+      }
       if (
         latest === undefined ||
         captures.startedAt > latest.startedAt ||
