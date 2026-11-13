@@ -259,10 +259,10 @@ Every screenshot was checked for readable text and visible state: the status pil
 | Default Dark Modern         | Event detail, cancelled run            | [m6-dark-stopped](decisions/response-surface/m6-dark-stopped.jpeg)         |
 | Default Light Modern        | Raw, coloured                          | [m6-light-raw-live](decisions/response-surface/m6-light-raw-live.jpeg)     |
 | Default Light Modern        | Headers, with Open in Editor           | [m6-light-headers](decisions/response-surface/m6-light-headers.jpeg)       |
-| Default High Contrast       | Events, receiving                      | [m6-hc-events-live](decisions/response-surface/m6-hc-events-live.jpeg)     |
+| Default High Contrast       | Event detail, selected row outlined    | [m6-hc-detail](decisions/response-surface/m6-hc-detail.jpeg)               |
 | Default High Contrast Light | Event detail with Open Event in Editor | [m6-hclight-detail](decisions/response-surface/m6-hclight-detail.jpeg)     |
 
-Two things seen in the screenshots were fixed after these runs, in `5b09974`. The walkthroughs were not rerun after the fix.
+Two things seen in the first walkthroughs were fixed in `5b09974`. All four walkthroughs were then run again on `30068df` (surfaces `m6fix-dark`, `m6fix-light`, `m6fix-hc` and `m6fix-hclight`), and the six committed screenshots come from that rerun. In it, the selected row has an outline in both high-contrast themes and the event labels use the text colour.
 
-- **No selection marker in Default High Contrast.** In the `m6-hc-detail` and `m6-hc-stopped` screenshots, which were not kept, the selected row has no fill and no outline. The panel styled a selected row only with `list.activeSelectionBackground`, which Default High Contrast leaves unset, and set no `contrastActiveBorder`. The border of the open detail still marks the event. In Default High Contrast Light the row has a light fill.
+- **No selection marker in Default High Contrast.** In the first walkthrough's `m6-hc-detail` and `m6-hc-stopped` screenshots, which were not kept, the selected row has no fill and no outline. The panel styled a selected row only with `list.activeSelectionBackground`, which Default High Contrast leaves unset, and set no `contrastActiveBorder`. The border of the open detail still marks the event. In Default High Contrast Light the row has a light fill.
 - **Low contrast for event labels in the light themes.** The labels used `symbolIcon.classForeground`, which is `#D67E00` in both light themes. On white that is about 3.1 to 1 by calculation, below the 4.5 to 1 that WCAG asks of normal text. This is calculated from the colour value, not measured on screen.
