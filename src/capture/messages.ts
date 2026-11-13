@@ -120,12 +120,56 @@ export function cancelledReason(label: string, name: string): string {
   return `${label} was cancelled before ${name} resolved`;
 }
 
-export function failedReason(label: string, name: string, failure: string): string {
-  return `${label} failed before ${name} resolved: ${clause(failure)}`;
+export function failedReason(label: string, name: string, failure?: string): string {
+  const before = `${label} failed before ${name} resolved`;
+  return failure === undefined ? before : `${before}: ${clause(failure)}`;
 }
 
-export function notSentReason(label: string, problem: string): string {
-  return `${label} was not sent: ${clause(problem)}`;
+export function notSentReason(label: string, problem?: string): string {
+  return problem === undefined
+    ? `${label} was not sent`
+    : `${label} was not sent: ${clause(problem)}`;
+}
+
+function durationText(ms: number): string {
+  return ms % 1000 === 0 ? `${String(ms / 1000)} s` : `${String(ms)} ms`;
+}
+
+function listText(items: readonly string[]): string {
+  const last = items.at(-1) ?? '';
+  return items.length < 2 ? last : `${items.slice(0, -1).join(', ')} and ${last}`;
+}
+
+export function waitTimeoutReason(label: string, name: string, timeoutMs: number): string {
+  return `${label} › ${name} did not arrive within ${durationText(timeoutMs)}.`;
+}
+
+export function waitCancelledReason(label: string, name: string): string {
+  return `Waiting for ${label} › ${name} was cancelled.`;
+}
+
+export function ownCaptureReason(label: string, name: string): string {
+  return `${label} cannot use its own capture ${name}.`;
+}
+
+export function waitCycleReason(labels: readonly string[]): string {
+  return `${listText(labels)} wait for each other's captures.`;
+}
+
+export function requestReferenceReason(name: string, reference: string): string {
+  return `Request references such as \`{{${name}.${reference}}}\` are not supported; use \`{{${name}.response.…}}\`.`;
+}
+
+export function xpathReason(name: string): string {
+  return `XPath is not supported in \`{{${name}.response.body…}}\`; use a JSONPath starting with \`$\`.`;
+}
+
+export function headerNameReason(name: string): string {
+  return `A header reference needs a header name, such as \`{{${name}.response.headers.Content-Type}}\`.`;
+}
+
+export function unsupportedResponseReason(name: string, reference: string): string {
+  return `\`{{${name}.${reference}}}\` is not supported; use \`{{${name}.response.body.*}}\`, \`{{${name}.response.body.$…}}\` or \`{{${name}.response.headers.<name>}}\`.`;
 }
 
 export function unexpectedReason(error: unknown): string {

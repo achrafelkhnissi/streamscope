@@ -125,7 +125,7 @@ interface Collection {
   budget: Budget;
 }
 
-interface HeadValues {
+export interface HeadValues {
   status: Value;
   headers: Value;
   cookies: Value;
@@ -193,7 +193,7 @@ function watchOf(node: EventNode): Watch {
   }
 }
 
-function headValues(head: ResponseHead): HeadValues {
+export function headValues(head: ResponseHead): HeadValues {
   const headers = new Map<string, string>();
   const cookies = new Map<string, string>();
   for (const [name, value] of head.headers) {
