@@ -67,6 +67,7 @@ describe('affectedDocuments', () => {
       state: 'resolved',
       text: 'thread-1',
       secret: false,
+      sensitive: [],
       provenance: { runId: 1, event: 1, path: 'threadId', time: 0 },
     });
     vi.advanceTimersByTime(200);

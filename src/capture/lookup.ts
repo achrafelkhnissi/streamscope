@@ -42,6 +42,7 @@ export function lookupResult(entry: CaptureEntry): CaptureLookupResult {
         kind: 'value',
         text: result.text,
         secret: entry.secret,
+        sensitive: result.sensitive,
         label,
         provenance: result.provenance,
       };

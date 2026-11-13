@@ -2,6 +2,7 @@ import type { Expr } from '../expressions/ast';
 import type { Outcome } from '../expressions/evaluate';
 import { checkJsonPath } from '../expressions/jsonpath';
 import { parseExpression, sourcesOf } from '../expressions/parse';
+import { maskValues } from '../masking/masking';
 import type { ResponseHead } from '../transport/model';
 import { responseSelector } from '../variables/references';
 import { evaluateJobs, fileBodyBytes, sourceKey, type BodySubject } from './body';
@@ -21,6 +22,7 @@ export interface ReferencedRun {
   readonly done: Promise<unknown>;
   readonly headArrived: Promise<void>;
   failure(): string | undefined;
+  readonly sensitiveValues: readonly string[];
   readonly bodyLength: number;
   readBody(maxBytes: number): Promise<Uint8Array | undefined>;
   bodyFile(): Promise<{ path: string; length: number } | undefined>;
@@ -66,9 +68,9 @@ function endedReason(run: ReferencedRun, reference: string): string | undefined 
     case 'cancelled':
       return cancelledReason(run.label, reference);
     case 'blocked':
-      return notSentReason(run.label, run.failure());
+      return maskValues(notSentReason(run.label, run.failure()), run.sensitiveValues);
     default:
-      return failedReason(run.label, reference, run.failure());
+      return maskValues(failedReason(run.label, reference, run.failure()), run.sensitiveValues);
   }
 }
 

@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CaptureRegistry } from '../../../src/capture/registry';
-import type { CaptureResult } from '../../../src/capture/tracker';
+import { CaptureTracker, type CaptureResult } from '../../../src/capture/tracker';
 import { StreamSession } from '../../../src/events/session';
 import { SpillArea, type SpillFile } from '../../../src/events/spill';
 import {
@@ -14,6 +14,7 @@ import {
   RowCache,
 } from '../../../src/response/panel-feed';
 import type { StreamEvent } from '../../../src/events/model';
+import { parseExpression } from '../../../src/expressions/parse';
 import { maskedValue } from '../../../src/masking/masking';
 import {
   panelLimits,
@@ -23,6 +24,7 @@ import {
 } from '../../../src/response/panel-protocol';
 import { RawTail } from '../../../src/runs/raw-tail';
 import type { RunSnapshot } from '../../../src/runs/run';
+import { missingWorker } from '../capture/worker';
 import { snapshot } from './fixtures';
 
 const encoder = new TextEncoder();
@@ -763,6 +765,7 @@ describe('PanelFeed captured values', () => {
       state: 'resolved',
       text,
       secret,
+      sensitive: [],
       provenance: { runId: shownRun, event: 1, path: 'threadId', time: 0 },
     };
   }
@@ -864,24 +867,35 @@ describe('PanelFeed captured values', () => {
     }
   });
 
-  it("masks the run's sensitive values in a failure reason, as its status line does", () => {
+  it("masks the run's sensitive values in a failure reason, as its status line does", async () => {
+    const secretHost = 'secret-host.example.test';
     const page = harness();
-    page.set({ sensitiveValues: ['secret-host.example.test'] });
+    page.set({ sensitiveValues: [secretHost] });
     begin(page.registry, threadId);
-    page.registry.update(shownRun, 'threadId', {
-      state: 'failed',
-      reason: 'items failed before threadId resolved: could not resolve secret-host.example.test',
-    });
+    const text = 'first(type == "RUN_STARTED").threadId';
+    const parsed = parseExpression(text, 'capture');
+    if (!parsed.ok) {
+      throw new Error(parsed.error.message);
+    }
+    const tracker = new CaptureTracker(
+      { id: shownRun, label: 'items', wallStartedAt: 0, sensitiveValues: [secretHost] },
+      [{ name: 'threadId', secret: false, expression: parsed.expr, text }],
+      (name, result) => {
+        page.registry.update(shownRun, name, result);
+      },
+      missingWorker,
+    );
+    await tracker.end({ kind: 'failed', message: `Could not resolve ${secretHost}.` });
     page.feed.start();
 
     expect(page.reset().captures).toEqual([
       {
         name: 'threadId',
         state: 'failed',
-        text: `items failed before threadId resolved: could not resolve ${maskedValue}`,
+        text: `items failed before threadId resolved: Could not resolve ${maskedValue}`,
       },
     ]);
-    expect(JSON.stringify(page.posted)).not.toContain('secret-host.example.test');
+    expect(JSON.stringify(page.posted)).not.toContain(secretHost);
   });
 
   it('cuts text at 200 characters and sends at most 64', () => {

@@ -77,3 +77,29 @@ export function maskValues(text: string, values: readonly string[]): string {
     .sort((a, b) => b.length - a.length)
     .reduce((masked, value) => masked.split(value).join(maskedValue), text);
 }
+
+export function sensitiveValuesIn(text: string, values: readonly string[]): string[] {
+  return values.filter(
+    (value) => value !== '' && encodedForms(value).some((form) => text.includes(form)),
+  );
+}
+
+function cookieValue(setCookie: string): string {
+  const pair = setCookie.split(';', 1)[0] ?? '';
+  const equals = pair.indexOf('=');
+  return equals === -1 ? '' : pair.slice(equals + 1).trim();
+}
+
+export function sensitiveHeaderValues(headers: Headers): string[] {
+  const values: string[] = [];
+  for (const [name, value] of headers) {
+    if (!isSensitiveHeader(name)) {
+      continue;
+    }
+    values.push(value);
+    if (name.toLowerCase() === 'set-cookie') {
+      values.push(cookieValue(value));
+    }
+  }
+  return values.filter((value) => value !== '');
+}

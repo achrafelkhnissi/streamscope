@@ -411,7 +411,12 @@ export function startRun(
   const observe = (): RunObserver | undefined => {
     if (!observed) {
       observed = true;
-      observer = captures.observer({ id, label: input.label, wallStartedAt: state.wallStartedAt });
+      observer = captures.observer({
+        id,
+        label: input.label,
+        wallStartedAt: state.wallStartedAt,
+        sensitiveValues: state.sensitiveValues,
+      });
     }
     return observer;
   };

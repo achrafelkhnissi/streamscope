@@ -50,6 +50,7 @@ function referenced(options: Options): ReferencedRun {
       options.headArrived ??
       (current === undefined ? new Promise<void>(() => undefined) : Promise.resolve()),
     failure: () => options.failure,
+    sensitiveValues: [],
     bodyLength: options.bodyLength ?? bytes?.length ?? 0,
     readBody: (maxBytes) => {
       options.reads?.push(maxBytes);

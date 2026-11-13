@@ -11,6 +11,7 @@ export type CaptureLookupResult =
       kind: 'value';
       text: string;
       secret: boolean;
+      sensitive: readonly string[];
       label: string;
       provenance: { runId: number; event: number | undefined; path: string; time: number };
     }

@@ -1,8 +1,8 @@
-import { isSecret } from '../capture/hints';
+import { entryValueText } from '../capture/display';
 import type { CaptureEntry, CaptureRegistry } from '../capture/registry';
 import type { StreamEvent } from '../events/model';
 import type { EventStore } from '../events/store';
-import { maskedPreview, maskedValue, maskValues } from '../masking/masking';
+import { maskedPreview } from '../masking/masking';
 import type { RunHandle, RunSnapshot } from '../runs/run';
 import { classifyContentType } from '../streaming/detect';
 import { renderHeadersDocument } from './headers-document';
@@ -136,23 +136,15 @@ function labelledStream(run: RunSnapshot): boolean {
   return isEventStream(run) || known === 'sse' || known === 'ndjson';
 }
 
-function panelCapture(entry: CaptureEntry, sensitiveValues: readonly string[]): PanelCapture {
+function panelCapture(entry: CaptureEntry): PanelCapture {
   const { name, result } = entry;
   switch (result.state) {
     case 'pending':
       return { name, state: 'pending', text: '' };
     case 'resolved':
-      return {
-        name,
-        state: 'resolved',
-        text: isSecret(entry) ? maskedValue : maskedPreview(result.text, captureTextLength),
-      };
+      return { name, state: 'resolved', text: entryValueText(entry, result, captureTextLength) };
     case 'failed':
-      return {
-        name,
-        state: 'failed',
-        text: maskedPreview(maskValues(result.reason, sensitiveValues), captureTextLength),
-      };
+      return { name, state: 'failed', text: maskedPreview(result.reason, captureTextLength) };
   }
 }
 
@@ -441,8 +433,7 @@ export class PanelFeed {
     if (entries[0]?.runId !== this.run.id) {
       return [];
     }
-    const { sensitiveValues } = this.run.snapshot();
-    return entries.slice(0, maxPanelCaptures).map((entry) => panelCapture(entry, sensitiveValues));
+    return entries.slice(0, maxPanelCaptures).map(panelCapture);
   }
 
   private changedCaptures(): PanelCapture[] | undefined {

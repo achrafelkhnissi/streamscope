@@ -357,6 +357,7 @@ function captured(text: string, secret = false, label = 'startRun'): CaptureLook
     kind: 'value',
     text,
     secret,
+    sensitive: [],
     label,
     provenance: { runId: 1, event: 1, path: 'threadId', time: 0 },
   };

@@ -167,7 +167,7 @@ async function trackedRun(url: string, definitions: CaptureDefinition[]): Promis
   const results = new Map<string, CaptureResult>();
   const settledAt = new Map<string, number>();
   const tracker = new CaptureTracker(
-    { id: 1, label: 'startRun', wallStartedAt: Date.now() },
+    { id: 1, label: 'startRun', wallStartedAt: Date.now(), sensitiveValues: [] },
     definitions,
     (name, result) => {
       results.set(name, result);
@@ -299,7 +299,7 @@ describe('ordinary captures on a fast stream', () => {
       servers.push(server);
       const results = new Map<string, CaptureResult>();
       const tracker = new CaptureTracker(
-        { id: 1, label: 'startRun', wallStartedAt: Date.now() },
+        { id: 1, label: 'startRun', wallStartedAt: Date.now(), sensitiveValues: [] },
         [
           capture('threadId', 'first(type == "RUN_STARTED").threadId'),
           capture('messageId', 'last(type == "RUN_FINISHED").result.messageId'),

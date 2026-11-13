@@ -30,6 +30,7 @@ export interface CapturedValue {
   label: string;
   name: string;
   secret: boolean;
+  sensitive: readonly string[];
   provenance: Extract<CaptureLookupResult, { kind: 'value' }>['provenance'];
 }
 
@@ -242,6 +243,9 @@ class Scope implements VariableScope {
         if (result.secret && result.text !== '') {
           this.sensitive.add(result.text);
         }
+        for (const value of result.sensitive) {
+          this.sensitive.add(value);
+        }
         return {
           ok: true,
           value: result.text,
@@ -249,6 +253,7 @@ class Scope implements VariableScope {
             label: result.label,
             name,
             secret: result.secret,
+            sensitive: result.sensitive,
             provenance: result.provenance,
           },
         };

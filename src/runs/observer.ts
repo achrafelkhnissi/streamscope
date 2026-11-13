@@ -37,7 +37,12 @@ export type CaptureWaitOutcome = { ok: true } | { ok: false; problem: Resolution
 
 export interface RunCaptures {
   lookup: CaptureLookup;
-  observer(run: { id: number; label: string; wallStartedAt: number }): RunObserver | undefined;
+  observer(run: {
+    id: number;
+    label: string;
+    wallStartedAt: number;
+    sensitiveValues: readonly string[];
+  }): RunObserver | undefined;
   begin(run: { id: number; key: string; label: string; startedAt: number }): void;
   settle(
     waits: readonly CaptureWait[],

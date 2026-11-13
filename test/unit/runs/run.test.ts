@@ -11,12 +11,17 @@ import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import * as zlib from 'node:zlib';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { captureHint } from '../../../src/capture/hints';
+import { captureLookup } from '../../../src/capture/lookup';
 import { CaptureRegistry } from '../../../src/capture/registry';
 import { CaptureService } from '../../../src/capture/service';
 import type { CaptureResult } from '../../../src/capture/tracker';
 import type { SpillFile } from '../../../src/events/spill';
 import { parseHttpFile } from '../../../src/http-file/parse';
+import { maskedValue } from '../../../src/masking/masking';
 import { describeOutcome, formatBytes, requestLabel } from '../../../src/response/labels';
+import { PanelFeed } from '../../../src/response/panel-feed';
+import type { ToPanel } from '../../../src/response/panel-protocol';
 import type { RunAccess, RunEnd, RunObserver } from '../../../src/runs/observer';
 import {
   requestKey,
@@ -28,6 +33,8 @@ import {
   type RunStatus,
 } from '../../../src/runs/run';
 import type { Transport } from '../../../src/transport/model';
+import { describeReference } from '../../../src/variables/inspect';
+import type { VariableSources } from '../../../src/variables/sources';
 import { createSelfSignedCertificate } from '../../support/certificate';
 import { startHttpServer, startHttpsServer, type LocalServer } from '../../support/servers';
 import { startStreamServer } from '../../support/stream-server';
@@ -35,7 +42,7 @@ import { collect } from '../../support/memory';
 import { logRunEnd } from '../../../src/vscode/log';
 import { missingWorker } from '../capture/worker';
 import { waitFor } from '../transport/harness';
-import { dependencies, runInput, useSpillArea, withObserver } from './support';
+import { dependencies, emptyVariables, runInput, useSpillArea, withObserver } from './support';
 
 const servers: LocalServer[] = [];
 const spillArea = useSpillArea();
@@ -1654,8 +1661,9 @@ describe('waiting for captured values', () => {
     lines: string[],
     index: number,
     runs: (key: string) => RunHandle | undefined = () => undefined,
+    variables: Partial<RunInput['variables']> = {},
   ): RunInput {
-    const input = runInput(lines, { index });
+    const input = runInput(lines, { index, variables });
     return {
       ...input,
       key: requestKey(documentUri, input.request, index),
@@ -1683,6 +1691,7 @@ describe('waiting for captured values', () => {
       state: 'resolved',
       text,
       secret: false,
+      sensitive: [],
       provenance: { runId, event: 1, path: 'threadId', time: 0 },
     };
   }
@@ -2232,5 +2241,169 @@ describe('waiting for captured values', () => {
       },
     ]);
     expect(registry.waitCount).toBe(0);
+  });
+
+  describe("masking by the producer's sensitive values", () => {
+    const secretHost = 'secret-host.example.test';
+    const token = 'synthetic-token-value';
+    const cookie = 'synthetic-cookie-value';
+    const loginKey = `${documentUri}\n@login`;
+
+    function echoServer(): Promise<LocalServer> {
+      return track(
+        startHttpServer((request, response) => {
+          response.writeHead(200, {
+            'Content-Type': 'application/json',
+            'Set-Cookie': `session=${cookie}; Path=/; HttpOnly`,
+          });
+          response.end(
+            JSON.stringify({
+              echo: `received ${request.headers.authorization ?? ''}`,
+              note: `cookie ${cookie}`,
+            }),
+          );
+        }),
+      );
+    }
+
+    function echoLines(api: LocalServer): string[] {
+      return [
+        '# @name login',
+        '# @capture echo = body.echo',
+        '# @capture session = cookies.session',
+        '# @capture note = body.note',
+        `POST ${api.url}/login`,
+        'Authorization: Bearer {{$secret token}}',
+        '',
+        '###',
+        '# @name continue',
+        `GET ${api.url}/continue`,
+        'X-Echo: {{login.echo}}',
+        'X-Note: {{login.note}}',
+      ];
+    }
+
+    async function loggedIn(registry: CaptureRegistry, lines: string[]): Promise<RunHandle> {
+      const login = startRun(
+        capturing(registry, lines, 0, undefined, { secrets: new Map([['token', token]]) }),
+        dependencies,
+      );
+      await login.done;
+      await waitFor(() =>
+        ['echo', 'session', 'note'].every(
+          (name) => registry.get(loginKey, name)?.result.state === 'resolved',
+        ),
+      );
+      return login;
+    }
+
+    it('a producer that fails with a message containing a resolved {{$secret}} host gives a capture reason with no secret', async () => {
+      const registry = new CaptureRegistry();
+      const lines = [
+        '# @name startRun',
+        '# @capture threadId = first(type == "RUN_STARTED").threadId',
+        'GET http://{{$secret host}}/agent/run',
+        '',
+        '###',
+        '# @name continue',
+        'GET http://127.0.0.1:9/threads/{{startRun.threadId}}',
+      ];
+      const unresolved: typeof dependencies = {
+        ...dependencies,
+        transport: {
+          send: (request) =>
+            Promise.reject(new Error(`getaddrinfo ENOTFOUND ${request.url.hostname}`)),
+        },
+      };
+
+      const producer = await startRun(
+        capturing(registry, lines, 0, undefined, { secrets: new Map([['host', secretHost]]) }),
+        unresolved,
+      ).done;
+      await waitFor(() => registry.get(startKey, 'threadId')?.result.state === 'failed');
+      const consumer = await startRun(capturing(registry, lines, 1), dependencies).done;
+
+      expect(producer.failure?.message).toContain(secretHost);
+      const result = registry.get(startKey, 'threadId')?.result;
+      const reason = result?.state === 'failed' ? result.reason : '';
+      expect(reason).toContain('startRun failed before threadId resolved');
+      expect(reason).toContain(maskedValue);
+      expect(reason).not.toContain(secretHost);
+      const blocked = consumer.problems.map((problem) => problem.message).join('\n');
+      expect(consumer.status).toBe('blocked');
+      expect(blocked).toContain('startRun › threadId failed');
+      expect(blocked).toContain(maskedValue);
+      expect(blocked).not.toContain(secretHost);
+    });
+
+    it("a non-secret capture whose text contains the producer's secret header value or its Set-Cookie value is masked in the strip, the hint, the tooltip and the hover", async () => {
+      const api = await echoServer();
+      const registry = new CaptureRegistry();
+      const lines = echoLines(api);
+      const login = await loggedIn(registry, lines);
+      const posted: ToPanel[] = [];
+      const feed = new PanelFeed(login, {
+        readOnly: false,
+        streamView: 'events',
+        post: (message) => posted.push(message),
+        captures: registry,
+      });
+      feed.start();
+      const file = parseHttpFile(lines.join('\n'));
+      const sources: VariableSources = {
+        ...emptyVariables,
+        system: dependencies.system,
+        restricted: false,
+        captures: captureLookup(registry, documentUri, file, new Map()),
+      };
+
+      const strip = posted.find((message) => message.type === 'reset')?.captures ?? [];
+      expect(strip).toEqual([
+        { name: 'echo', state: 'resolved', text: `received Bearer ${maskedValue}` },
+        { name: 'session', state: 'resolved', text: maskedValue },
+        { name: 'note', state: 'resolved', text: `cookie ${maskedValue}` },
+      ]);
+      for (const name of ['echo', 'session', 'note']) {
+        const hint = captureHint(registry.get(loginKey, name));
+        const hover = describeReference(file, `login.${name}`, sources);
+        const shown = [
+          hint?.label ?? '',
+          hint?.tooltip ?? '',
+          hover.kind === 'value' ? hover.value : '',
+        ].join('\n');
+        expect(shown).toContain(maskedValue);
+        expect(shown).not.toContain(token);
+        expect(shown).not.toContain(cookie);
+      }
+      feed.pause();
+    });
+
+    it('a consumer that sends that capture logs it masked', async () => {
+      const api = await echoServer();
+      const registry = new CaptureRegistry();
+      const lines = echoLines(api);
+      const login = await loggedIn(registry, lines);
+
+      const sent = await startRun(
+        capturing(registry, lines, 1, (key) => (key === loginKey ? login : undefined)),
+        dependencies,
+      ).done;
+      const logged: string[] = [];
+      const record = (line: string): void => {
+        logged.push(line);
+      };
+      logRunEnd(
+        { info: record, warn: record, debug: record } as unknown as Parameters<typeof logRunEnd>[0],
+        sent,
+      );
+
+      expect(sent.sent?.headers).toContainEqual(['X-Echo', `received Bearer ${token}`]);
+      expect(sent.sent?.headers).toContainEqual(['X-Note', `cookie ${cookie}`]);
+      expect(logged.join('\n')).toContain(`X-Echo: received Bearer ${maskedValue}`);
+      expect(logged.join('\n')).toContain(`X-Note: cookie ${maskedValue}`);
+      expect(logged.join('\n')).not.toContain(token);
+      expect(logged.join('\n')).not.toContain(cookie);
+      expect(describeOutcome(sent)).not.toContain(token);
+    });
   });
 });

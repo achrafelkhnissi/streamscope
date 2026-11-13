@@ -43,6 +43,7 @@ function resolved(text: string, runId: number, secret = false): CaptureResult {
     state: 'resolved',
     text,
     secret,
+    sensitive: [],
     provenance: { runId, event: 1, path: 'threadId', time: 1_700_000_000_000 },
   };
 }
@@ -74,6 +75,7 @@ describe('captureLookup', () => {
       kind: 'value',
       text: 'thread-1',
       secret: false,
+      sensitive: [],
       label: 'startRun',
       provenance: { runId: 7, event: 1, path: 'threadId', time: 1_700_000_000_000 },
     });
@@ -185,6 +187,7 @@ describe('captureLookup', () => {
       kind: 'value',
       text: 'synthetic-token',
       secret: false,
+      sensitive: [],
       label: 'startRun',
       provenance: { runId: 7, event: undefined, path: 'response.body.$.token', time: 0 },
     };

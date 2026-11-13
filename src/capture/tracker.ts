@@ -3,6 +3,7 @@ import type { Expr, SourceNode, Value } from '../expressions/ast';
 import { holds, type ConditionItem, type Outcome } from '../expressions/evaluate';
 import { sourcesOf } from '../expressions/parse';
 import { unitsPerCheck, type WorkBudget } from '../expressions/work';
+import { maskValues, sensitiveHeaderValues, sensitiveValuesIn } from '../masking/masking';
 import type { RunAccess, RunEnd } from '../runs/observer';
 import type { ResponseHead } from '../transport/model';
 import {
@@ -63,7 +64,13 @@ export interface Provenance {
 
 export type CaptureResult =
   | { state: 'pending' }
-  | { state: 'resolved'; text: string; secret: boolean; provenance: Provenance }
+  | {
+      state: 'resolved';
+      text: string;
+      secret: boolean;
+      sensitive: readonly string[];
+      provenance: Provenance;
+    }
   | { state: 'failed'; reason: string };
 
 type EventNode = Extract<SourceNode, { kind: 'events' | 'nth' }>;
@@ -352,9 +359,15 @@ export class CaptureTracker {
   private dropped = false;
   private idle: (() => void) | undefined;
   private readonly drainListeners = new Set<() => void>();
+  private sensitive: readonly string[];
 
   constructor(
-    private readonly run: { id: number; label: string; wallStartedAt: number },
+    private readonly run: {
+      id: number;
+      label: string;
+      wallStartedAt: number;
+      sensitiveValues: readonly string[];
+    },
     definitions: readonly CaptureDefinition[],
     private readonly onResult: (name: string, result: CaptureResult) => void,
     private readonly workerFile: string,
@@ -377,6 +390,7 @@ export class CaptureTracker {
     this.query = this.tracked.some((tracked) => tracked.queries)
       ? { matches: { ranges: [], values: [] }, budget: newBudget() }
       : undefined;
+    this.sensitive = run.sensitiveValues;
   }
 
   get retainedValues(): number {
@@ -416,6 +430,7 @@ export class CaptureTracker {
 
   head(head: ResponseHead, access?: RunAccess): void {
     this.response = headValues(head);
+    this.sensitive = [...this.run.sensitiveValues, ...sensitiveHeaderValues(head.headers)];
     this.access = access;
     for (const tracked of this.tracked) {
       if (!tracked.settled && tracked.timing === 'head') {
@@ -1014,6 +1029,7 @@ export class CaptureTracker {
       state: 'resolved',
       text: result.text,
       secret: tracked.definition.secret,
+      sensitive: sensitiveValuesIn(result.text, this.sensitive),
       provenance: {
         runId: this.run.id,
         event: result.event,
@@ -1031,7 +1047,7 @@ export class CaptureTracker {
   }
 
   private fail(tracked: Tracked, reason: string): void {
-    this.report(tracked, { state: 'failed', reason });
+    this.report(tracked, { state: 'failed', reason: maskValues(reason, this.sensitive) });
   }
 
   private report(tracked: Tracked, result: CaptureResult): void {

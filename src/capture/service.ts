@@ -1,5 +1,10 @@
 import type { HttpFile, HttpRequest } from '../http-file/model';
-import { isSensitiveHeader, looksLikeCredential } from '../masking/masking';
+import {
+  isSensitiveHeader,
+  looksLikeCredential,
+  sensitiveHeaderValues,
+  sensitiveValuesIn,
+} from '../masking/masking';
 import type { CaptureWaitOutcome, RunCaptures, RunObserver } from '../runs/observer';
 import type { ResponseHead } from '../transport/model';
 import { responseSelector } from '../variables/references';
@@ -24,6 +29,7 @@ interface ProducerSnapshot {
   bodyLength: number;
   failure: { message: string } | undefined;
   problems: readonly { message: string }[];
+  sensitiveValues: readonly string[];
   wallStartedAt: number;
   elapsedMs: number;
 }
@@ -54,6 +60,10 @@ function failureText(snapshot: ProducerSnapshot): string | undefined {
     : snapshot.failure?.message;
 }
 
+function producerSensitiveValues(snapshot: ProducerSnapshot): string[] {
+  return [...snapshot.sensitiveValues, ...sensitiveHeaderValues(snapshot.head?.headers ?? [])];
+}
+
 function referencedRun(run: ProducerRun, workerFile: string): ReferencedRun {
   return {
     get label() {
@@ -71,6 +81,9 @@ function referencedRun(run: ProducerRun, workerFile: string): ReferencedRun {
     done: run.done,
     headArrived: run.headArrived,
     failure: () => failureText(run.snapshot()),
+    get sensitiveValues() {
+      return producerSensitiveValues(run.snapshot());
+    },
     readBody: (maxBytes) => run.readBody(maxBytes),
     bodyFile: () => run.bodyFile(),
     workerFile,
@@ -194,7 +207,12 @@ export class CaptureService implements RunCaptures {
     );
   }
 
-  observer(run: { id: number; label: string; wallStartedAt: number }): RunObserver | undefined {
+  observer(run: {
+    id: number;
+    label: string;
+    wallStartedAt: number;
+    sensitiveValues: readonly string[];
+  }): RunObserver | undefined {
     this.previous.clear();
     this.responses.clear();
     if (this.definitions.length === 0) {
@@ -386,11 +404,13 @@ export class CaptureService implements RunCaptures {
     if (!result.ok) {
       return { kind: 'failed', message: captureFailedMessage(label, reference, result.reason) };
     }
-    const { wallStartedAt, elapsedMs } = producer.snapshot();
+    const snapshot = producer.snapshot();
+    const { wallStartedAt, elapsedMs } = snapshot;
     return {
       kind: 'value',
       text: result.text,
       secret: sensitiveName(wait) || this.secretOf(wait, producer.id, result.text),
+      sensitive: sensitiveValuesIn(result.text, producerSensitiveValues(snapshot)),
       label,
       provenance: {
         runId: producer.id,

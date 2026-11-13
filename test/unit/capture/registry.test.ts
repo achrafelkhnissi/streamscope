@@ -27,6 +27,7 @@ function resolved(text: string, runId: number, secret = false): CaptureResult {
     state: 'resolved',
     text,
     secret,
+    sensitive: [],
     provenance: { runId, event: 1, path: 'threadId', time: 0 },
   };
 }

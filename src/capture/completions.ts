@@ -1,5 +1,5 @@
 import type { HttpFile } from '../http-file/model';
-import { looksLikeCredential, maskedValue } from '../masking/masking';
+import { captureDisplayText } from '../masking/capture-display';
 import type { VariableCompletion } from '../variables/inspect';
 import type { CaptureLookup, CaptureLookupResult } from '../variables/sources';
 import { hintText } from './hints';
@@ -7,9 +7,9 @@ import { hintText } from './hints';
 function completionDetail(result: CaptureLookupResult, name: string, reference: string): string {
   switch (result.kind) {
     case 'value':
-      return `${result.label} › ${name} = ${
-        result.secret || looksLikeCredential(reference) ? maskedValue : hintText(result.text)
-      }`;
+      return `${result.label} › ${name} = ${hintText(
+        captureDisplayText({ ...result, name: reference }),
+      )}`;
     case 'pending':
       return `${result.label} › ${name} …`;
     case 'failed':

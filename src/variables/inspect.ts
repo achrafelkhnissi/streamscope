@@ -1,6 +1,7 @@
 import { JsonPathBudget, type Clock } from '../http-file/captures';
 import type { FileVariable, HttpFile, ParseDiagnostic } from '../http-file/model';
-import { looksLikeCredential, maskedValue } from '../masking/masking';
+import { captureDisplayText } from '../masking/capture-display';
+import { looksLikeCredential } from '../masking/masking';
 import { formatDate } from './dates';
 import {
   declaredNames,
@@ -109,16 +110,21 @@ export function describeReference(
   if (!evaluated.ok) {
     return { kind: 'problem', message: evaluated.message };
   }
-  const sensitive = evaluated.sensitiveValues.length > 0 || looksLikeCredential(expression);
   const { capture } = evaluated;
   if (capture !== undefined) {
     return {
       kind: 'value',
-      value: capture.secret ? maskedValue : evaluated.value,
+      value: captureDisplayText({
+        name: expression,
+        secret: capture.secret,
+        text: evaluated.value,
+        sensitive: capture.sensitive,
+      }),
       origin: captureProvenance(capture),
-      sensitive: capture.secret || sensitive,
+      sensitive: capture.secret || looksLikeCredential(expression),
     };
   }
+  const sensitive = evaluated.sensitiveValues.length > 0 || looksLikeCredential(expression);
   return {
     kind: 'value',
     value: evaluated.value,
@@ -127,7 +133,11 @@ export function describeReference(
   };
 }
 
-export function captureProvenance({ label, name, provenance: from }: CapturedValue): string {
+export function captureProvenance({
+  label,
+  name,
+  provenance: from,
+}: Pick<CapturedValue, 'label' | 'name' | 'provenance'>): string {
   const where = [
     from.event === undefined ? '' : `event ${String(from.event)}`,
     from.path === '' ? '' : `at ${from.path}`,

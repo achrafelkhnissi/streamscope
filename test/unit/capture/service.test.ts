@@ -77,6 +77,7 @@ function resolved(text: string, runId: number, secret = false): CaptureResult {
     state: 'resolved',
     text,
     secret,
+    sensitive: [],
     provenance: { runId, event: 1, path: 'threadId', time: 0 },
   };
 }
@@ -116,6 +117,7 @@ function producerRun(id: number, label = 'startRun'): FakeRun {
       bodyLength: body.length,
       failure: undefined,
       problems: [],
+      sensitiveValues: [],
       wallStartedAt: 1_700_000_000_000,
       elapsedMs: 250,
     }),
@@ -176,7 +178,12 @@ describe('CaptureService', () => {
     const captures = service(registry, 0);
     captures.begin({ id: 3, key: startKey, label: 'startRun', startedAt: 3 });
 
-    const observer = captures.observer({ id: 3, label: 'startRun', wallStartedAt: 0 });
+    const observer = captures.observer({
+      id: 3,
+      label: 'startRun',
+      wallStartedAt: 0,
+      sensitiveValues: [],
+    });
     observer?.head(head([['X-Session-Token', 'synthetic-session']]), {
       spillPath: () => Promise.resolve(undefined),
       signal: signal(),
@@ -195,7 +202,9 @@ describe('CaptureService', () => {
 
     captures.begin({ id: 4, key: keyOf(file, 2), label: 'plain', startedAt: 4 });
 
-    expect(captures.observer({ id: 4, label: 'plain', wallStartedAt: 0 })).toBeUndefined();
+    expect(
+      captures.observer({ id: 4, label: 'plain', wallStartedAt: 0, sensitiveValues: [] }),
+    ).toBeUndefined();
     expect(registry.size).toBe(0);
   });
 
@@ -328,7 +337,7 @@ describe('CaptureService', () => {
     captures.begin({ id: 15, key: continueKey, label: 'continue', startedAt: 15 });
     await captures.wait([sessionWait], 15, { timeoutMs: 30_000, signal: signal() });
 
-    captures.observer({ id: 15, label: 'continue', wallStartedAt: 0 });
+    captures.observer({ id: 15, label: 'continue', wallStartedAt: 0, sensitiveValues: [] });
 
     expect(captures.lookup.bare('threadId')).toMatchObject({ kind: 'failed' });
     expect(captures.lookup.response('startRun', 'response.headers.X-Session')).toBeUndefined();
@@ -363,6 +372,7 @@ describe('CaptureService', () => {
       kind: 'value',
       text: 'session-1',
       secret: true,
+      sensitive: ['session-1'],
       label: 'startRun',
       provenance: {
         runId: 16,

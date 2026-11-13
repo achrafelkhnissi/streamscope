@@ -13,6 +13,7 @@ function resolved(text: string, secret = false): CaptureResult {
     state: 'resolved',
     text,
     secret,
+    sensitive: [],
     provenance: { runId: 7, event: 5, path: 'threadId', time },
   };
 }

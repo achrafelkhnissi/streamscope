@@ -33,6 +33,7 @@ function captured(
     kind: 'value',
     text,
     secret: options.secret ?? false,
+    sensitive: [],
     label: 'startRun',
     provenance: {
       runId: 3,
