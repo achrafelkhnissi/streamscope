@@ -563,7 +563,7 @@ describe('parseExpression', () => {
         span: { start: 15, end: 18 },
       });
       expect(failure('body | default([1, /x/])')).toStrictEqual({
-        message: 'default(…) cannot take a regular expression.',
+        message: 'A regular expression cannot be a list item.',
         span: { start: 19, end: 22 },
       });
       expect(failure('body | join')).toStrictEqual({
@@ -705,16 +705,15 @@ describe('parseExpression', () => {
       expect(shape('12345678901234567890')).toStrictEqual(literal(12345678901234567890n));
     });
 
-    it('reads a list of literals, including nested lists and regexes', () => {
+    it('reads a list of literals, including nested lists', () => {
       expect(shape('[1]')).toStrictEqual(list(literal(1)));
-      expect(shape('[1, "a", true, null, [2, [3]], /x/i]')).toStrictEqual(
+      expect(shape('[1, "a", true, null, [2, [3]]]')).toStrictEqual(
         list(
           literal(1),
           literal('a'),
           literal(true),
           literal(null),
           list(literal(2), list(literal(3))),
-          regex('x', 'i'),
         ),
       );
       expect(shape('status in [200,204]')).toStrictEqual(
@@ -750,6 +749,23 @@ describe('parseExpression', () => {
       expect(failure('status in [1')).toStrictEqual({
         message: 'Expected "]".',
         span: { start: 12, end: 12 },
+      });
+    });
+
+    it('rejects a regular expression as a list item, at any depth', () => {
+      const message = 'A regular expression cannot be a list item.';
+      expect(failure('status in [/(a|aa)*b/]')).toStrictEqual({
+        message,
+        span: { start: 11, end: 21 },
+      });
+      expect(failure('[1, "a", /x/i]')).toStrictEqual({ message, span: { start: 9, end: 13 } });
+      expect(failure('status in [1, [2, /x/]]')).toStrictEqual({
+        message,
+        span: { start: 18, end: 21 },
+      });
+      expect(failure('first(@ in [7, /x/])', 'capture')).toStrictEqual({
+        message,
+        span: { start: 15, end: 18 },
       });
     });
   });
@@ -902,7 +918,7 @@ describe('parseExpression', () => {
     it('accepts patterns that backtrack badly in JavaScript, because the matcher is linear', () => {
       for (const text of [
         'text matches /(a+)+$/',
-        'status in [/(a|aa)*b/]',
+        'text matches /(a|aa)*b/',
         String.raw`text matches /\d+\d+x/`,
         'text | match(/a*a*b/)',
         String.raw`text | match(/(a\p{1,})+/)`,

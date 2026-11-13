@@ -1,5 +1,6 @@
 import type { Value } from './ast';
 import { isList, isObject } from './value';
+import { keysOf, textUnits, type WorkBudget } from './work';
 
 function isNumeric(value: Value): value is number | bigint {
   return typeof value === 'number' || typeof value === 'bigint';
@@ -19,9 +20,15 @@ function isPrimitive(value: Value): boolean {
   return typeof value !== 'object' || value === null;
 }
 
-export function equalValues(left: Value, right: Value, visit?: () => void): boolean {
+function primitiveUnits(left: Value, right: Value): number {
+  return typeof left === 'string' && typeof right === 'string'
+    ? 1 + textUnits(Math.min(left.length, right.length))
+    : 1;
+}
+
+export function equalValues(left: Value, right: Value, budget?: WorkBudget): boolean {
   if (isPrimitive(left) || isPrimitive(right)) {
-    visit?.();
+    budget?.spend(primitiveUnits(left, right));
     return (
       left === right || (isNumeric(left) && isNumeric(right) && compareNumeric(left, right) === 0)
     );
@@ -29,9 +36,9 @@ export function equalValues(left: Value, right: Value, visit?: () => void): bool
   const lefts: Value[] = [left];
   const rights: Value[] = [right];
   while (lefts.length > 0) {
-    visit?.();
     const a = lefts.pop() as Value;
     const b = rights.pop() as Value;
+    budget?.spend(primitiveUnits(a, b));
     if (a === b) {
       continue;
     }
@@ -47,8 +54,8 @@ export function equalValues(left: Value, right: Value, visit?: () => void): bool
       if (!isObject(b)) {
         return false;
       }
-      const keys = Object.keys(a);
-      if (keys.length !== Object.keys(b).length) {
+      const keys = keysOf(a, budget);
+      if (keys.length !== keysOf(b, budget).length) {
         return false;
       }
       for (const key of keys) {
@@ -68,7 +75,7 @@ export function equalValues(left: Value, right: Value, visit?: () => void): bool
 export function compareValues(
   left: Value,
   right: Value,
-  visit?: () => void,
+  budget?: WorkBudget,
 ): -1 | 0 | 1 | undefined {
   if (isNumeric(left)) {
     return isNumeric(right) ? compareNumeric(left, right) : undefined;
@@ -77,10 +84,11 @@ export function compareValues(
     if (typeof right !== 'string') {
       return undefined;
     }
+    budget?.spend(primitiveUnits(left, right));
     if (left < right) {
       return -1;
     }
     return left > right ? 1 : 0;
   }
-  return equalValues(left, right, visit) ? 0 : undefined;
+  return equalValues(left, right, budget) ? 0 : undefined;
 }

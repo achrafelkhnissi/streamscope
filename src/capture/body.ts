@@ -1,15 +1,15 @@
 import { fork, type ChildProcess } from 'node:child_process';
 import type { Expr, SourceNode, Value } from '../expressions/ast';
+import { evaluate, type Outcome } from '../expressions/evaluate';
 import {
-  evaluate,
-  tooMuchWorkReason,
-  workBudget,
-  type Outcome,
-  type WorkBudget,
-} from '../expressions/evaluate';
-import { insertText, maxInsertedLength, valueTooLargeReason } from '../expressions/insert';
+  insertText,
+  maxInsertedLength,
+  valueTooLargeReason,
+  type BoundedText,
+} from '../expressions/insert';
 import { queryJsonPath } from '../expressions/jsonpath';
 import { sourcesOf } from '../expressions/parse';
+import { outOfWork, type WorkBudget } from '../expressions/work';
 import { parseJson } from '../streaming/json';
 import {
   bodyLimitReason,
@@ -28,6 +28,7 @@ import {
   unavailableSourceReason,
   withSubject,
 } from './messages';
+import { hostBudget, type TaskBudget } from './task-budget';
 import type { CaptureDefinition } from './tracker';
 
 export type Collected =
@@ -53,6 +54,7 @@ export type ReadCollected = (collected: Collected) => readonly Value[] | undefin
 export interface EvaluationOptions {
   timeLimitMs?: number;
   signal?: AbortSignal;
+  taskBudget?: TaskBudget;
 }
 
 export class ChildSlots {
@@ -125,7 +127,6 @@ export const inlineBodyBytes = 262_144;
 export const inlineDigitBodyBytes = 65_536;
 export const fileBodyBytes = 1_048_576;
 export const childTimeLimitMs = 5000;
-export const hostWorkUnits = 2_000_000;
 export const childWorkUnits = 100_000_000;
 export const maxCaptureChildren = 2;
 export const captureChildren = new ChildSlots(maxCaptureChildren);
@@ -151,11 +152,19 @@ function readsBody(expression: Expr): boolean {
   return sourcesOf(expression).some((node) => node.kind === 'source' && node.name === 'body');
 }
 
-export function inserted(outcome: Outcome): Inserted {
+export function inserted(outcome: Outcome, budget: WorkBudget): Inserted {
   if (!outcome.present) {
     return outcome;
   }
-  const text = insertText(outcome.value, maxInsertedLength);
+  let text: BoundedText;
+  try {
+    text = insertText(outcome.value, maxInsertedLength, budget);
+  } catch (error) {
+    if (error === outOfWork) {
+      return { present: false, reason: budget.reason };
+    }
+    throw error;
+  }
   if (!text.ok) {
     return { present: false, reason: valueTooLargeReason };
   }
@@ -187,7 +196,7 @@ export function evaluateWith(
     { budget },
   );
   if (budget.exhausted) {
-    return { present: false, reason: tooMuchWorkReason };
+    return { present: false, reason: budget.reason };
   }
   if (hard !== undefined) {
     return { present: false, reason: hard };
@@ -275,9 +284,9 @@ function queryOutcome(target: Value, query: string): Outcome {
 export function jobEvaluator(
   subject: BodySubject,
   read: ReadCollected,
-  workUnits: number,
+  budgetFor: () => WorkBudget,
   decoded?: DecodedBody,
-): (job: BodyJob) => Outcome {
+): (job: BodyJob) => Inserted {
   let target: { value: Value | undefined } | undefined;
   const subjectValue = (): Value | undefined => {
     if (target === undefined) {
@@ -338,13 +347,18 @@ export function jobEvaluator(
       ? { present: false, reason: eventUnavailableReason }
       : { present: true, value, path: '', event: collected.index };
   };
-  return (job) =>
-    evaluateWith(
-      job.expression,
-      (node) => job.known.get(sourceKey(node)) ?? computed(node, job),
-      subject.kind === 'events',
-      workBudget(workUnits),
+  return (job) => {
+    const budget = budgetFor();
+    return inserted(
+      evaluateWith(
+        job.expression,
+        (node) => job.known.get(sourceKey(node)) ?? computed(node, job),
+        subject.kind === 'events',
+        budget,
+      ),
+      budget,
     );
+  };
 }
 
 function unansweredResult(job: BodyJob, cancelled: boolean): Inserted {
@@ -467,12 +481,13 @@ export async function evaluateJobs<Job extends BodyJob>(
   }
   const answering = away.length === 0 ? undefined : runInChild(subject, away, workerFile, options);
   const results = new Map<string, Inserted>();
-  const evaluateJob = jobEvaluator(subject, valuesOnly, hostWorkUnits, decoded);
+  const tasks = options.taskBudget ?? hostBudget;
+  const evaluateJob = jobEvaluator(subject, valuesOnly, () => tasks.current(), decoded);
   for (const [position, job] of inline.entries()) {
     if (position > 0) {
       await nextTask();
     }
-    results.set(job.name, inserted(evaluateJob(job)));
+    results.set(job.name, evaluateJob(job));
   }
   const { answers, cancelled } = (await answering) ?? { answers: new Map(), cancelled: false };
   return jobs.map((job) => [

@@ -6,6 +6,7 @@ import {
   maxInsertedLength,
   type BoundedText,
 } from '../../../src/expressions/insert';
+import { WorkBudget } from '../../../src/expressions/work';
 
 const unlimited = Number.POSITIVE_INFINITY;
 const tooLarge: BoundedText = { ok: false };
@@ -261,5 +262,36 @@ describe('output limit', () => {
     const expected = JSON.stringify(value);
     expect(compactJson(value, expected.length)).toEqual({ ok: true, text: expected });
     expect(compactJson(value, expected.length - 1)).toEqual(tooLarge);
+  });
+});
+
+describe('work counted while inserting', () => {
+  it('counts each value, each key, and long text by its length / 16', () => {
+    const spent = (value: Value): number => {
+      const budget = new WorkBudget();
+      insertText(value, mebibyte, budget);
+      return budget.spent;
+    };
+
+    expect(spent(Array<number>(4_000).fill(0))).toBeGreaterThanOrEqual(4_000);
+    expect(
+      spent(Object.fromEntries(Array.from({ length: 2_000 }, (_, at) => [`k${String(at)}`, 0]))),
+    ).toBeGreaterThanOrEqual(4_000);
+    expect(spent(['x'.repeat(65_536)])).toBeGreaterThanOrEqual(4_096);
+    expect(spent('x'.repeat(65_536))).toBeLessThan(16);
+  });
+
+  it('stops serializing as soon as its budget runs out', () => {
+    let checks = 0;
+    const budget = new WorkBudget({
+      expired: () => {
+        checks += 1;
+        return true;
+      },
+    });
+
+    expect(() => compactJson(Array<number>(100_000).fill(0), mebibyte, budget)).toThrow();
+    expect(checks).toBe(1);
+    expect(budget.exhausted).toBe(true);
   });
 });

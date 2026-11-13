@@ -15,6 +15,7 @@ import {
   type Inserted,
   type WorkerRequest,
 } from '../../../src/capture/body';
+import { TaskBudget } from '../../../src/capture/task-budget';
 import type { CaptureDefinition } from '../../../src/capture/tracker';
 import { parseExpression } from '../../../src/expressions/parse';
 import { expectNoChild, longestStall, missingWorker, useCaptureWorker } from './worker';
@@ -301,7 +302,7 @@ describe('evaluateBodyExpressions', () => {
   });
 
   it('fails the in and regex filters over 256 KiB with the budget message, quickly', async () => {
-    const tooMuchWork = 'the expression needs too much work for this value';
+    const tooMuchWork = 'the capture needs too much work for this stream';
     const numbers = Array<string>(1_300).fill('7').join(',');
     const zeros = encoder.encode(`[${'0,'.repeat(inlineBodyBytes / 2 - 2)}0]`);
     const strings = encoder.encode(
@@ -332,7 +333,7 @@ describe('evaluateBodyExpressions', () => {
     }
   });
 
-  it('leaves an ordinary filter over 256 KiB unaffected', async () => {
+  it('leaves an ordinary filter over 256 KiB unaffected while the task has time left', async () => {
     const zeros = encoder.encode(`[${'0,'.repeat(inlineBodyBytes / 2 - 2)}0]`);
 
     const { result, stallMs } = await longestStall(() =>
@@ -341,6 +342,7 @@ describe('evaluateBodyExpressions', () => {
         'application/json',
         [capture('zeros', 'body[?@ == 0] | json'), capture('count', 'body[*]')],
         missingWorker,
+        { taskBudget: new TaskBudget({ now: () => 0, nextTask: () => undefined }) },
       ),
     );
 
@@ -680,5 +682,81 @@ describe('capture children', () => {
     expect(answer?.[1]).toEqual(cancelled);
     expect(captureChildren.running).toBe(0);
     await expectNoChild();
+  });
+});
+
+describe('host work on an inline body', () => {
+  const hostWork = 'the capture needs too much work for this stream';
+  const zeros = encoder.encode(`[${'0,'.repeat(inlineBodyBytes / 2 - 2)}0]`);
+
+  function chain(operand: string): string {
+    const parts = [operand];
+    while ((parts.length + 1) * (operand.length + 2) < 4_000) {
+      parts.push(operand);
+    }
+    return parts.join('||');
+  }
+
+  function objectBody(): Uint8Array {
+    const members: string[] = [];
+    let size = 8;
+    for (let at = 0; size + 12 < inlineBodyBytes; at += 1) {
+      const member = `"${at.toString(36)}":0`;
+      members.push(member);
+      size += member.length + 1;
+    }
+    return encoder.encode(`{"o":{${members.join(',')}}}`);
+  }
+
+  async function stallOf(body: Uint8Array, text: string): Promise<number> {
+    expect(body.length).toBeLessThanOrEqual(inlineBodyBytes);
+    expect(text.length).toBeLessThanOrEqual(4_096);
+    const { result, stallMs } = await longestStall(() =>
+      evaluateBodyExpressions(body, 'application/json', [capture('work', text)], missingWorker),
+    );
+    const outcome = result.get('work');
+    expect(['resolved', hostWork], text.slice(0, 40)).toContain(
+      outcome?.present === true ? 'resolved' : outcome?.reason,
+    );
+    return stallMs;
+  }
+
+  it('a join chain over a list of one long list', async () => {
+    const nested = encoder.encode(`[[${'0,'.repeat(inlineBodyBytes / 2 - 3)}0]]`);
+    expect(await stallOf(nested, chain('(body|join(","))=="x"'))).toBeLessThan(100);
+  });
+
+  it('a contains chain over a 256 KiB string', async () => {
+    const text = encoder.encode(`{"s":"${'a'.repeat(inlineBodyBytes - 8)}"}`);
+    expect(await stallOf(text, chain('body.s contains "ab"'))).toBeLessThan(100);
+  });
+
+  it('a chain of default filters per item', async () => {
+    const filters = '|default(0)'.repeat(371);
+    expect(await stallOf(zeros, `body[?@${filters}]`)).toBeLessThan(100);
+  });
+
+  it('a chain of [*] over an object of many keys', async () => {
+    expect(await stallOf(objectBody(), chain('body.o[*][0]==1'))).toBeLessThan(100);
+  });
+
+  it('a chain of json filters', async () => {
+    expect(await stallOf(zeros, chain('(body|json)=="x"'))).toBeLessThan(100);
+  });
+
+  it('a chain of field reads per item', async () => {
+    const empties = encoder.encode(`[${'{},'.repeat((inlineBodyBytes - 4) / 3)}{}]`);
+    expect(await stallOf(empties, `body[?${chain('@.f')}]`)).toBeLessThan(100);
+  });
+
+  it('a chain of deep comparisons of two 128 KiB lists', async () => {
+    const items = Array<string>(16_000).fill('{"a":0}').join(',');
+    const pair = encoder.encode(`{"x":[${items}],"y":[${items}]}`);
+    expect(await stallOf(pair, chain('body.x!=body.y'))).toBeLessThan(100);
+  });
+
+  it('a membership test against a list of 1,300 numbers per item', async () => {
+    const sevens = Array<string>(1_300).fill('7').join(',');
+    expect(await stallOf(zeros, `body[?@ in [${sevens}]]`)).toBeLessThan(100);
   });
 });

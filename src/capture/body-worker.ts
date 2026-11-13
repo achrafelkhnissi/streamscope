@@ -1,10 +1,10 @@
 import { closeSync, openSync, readSync } from 'node:fs';
 import type { Value } from '../expressions/ast';
 import { parseExpression } from '../expressions/parse';
+import { WorkBudget } from '../expressions/work';
 import { parseEventBytes } from '../streaming/parser';
 import {
   childWorkUnits,
-  inserted,
   jobEvaluator,
   valuesOnly,
   type BodySubject,
@@ -84,13 +84,17 @@ function reply(name: string, result: Inserted): void {
 }
 
 process.once('message', ({ subject, jobs }: WorkerRequest) => {
-  const evaluateJob = jobEvaluator(loaded(subject), rangeReader(subject), childWorkUnits);
+  const evaluateJob = jobEvaluator(
+    loaded(subject),
+    rangeReader(subject),
+    () => new WorkBudget({ units: childWorkUnits }),
+  );
   for (const job of jobs) {
     const parsed = parseExpression(job.text, 'capture');
     reply(
       job.name,
       parsed.ok
-        ? inserted(evaluateJob({ ...job, expression: parsed.expr }))
+        ? evaluateJob({ ...job, expression: parsed.expr })
         : { present: false, reason: parsed.error.message },
     );
   }

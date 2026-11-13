@@ -2,12 +2,14 @@ import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { hostBudget, TaskBudget } from '../../../src/capture/task-budget';
 import {
   CaptureTracker,
   type CaptureDefinition,
   type CaptureResult,
 } from '../../../src/capture/tracker';
 import type { EventKind, JsonValue, SseFields, StreamEvent } from '../../../src/events/model';
+import { StreamSession } from '../../../src/events/session';
 import { SpillArea, type SpillFile } from '../../../src/events/spill';
 import { defaultSpillLimits } from '../../../src/streaming/limits';
 import { parseExpression } from '../../../src/expressions/parse';
@@ -40,7 +42,15 @@ interface Harness {
   send(value: JsonValue, options?: EventOptions): StreamEvent;
 }
 
-function harness(definitions: CaptureDefinition[], workerFile = missingWorker): Harness {
+function frozenBudget(): TaskBudget {
+  return new TaskBudget({ now: () => 0, nextTask: () => undefined });
+}
+
+function harness(
+  definitions: CaptureDefinition[],
+  workerFile = missingWorker,
+  budget: TaskBudget = frozenBudget(),
+): Harness {
   const results = new Map<string, CaptureResult>();
   const calls: string[] = [];
   const tracker = new CaptureTracker(
@@ -51,6 +61,7 @@ function harness(definitions: CaptureDefinition[], workerFile = missingWorker): 
       results.set(name, result);
     },
     workerFile,
+    budget,
   );
   let index = 0;
   return {
@@ -1386,5 +1397,213 @@ describe('CaptureTracker', () => {
 
     expect(run.calls).toEqual(['code', 'threadId', 'total']);
     expect(run.results.get('total')).toEqual(resolved('1', undefined, ''));
+  });
+});
+
+describe('host work within one task', () => {
+  const files = useCaptureWorker();
+  const hostWork = 'the capture needs too much work for this stream';
+  const sevens = Array<string>(1_300).fill('7').join(',');
+
+  function chain(operand: string): string {
+    const parts = [operand];
+    while ((parts.length + 1) * (operand.length + 2) < 4_000) {
+      parts.push(operand);
+    }
+    return parts.join('||');
+  }
+
+  function stalls(work: () => void): Promise<{ stallMs: number }> {
+    return longestStall(() => {
+      work();
+      return Promise.resolve();
+    });
+  }
+
+  it('a 1 MiB event with a join chain in its condition stalls the host under 50 ms', async () => {
+    const value: JsonValue = { items: [Array<number>(mebibyte / 2 - 8).fill(0)] };
+    const run = harness(
+      [capture('joined', `first(${chain('(items|join(","))=="x"')})`)],
+      missingWorker,
+      hostBudget,
+    );
+    run.tracker.head(ndjsonHead);
+
+    const { stallMs } = await stalls(() => run.send(value, { length: mebibyte }));
+
+    expect(stallMs).toBeLessThan(100);
+    expect(run.results.get('joined')).toEqual(failed(hostWork));
+  });
+
+  it('a 1 MiB event with a contains chain in its condition stalls the host under 50 ms', async () => {
+    const value: JsonValue = { s: 'a'.repeat(mebibyte - 16) };
+    const run = harness(
+      [capture('found', `first(${chain('s contains "ab"')})`)],
+      missingWorker,
+      hostBudget,
+    );
+    run.tracker.head(ndjsonHead);
+
+    const { stallMs } = await stalls(() => run.send(value, { length: mebibyte }));
+
+    expect(stallMs).toBeLessThan(100);
+    expect(run.results.get('found')).toEqual(failed(hostWork));
+  });
+
+  it('a chunk of 46 events with heavy conditions stalls the host under 50 ms', async () => {
+    const line = `${JSON.stringify({ type: 'E', items: Array<number>(700).fill(0) })}\n`;
+    const chunk = encoder.encode(line.repeat(46));
+    expect(chunk.length).toBeLessThanOrEqual(65_536);
+    const run = harness(
+      [capture('heavy', `first(items[?@ in [${sevens}]]).type`)],
+      missingWorker,
+      hostBudget,
+    );
+    run.tracker.head(ndjsonHead);
+    const session = new StreamSession({
+      contentType: 'application/x-ndjson',
+      directive: undefined,
+      spill: undefined,
+      now: () => 0,
+      onUpdate: () => undefined,
+      onText: () => undefined,
+      onEvent: (event) => {
+        run.tracker.event(event);
+      },
+    });
+
+    const { stallMs } = await stalls(() => session.write(chunk));
+    session.dispose();
+
+    expect(stallMs).toBeLessThan(100);
+    expect(run.results.get('heavy')).toEqual(failed(hostWork));
+  });
+
+  it('64 events resolving heavy captures in one task stall the host under 50 ms, and default(…) does not hide it', async () => {
+    const names = Array.from({ length: 64 }, (_, at) => `e${String(at)}`);
+    const run = harness(
+      names.map((name) =>
+        capture(name, `first(type == "${name}").items[?@ in [${sevens}]] | default("none")`),
+      ),
+      missingWorker,
+      hostBudget,
+    );
+    run.tracker.head(ndjsonHead);
+
+    const { stallMs } = await stalls(() => {
+      for (const name of names) {
+        run.send({ type: name, items: Array<number>(700).fill(0) }, { length: 1_430 });
+      }
+    });
+
+    expect(stallMs).toBeLessThan(100);
+    const resolvedCount = names.filter(
+      (name) => run.results.get(name)?.state === 'resolved',
+    ).length;
+    expect(resolvedCount).toBeLessThan(64);
+    for (const [at, name] of names.entries()) {
+      expect(run.results.get(name)).toEqual(
+        at < resolvedCount ? resolved('[]', at + 1, 'items[?…]') : failed(hostWork),
+      );
+    }
+  });
+
+  it('shares one budget across the events of a task and starts a new one in the next task', () => {
+    let time = 0;
+    const tasks: (() => void)[] = [];
+    const budget = new TaskBudget({
+      now: () => time,
+      nextTask: (callback) => {
+        tasks.push(callback);
+      },
+    });
+    const first = harness([capture('a', 'first(items[?@ == 1]).items[-1]')], missingWorker, budget);
+    const second = harness(
+      [
+        capture('b', 'first(items[?@ == 2]).items[-1]'),
+        capture('c', 'first(items[?@ == 3]).items[-1]'),
+      ],
+      missingWorker,
+      budget,
+    );
+    first.tracker.head(ndjsonHead);
+    second.tracker.head(ndjsonHead);
+    const zeros = Array<number>(2_000).fill(0);
+
+    first.send({ items: zeros });
+    time = 29;
+    first.send({ items: zeros });
+    expect(first.results.size).toBe(0);
+    time = 31;
+    first.send({ items: zeros });
+    expect(first.results.get('a')).toEqual(failed(hostWork));
+    expect(tasks).toHaveLength(1);
+
+    tasks.shift()?.();
+    second.send({ items: [...zeros, 2] });
+    expect(second.results.get('b')).toEqual(resolved('2', 1, 'items[-1]'));
+    time = 60;
+    second.send({ items: zeros });
+    expect(second.results.has('c')).toBe(false);
+    time = 62;
+    second.send({ items: zeros });
+    expect(second.results.get('c')).toEqual(failed(hostWork));
+    expect(tasks).toHaveLength(1);
+  });
+
+  it('resolves a heavy condition however many other captures are pending', () => {
+    const others = Array.from({ length: 63 }, (_, at) =>
+      capture(`other${String(at)}`, `first(type == "never${String(at)}").id`),
+    );
+    const run = harness(
+      [capture('zero', 'first(items[?@ == 0]).items[0]'), ...others],
+      missingWorker,
+      hostBudget,
+    );
+    run.tracker.head(ndjsonHead);
+
+    run.send({ type: 'A', items: Array<number>(10_000).fill(0) }, { length: 20_000 });
+
+    expect(run.results.get('zero')).toEqual(resolved('0', 1, 'items[0]'));
+    expect(run.results.size).toBe(1);
+  });
+
+  it('an ordinary AG-UI stream of 100,000 events resolves its four captures', async () => {
+    const run = harness(
+      [
+        capture('threadId', 'first(type == "RUN_STARTED").threadId'),
+        capture('messageId', 'last(type == "RUN_FINISHED").result.messageId'),
+        capture('chunks', 'count(type == "TEXT_MESSAGE_CONTENT")'),
+        capture('reply', 'all(type == "TEXT_MESSAGE_CONTENT").delta | join("")'),
+      ],
+      files().worker,
+      hostBudget,
+    );
+    run.tracker.head(ndjsonHead);
+    const total = 100_000;
+
+    for (let index = 1; index <= total; index += 1) {
+      if (index === 1) {
+        run.send({ type: 'RUN_STARTED', threadId: 'thread-1', runId: 'run-1' });
+      } else if (index === total) {
+        run.send({ type: 'RUN_FINISHED', result: { messageId: 12345678901234567890n } });
+      } else if (index % 10 === 0) {
+        run.send({ type: 'TEXT_MESSAGE_CONTENT', messageId: 'message-1', delta: 'x' });
+      } else {
+        run.send({ type: 'STATE_DELTA', delta: [{ op: 'add', path: '/n', value: index }] });
+      }
+      if (index % 64 === 0) {
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+    }
+    await run.tracker.end(completed('ndjson'));
+
+    expect(run.results.get('threadId')).toEqual(resolved('thread-1', 1, 'threadId'));
+    expect(run.results.get('messageId')).toEqual(
+      resolved('12345678901234567890', total, 'result.messageId'),
+    );
+    expect(run.results.get('chunks')).toEqual(resolved('9999', undefined, ''));
+    expect(run.results.get('reply')).toEqual(resolved('x'.repeat(9_999), undefined, 'delta'));
+    await expectNoChild();
   });
 });

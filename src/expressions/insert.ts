@@ -1,6 +1,7 @@
 import type { Value } from './ast';
 import type { ValueObject } from './value';
 import { isList } from './value';
+import { keysOf, textUnits, type WorkBudget } from './work';
 
 export type BoundedText = { ok: true; text: string } | { ok: false };
 
@@ -38,17 +39,21 @@ function scalarJson(value: null | boolean | number | bigint | string): string {
   }
 }
 
-export function compactJson(root: Value, maxLength: number): BoundedText {
+export function compactJson(root: Value, maxLength: number, budget?: WorkBudget): BoundedText {
   const parts: string[] = [];
   const stack: (ListFrame | ObjectFrame)[] = [];
   const keyText = new Map<string, string>();
   let length = 0;
   let pending: Value | undefined = root;
   for (;;) {
+    budget?.spend(1);
     if (pending !== undefined) {
       if (typeof pending !== 'object' || pending === null) {
-        if (typeof pending === 'string' && length + pending.length + 2 > maxLength) {
-          return tooLarge;
+        if (typeof pending === 'string') {
+          if (length + pending.length + 2 > maxLength) {
+            return tooLarge;
+          }
+          budget?.spend(textUnits(pending.length));
         }
         const text = scalarJson(pending);
         parts.push(text);
@@ -60,7 +65,7 @@ export function compactJson(root: Value, maxLength: number): BoundedText {
       } else {
         parts.push('{');
         length += 1;
-        stack.push({ source: pending, keys: Object.keys(pending), index: 0 });
+        stack.push({ source: pending, keys: keysOf(pending, budget), index: 0 });
       }
       pending = undefined;
     }
@@ -69,6 +74,7 @@ export function compactJson(root: Value, maxLength: number): BoundedText {
     }
     const frame = stack[stack.length - 1];
     if (frame === undefined) {
+      budget?.spend(textUnits(length));
       return { ok: true, text: parts.join('') };
     }
     if ('items' in frame) {
@@ -96,6 +102,7 @@ export function compactJson(root: Value, maxLength: number): BoundedText {
         if (length + key.length + 3 > maxLength) {
           return tooLarge;
         }
+        budget?.spend(textUnits(key.length));
         text = `${JSON.stringify(key)}:`;
         keyText.set(key, text);
       }
@@ -111,13 +118,13 @@ export function compactJson(root: Value, maxLength: number): BoundedText {
   }
 }
 
-export function insertText(value: Value, maxLength: number): BoundedText {
+export function insertText(value: Value, maxLength: number, budget?: WorkBudget): BoundedText {
   switch (typeof value) {
     case 'string':
       return fit(value, maxLength);
     case 'number':
       return fit(String(value), maxLength);
     default:
-      return compactJson(value, maxLength);
+      return compactJson(value, maxLength, budget);
   }
 }

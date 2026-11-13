@@ -33,11 +33,14 @@ export type SourceNode =
   | { kind: 'check'; name: 'exists' | 'before' | 'unique'; args: readonly Expr[]; span: Span }
   | { kind: 'jsonpath'; query: string; querySpan: Span; span: Span };
 
+export type ListItem =
+  | { kind: 'literal'; value: Value; span: Span }
+  | { kind: 'list'; items: readonly ListItem[]; span: Span };
+
 export type Expr =
   | SourceNode
-  | { kind: 'literal'; value: Value; span: Span }
+  | ListItem
   | { kind: 'regex'; pattern: string; flags: string; span: Span }
-  | { kind: 'list'; items: readonly Expr[]; span: Span }
   | { kind: 'field'; name: string; span: Span }
   | { kind: 'item'; span: Span }
   | { kind: 'sse'; span: Span }

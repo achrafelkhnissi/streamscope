@@ -1,8 +1,9 @@
-import type { CompareOperator, Expr, Filter, SourceNode, Step, Value } from './ast';
+import type { CompareOperator, Expr, Filter, ListItem, SourceNode, Step, Value } from './ast';
 import { compareValues, equalValues } from './compare';
 import { compactJson, insertText, maxInsertedLength, valueTooLargeReason } from './insert';
 import { compilePattern, type CompileResult } from './regex';
 import { isList, isObject } from './value';
+import { keysOf, outOfWork, textUnits, type WorkBudget } from './work';
 
 export type Outcome =
   | { present: true; value: Value; event?: number; path: string }
@@ -18,11 +19,6 @@ export interface ConditionItem {
   malformed: boolean;
 }
 
-export interface WorkBudget {
-  remaining: number;
-  exhausted: boolean;
-}
-
 export interface EvaluateOptions {
   budget?: WorkBudget;
 }
@@ -33,6 +29,7 @@ type ChainNode = Extract<Expr, { kind: 'access' | 'filter' }>;
 type LogicalNode = Extract<Expr, { kind: 'logical' }>;
 type CompareNode = Extract<Expr, { kind: 'compare' }>;
 type IndexStep = Extract<Step, { kind: 'index' }>;
+type ListNode = Extract<ListItem, { kind: 'list' }>;
 
 interface Scope {
   readonly sources: Sources;
@@ -51,9 +48,6 @@ interface Walk {
 }
 
 export const textTooLongReason = 'the text is too long for this regular expression';
-export const tooMuchWorkReason = 'the expression needs too much work for this value';
-
-class OutOfWork extends Error {}
 
 const identifier = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
 const silent: Absent = Object.freeze({ present: false, reason: '' });
@@ -62,35 +56,24 @@ const no: Present = Object.freeze({ present: true, value: false, path: '' });
 const unreadable: Sources = { value: () => silent };
 const patterns = new WeakMap<object, CompileResult>();
 const constantLists = new WeakMap<object, Value>();
-const jsonUnits = 16;
-const outOfWork = new OutOfWork(tooMuchWorkReason);
-
-export function workBudget(units: number): WorkBudget {
-  return { remaining: units, exhausted: false };
-}
+const textWindow = 65_536;
 
 function spend(scope: Scope, units: number): void {
-  const { budget } = scope;
-  if (budget === undefined) {
-    return;
-  }
-  budget.remaining -= units;
-  if (budget.remaining < 0) {
-    budget.exhausted = true;
-    throw outOfWork;
-  }
+  scope.budget?.spend(units);
 }
 
-function visitor(scope: Scope): (() => void) | undefined {
-  return scope.budget === undefined
-    ? undefined
-    : () => {
-        spend(scope, 1);
-      };
-}
-
-function isConstant(node: Expr): boolean {
-  return node.kind === 'literal' || (node.kind === 'list' && node.items.every(isConstant));
+function listValue(node: ListNode, scope: Scope): Value {
+  const built = constantLists.get(node);
+  if (built !== undefined) {
+    return built;
+  }
+  const items: Value[] = [];
+  for (const element of node.items) {
+    spend(scope, 1);
+    items.push(element.kind === 'literal' ? element.value : listValue(element, scope));
+  }
+  constantLists.set(node, items);
+  return items;
 }
 
 function present(value: Value, path = '', event?: number): Present {
@@ -148,11 +131,21 @@ function readName(input: Value, name: string): Value | undefined {
   return isObject(input) && Object.hasOwn(input, name) ? input[name] : undefined;
 }
 
-function members(input: Value): readonly Value[] | undefined {
+function members(input: Value, scope: Scope): readonly Value[] | undefined {
   if (isList(input)) {
+    spend(scope, input.length);
     return input;
   }
-  return isObject(input) ? Object.values(input) : undefined;
+  if (!isObject(input)) {
+    return undefined;
+  }
+  const keys = keysOf(input, scope.budget);
+  spend(scope, keys.length);
+  const values: Value[] = [];
+  for (const key of keys) {
+    values.push(input[key] as Value);
+  }
+  return values;
 }
 
 function readIndex(input: Value, index: number): Value | undefined {
@@ -203,34 +196,61 @@ function sseValue(sse: NonNullable<ConditionItem['sse']>): Value {
   return fields;
 }
 
+function containsText(text: string, part: string, scope: Scope): boolean {
+  if (part.length > text.length) {
+    return false;
+  }
+  const window = Math.max(textWindow, part.length);
+  if (text.length <= window) {
+    spend(scope, textUnits(text.length));
+    return text.includes(part);
+  }
+  for (let start = 0; start < text.length; start += window) {
+    const end = Math.min(text.length, start + window + part.length - 1);
+    spend(scope, textUnits(end - start));
+    if (text.slice(start, end).includes(part)) {
+      return true;
+    }
+    if (end === text.length) {
+      return false;
+    }
+  }
+  return false;
+}
+
 function relate(
   operator: Exclude<CompareOperator, 'matches' | '==' | '!='>,
   left: Value,
   right: Value,
-  visit: (() => void) | undefined,
+  scope: Scope,
 ): boolean {
+  const { budget } = scope;
   switch (operator) {
     case '<':
-      return compareValues(left, right, visit) === -1;
+      return compareValues(left, right, budget) === -1;
     case '>':
-      return compareValues(left, right, visit) === 1;
+      return compareValues(left, right, budget) === 1;
     case '<=': {
-      const order = compareValues(left, right, visit);
+      const order = compareValues(left, right, budget);
       return order === -1 || order === 0;
     }
     case '>=': {
-      const order = compareValues(left, right, visit);
+      const order = compareValues(left, right, budget);
       return order === 1 || order === 0;
     }
     case 'in':
-      return isList(right) && right.some((element) => equalValues(left, element, visit));
+      return isList(right) && right.some((element) => equalValues(left, element, budget));
     case 'contains':
       if (typeof left === 'string') {
-        return typeof right === 'string' && left.includes(right);
+        return typeof right === 'string' && containsText(left, right, scope);
       }
-      return isList(left) && left.some((element) => equalValues(element, right, visit));
+      return isList(left) && left.some((element) => equalValues(element, right, budget));
     case 'startsWith':
-      return typeof left === 'string' && typeof right === 'string' && left.startsWith(right);
+      if (typeof left !== 'string' || typeof right !== 'string') {
+        return false;
+      }
+      spend(scope, textUnits(Math.min(left.length, right.length)));
+      return left.startsWith(right);
   }
 }
 
@@ -260,7 +280,7 @@ function equality(node: CompareNode, scope: Scope): boolean {
   if (!left.present || !right.present) {
     return !left.present && !right.present;
   }
-  return equalValues(left.value, right.value, visitor(scope));
+  return equalValues(left.value, right.value, scope.budget);
 }
 
 function comparison(node: CompareNode, scope: Scope): boolean {
@@ -283,7 +303,7 @@ function comparison(node: CompareNode, scope: Scope): boolean {
           !left.present && !right.present && (node.operator === '<=' || node.operator === '>=')
         );
       }
-      return relate(node.operator, left.value, right.value, visitor(scope));
+      return relate(node.operator, left.value, right.value, scope);
     }
   }
 }
@@ -365,7 +385,7 @@ function mapStep(walk: Walk, step: Exclude<Step, IndexStep>, path: string, scope
         continue;
       }
     } else {
-      const children = members(item);
+      const children = members(item, scope);
       if (children !== undefined) {
         const kept =
           step.kind === 'wildcard' ? children : filterWhere(children, step.condition, scope);
@@ -386,7 +406,6 @@ function mapStep(walk: Walk, step: Exclude<Step, IndexStep>, path: string, scope
 }
 
 function applyStep(walk: Walk, step: Step, scope: Scope): void {
-  spend(scope, 1);
   const path = scope.explain ? appendStep(walk.path, step) : '';
   if (walk.fanned && step.kind !== 'index') {
     mapStep(walk, step, path, scope);
@@ -401,11 +420,10 @@ function applyStep(walk: Walk, step: Step, scope: Scope): void {
       next = readIndex(walk.value, step.index);
       break;
     case 'wildcard':
-      next = members(walk.value);
-      spend(scope, next?.length ?? 0);
+      next = members(walk.value, scope);
       break;
     case 'where': {
-      const children = members(walk.value);
+      const children = members(walk.value, scope);
       next = children === undefined ? undefined : filterWhere(children, step.condition, scope);
       break;
     }
@@ -419,23 +437,25 @@ function applyStep(walk: Walk, step: Step, scope: Scope): void {
   walk.fanned = step.kind === 'wildcard' || step.kind === 'where';
 }
 
-function joinText(items: readonly Value[], separator: string): string | undefined {
+function joinText(items: readonly Value[], separator: string, scope: Scope): string | undefined {
   const parts: string[] = [];
   let length = 0;
   for (const item of items) {
+    spend(scope, 1);
     if (parts.length > 0) {
       length += separator.length;
     }
     if (length > maxInsertedLength) {
       return undefined;
     }
-    const text = insertText(item, maxInsertedLength - length);
+    const text = insertText(item, maxInsertedLength - length, scope.budget);
     if (!text.ok) {
       return undefined;
     }
     length += text.text.length;
     parts.push(text.text);
   }
+  spend(scope, textUnits(length));
   return parts.join(separator);
 }
 
@@ -464,8 +484,7 @@ function applyFilter(walk: Walk, filter: Filter, scope: Scope): void {
         lose(walk, scope, () => noValue(path, `join needs a list, not ${kindOf(value)}`));
         return;
       }
-      spend(scope, value.length);
-      const joined = joinText(value, filter.separator);
+      const joined = joinText(value, filter.separator, scope);
       if (joined === undefined) {
         lose(walk, scope, () => valueTooLargeReason);
       } else {
@@ -474,8 +493,7 @@ function applyFilter(walk: Walk, filter: Filter, scope: Scope): void {
       return;
     }
     case 'json': {
-      const json = compactJson(value, maxInsertedLength);
-      spend(scope, jsonUnits + (json.ok ? Math.ceil(json.text.length / 4) : maxInsertedLength / 4));
+      const json = compactJson(value, maxInsertedLength, scope.budget);
       if (json.ok) {
         walk.value = json.text;
       } else {
@@ -518,6 +536,7 @@ function evaluateChain(node: ChainNode, scope: Scope): Outcome {
     links.push(root);
     root = root.target;
   }
+  spend(scope, links.length);
   const start = evaluateNode(root, scope);
   if (!start.present && !links.some((link) => link.kind === 'filter')) {
     return start;
@@ -560,24 +579,8 @@ function evaluateNode(node: Expr, scope: Scope): Outcome {
       return scope.sources.value(node);
     case 'literal':
       return present(node.value);
-    case 'list': {
-      const built = constantLists.get(node);
-      if (built !== undefined) {
-        return present(built);
-      }
-      const items: Value[] = [];
-      for (const element of node.items) {
-        const outcome = evaluateNode(element, scope);
-        if (!outcome.present) {
-          return outcome;
-        }
-        items.push(outcome.value);
-      }
-      if (isConstant(node)) {
-        constantLists.set(node, items);
-      }
-      return present(items);
-    }
+    case 'list':
+      return present(listValue(node, scope));
     case 'regex':
       return absent(noValue('', 'a regular expression is not a value'));
     case 'field': {
@@ -623,8 +626,8 @@ export function evaluate(expr: Expr, sources: Sources, options: EvaluateOptions 
       item: undefined,
     });
   } catch (error) {
-    if (error === outOfWork) {
-      return absent(tooMuchWorkReason);
+    if (error === outOfWork && options.budget !== undefined) {
+      return absent(options.budget.reason);
     }
     throw error;
   }

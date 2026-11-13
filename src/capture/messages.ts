@@ -33,6 +33,7 @@ export const replyCutOffReason = 'the reply is larger than 1 MiB';
 export const noHeadersReason = 'the response has no headers';
 export const responsePendingReason = 'the response has not ended yet';
 export const checkSourceReason = 'exists(…), before(…) and unique(…) work only in # @expect';
+export const hostWorkReason = 'the capture needs too much work for this stream';
 
 export const hardReasons: ReadonlySet<string> = new Set([
   notAnEventStreamReason,

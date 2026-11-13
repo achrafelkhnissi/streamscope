@@ -1,4 +1,4 @@
-import type { CompareOperator, Expr, Filter, SourceNode, Span, Step, Value } from './ast';
+import type { CompareOperator, Expr, Filter, ListItem, SourceNode, Span, Step, Value } from './ast';
 import {
   Lexer,
   type AtToken,
@@ -23,10 +23,7 @@ type PlainSourceName = 'status' | 'headers' | 'cookies' | 'body' | 'text';
 type EventsName = 'first' | 'last' | 'all' | 'count';
 type CheckName = 'exists' | 'before' | 'unique';
 
-type LiteralNode =
-  | { kind: 'literal'; value: Value; span: Span }
-  | { kind: 'regex'; pattern: string; flags: string; span: Span }
-  | { kind: 'list'; items: readonly LiteralNode[]; span: Span };
+type LiteralNode = ListItem | { kind: 'regex'; pattern: string; flags: string; span: Span };
 
 const maxLength = 4096;
 const maxDepth = 64;
@@ -378,15 +375,21 @@ class Parser {
 
   private literal(): LiteralNode | undefined {
     const token = this.current;
+    if (token.kind !== 'regex') {
+      return this.plainLiteral();
+    }
+    this.checkRegex(token);
+    this.advance();
+    return { kind: 'regex', pattern: token.pattern, flags: token.flags, span: token.span };
+  }
+
+  private plainLiteral(): ListItem | undefined {
+    const token = this.current;
     switch (token.kind) {
       case 'string':
       case 'number':
         this.advance();
         return { kind: 'literal', value: token.value, span: token.span };
-      case 'regex':
-        this.checkRegex(token);
-        this.advance();
-        return { kind: 'regex', pattern: token.pattern, flags: token.flags, span: token.span };
       case 'keyword':
         return this.keywordLiteral(token);
       case 'punctuation':
@@ -396,7 +399,7 @@ class Parser {
     }
   }
 
-  private keywordLiteral(token: KeywordToken): LiteralNode | undefined {
+  private keywordLiteral(token: KeywordToken): ListItem | undefined {
     if (token.text === 'true' || token.text === 'false') {
       this.advance();
       return { kind: 'literal', value: token.text === 'true', span: token.span };
@@ -408,7 +411,7 @@ class Parser {
     return undefined;
   }
 
-  private list(): LiteralNode {
+  private list(): ListItem {
     const open = this.advance();
     this.enter(open);
     const items = [this.listItem()];
@@ -421,8 +424,11 @@ class Parser {
     return { kind: 'list', items, span: this.spanFrom(open.span.start) };
   }
 
-  private listItem(): LiteralNode {
-    return this.literal() ?? this.fail(expectedLiteral);
+  private listItem(): ListItem {
+    if (this.current.kind === 'regex') {
+      return this.fail('A regular expression cannot be a list item.');
+    }
+    return this.plainLiteral() ?? this.fail(expectedLiteral);
   }
 
   private checkRegex(token: RegexToken): void {

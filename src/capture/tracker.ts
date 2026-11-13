@@ -1,21 +1,14 @@
 import type { StreamEvent } from '../events/model';
 import type { Expr, SourceNode, Value } from '../expressions/ast';
-import {
-  holds,
-  tooMuchWorkReason,
-  workBudget,
-  type ConditionItem,
-  type Outcome,
-  type WorkBudget,
-} from '../expressions/evaluate';
+import { holds, type ConditionItem, type Outcome } from '../expressions/evaluate';
 import { sourcesOf } from '../expressions/parse';
+import type { WorkBudget } from '../expressions/work';
 import type { RunAccess, RunEnd } from '../runs/observer';
 import type { ResponseHead } from '../transport/model';
 import {
   evaluateJobs,
   evaluateWith,
   fileBodyBytes,
-  hostWorkUnits,
   inlineBodyBytes,
   inserted,
   sourceKey,
@@ -52,6 +45,7 @@ import {
   unexpectedReason,
   type EventCounts,
 } from './messages';
+import { hostBudget, type TaskBudget } from './task-budget';
 
 export interface CaptureDefinition {
   name: string;
@@ -336,6 +330,7 @@ export class CaptureTracker {
     definitions: readonly CaptureDefinition[],
     private readonly onResult: (name: string, result: CaptureResult) => void,
     private readonly workerFile: string,
+    private readonly budget: TaskBudget = hostBudget,
   ) {
     this.tracked = definitions.map((definition) => {
       const sources = sourcesOf(definition.expression);
@@ -379,12 +374,10 @@ export class CaptureTracker {
   head(head: ResponseHead, access?: RunAccess): void {
     this.response = headValues(head);
     this.access = access;
-    const resolving = this.tracked.filter(
-      (tracked) => !tracked.settled && tracked.timing === 'head',
-    );
-    const units = Math.floor(hostWorkUnits / Math.max(1, resolving.length));
-    for (const tracked of resolving) {
-      this.settle(tracked, inserted(this.evaluateNow(tracked, headPhase, workBudget(units))));
+    for (const tracked of this.tracked) {
+      if (!tracked.settled && tracked.timing === 'head') {
+        this.settle(tracked, this.evaluateNow(tracked, headPhase, this.budget.current()));
+      }
     }
   }
 
@@ -403,35 +396,25 @@ export class CaptureTracker {
       return;
     }
     const item: ConditionItem = { value: event.value, sse: event.sse, malformed: false };
-    let tests = 0;
-    for (const tracked of this.watching) {
-      tests += tracked.watches.length;
-    }
-    const conditionUnits = Math.floor(hostWorkUnits / 2 / Math.max(1, tests));
-    const inline = { bytes: 0, budget: workBudget(hostWorkUnits / 2) };
+    const budget = this.budget.current();
+    let inlineBytes = 0;
     const away: Tracked[] = [];
     for (const tracked of this.watching) {
       if (tracked.settled) {
         continue;
       }
-      const overflow = this.observe(tracked, event, item, conditionUnits);
+      const overflow = this.observe(tracked, event, item, budget);
       if (overflow !== undefined) {
         this.fail(tracked, overflow);
         changed = true;
       } else if (matchedNow(tracked)) {
         changed = true;
-        if (event.length > inlineBodyBytes || inline.bytes + event.length > inlineBodyBytes) {
+        if (event.length > inlineBodyBytes || inlineBytes + event.length > inlineBodyBytes) {
           away.push(tracked);
           continue;
         }
-        inline.bytes += event.length;
-        const outcome = this.evaluateNow(tracked, eventPhase, inline.budget);
-        if (inline.budget.exhausted) {
-          inline.bytes = inlineBodyBytes + 1;
-          away.push(tracked);
-        } else {
-          this.settle(tracked, inserted(outcome));
-        }
+        inlineBytes += event.length;
+        this.settle(tracked, this.evaluateNow(tracked, eventPhase, budget));
       }
     }
     if (away.length > 0) {
@@ -472,6 +455,7 @@ export class CaptureTracker {
       }
       const results = await evaluateJobs(subject, jobs, this.workerFile, {
         signal: this.access?.signal,
+        taskBudget: this.budget,
       });
       for (const [done, result] of results) {
         this.settleJob(done.tracked, result);
@@ -521,6 +505,7 @@ export class CaptureTracker {
     }
     const results = await evaluateJobs(subject.subject, jobs, this.workerFile, {
       signal: end.signal,
+      taskBudget: this.budget,
     });
     for (const [job, result] of results) {
       this.settleJob(job.tracked, result);
@@ -693,17 +678,16 @@ export class CaptureTracker {
     tracked: Tracked,
     event: StreamEvent,
     item: ConditionItem,
-    units: number,
+    budget: WorkBudget,
   ): string | undefined {
     for (const watch of tracked.watches) {
       if ((watch.kind === 'first' || watch.kind === 'nth') && watch.match !== undefined) {
         continue;
       }
       if (watch.condition !== undefined) {
-        const budget = workBudget(units);
         const held = holds(watch.condition, item, { budget });
         if (budget.exhausted) {
-          return tooMuchWorkReason;
+          return budget.reason;
         }
         if (!held) {
           continue;
@@ -814,12 +798,15 @@ export class CaptureTracker {
     return known;
   }
 
-  private evaluateNow(tracked: Tracked, phase: Phase, budget: WorkBudget): Outcome {
+  private evaluateNow(tracked: Tracked, phase: Phase, budget: WorkBudget): Inserted {
     const known = this.known(tracked, phase);
-    return evaluateWith(
-      tracked.definition.expression,
-      (node) => known.get(sourceKey(node)) ?? notEnded,
-      phase.events === 'streamed',
+    return inserted(
+      evaluateWith(
+        tracked.definition.expression,
+        (node) => known.get(sourceKey(node)) ?? notEnded,
+        phase.events === 'streamed',
+        budget,
+      ),
       budget,
     );
   }

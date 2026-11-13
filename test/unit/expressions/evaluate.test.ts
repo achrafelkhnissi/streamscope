@@ -4,7 +4,6 @@ import {
   evaluate,
   holds,
   textTooLongReason,
-  workBudget,
   type ConditionItem,
   type Outcome,
   type Sources,
@@ -12,6 +11,7 @@ import {
 import { valueTooLargeReason } from '../../../src/expressions/insert';
 import { parseExpression, type ExpressionContext } from '../../../src/expressions/parse';
 import * as regex from '../../../src/expressions/regex';
+import { WorkBudget } from '../../../src/expressions/work';
 
 vi.mock('../../../src/expressions/regex', async (importOriginal) => {
   const original = await importOriginal<typeof import('../../../src/expressions/regex')>();
@@ -1325,10 +1325,15 @@ describe('evaluate values nested 10,000 levels deep', () => {
 describe('work budget', () => {
   const tooMuchWork = 'the expression needs too much work for this value';
   const numbers = (count: number): string => `[${Array<string>(count).fill('7').join(',')}]`;
+  const spent = (text: string, value: Value): number => {
+    const budget = new WorkBudget();
+    evaluate(parse(text), sourcesWith(bodyOf(value)), { budget });
+    return budget.spent;
+  };
 
   it('stops an evaluation that needs more work than its budget', () => {
     const value: Value = Array.from({ length: 5_000 }, (_, at) => at);
-    const budget = workBudget(100_000);
+    const budget = new WorkBudget({ units: 100_000 });
 
     const outcome = evaluate(parse(`body[?@ in ${numbers(1_300)}]`), sourcesWith(bodyOf(value)), {
       budget,
@@ -1344,18 +1349,13 @@ describe('work budget', () => {
     const outcome = evaluate(
       parse(`body[?@ in ${numbers(1_300)}] | default("none")`),
       sourcesWith(bodyOf(value)),
-      { budget: workBudget(100_000) },
+      { budget: new WorkBudget({ units: 100_000 }) },
     );
 
     expect(outcome).toEqual({ present: false, reason: tooMuchWork });
   });
 
   it('counts each path step per item, each comparison, each membership comparison and regex work', () => {
-    const spent = (text: string, value: Value): number => {
-      const budget = workBudget(1_000_000);
-      evaluate(parse(text), sourcesWith(bodyOf(value)), { budget });
-      return 1_000_000 - budget.remaining;
-    };
     const items: Value = Array.from({ length: 100 }, (_, at) => at + 100);
 
     expect(spent('body[*]', items)).toBeGreaterThanOrEqual(100);
@@ -1365,8 +1365,92 @@ describe('work budget', () => {
     expect(spent('body', items)).toBeLessThan(10);
   });
 
+  it('charges string operations by length / 16 and object members by key count', () => {
+    const text = 'a'.repeat(16_384);
+    const other = `${'a'.repeat(16_383)}b`;
+    const keyed = Object.fromEntries(
+      Array.from({ length: 2_000 }, (_, at) => [`k${String(at)}`, 0]),
+    );
+
+    expect(spent('body.s contains "ab"', { s: text })).toBeGreaterThanOrEqual(1_024);
+    expect(spent('body.s startsWith body.t', { s: text, t: other })).toBeGreaterThanOrEqual(1_024);
+    expect(spent('body.s == body.t', { s: text, t: other })).toBeGreaterThanOrEqual(1_024);
+    expect(spent('body.s < body.t', { s: text, t: other })).toBeGreaterThanOrEqual(1_024);
+    expect(spent('body.s in [1, 2]', { s: text })).toBeLessThan(16);
+    expect(spent('body.o[*][0] == 1', { o: keyed })).toBeGreaterThanOrEqual(2_000);
+    expect(spent('body[?@.o[?@ == 1]]', [{ o: keyed }])).toBeGreaterThanOrEqual(4_000);
+    expect(spent('body.o == body.o', { o: keyed })).toBeLessThan(16);
+    expect(spent('body.o == body.p', { o: keyed, p: { ...keyed } })).toBeGreaterThanOrEqual(4_000);
+  });
+
+  it('charges json and join by their output, each default(…) by 1 and each list item once', () => {
+    const zeros: Value = Array<number>(4_000).fill(0);
+
+    expect(spent('body | json', zeros)).toBeGreaterThanOrEqual(4_000);
+    expect(spent('body | join(",")', [zeros])).toBeGreaterThanOrEqual(4_000);
+    expect(spent('body | join(",")', ['x'.repeat(65_536)])).toBeGreaterThanOrEqual(4_096);
+    expect(spent(`body${' | default(0)'.repeat(300)}`, 1)).toBeGreaterThanOrEqual(300);
+    expect(spent(`body.nope${'.a'.repeat(300)}`, {})).toBeGreaterThanOrEqual(300);
+
+    const list = parse(`body in ${numbers(1_000)}`);
+    const first = new WorkBudget();
+    evaluate(list, sourcesWith(bodyOf(7)), { budget: first });
+    const second = new WorkBudget();
+    evaluate(list, sourcesWith(bodyOf(7)), { budget: second });
+    expect(first.spent).toBeGreaterThanOrEqual(1_000);
+    expect(second.spent).toBeLessThan(16);
+  });
+
+  it('checks its clock every 1,024 units and stops once the clock has expired', () => {
+    let checks = 0;
+    let expired = false;
+    const budget = new WorkBudget({
+      expired: () => {
+        checks += 1;
+        return expired;
+      },
+      reason: 'out of time',
+    });
+
+    budget.spend(1_023);
+    expect(checks).toBe(0);
+    budget.spend(1);
+    expect(checks).toBe(1);
+    budget.spend(1_023);
+    expect(checks).toBe(1);
+    expired = true;
+    expect(() => {
+      budget.spend(1);
+    }).toThrow();
+    expect(checks).toBe(2);
+    expect(budget.exhausted).toBe(true);
+  });
+
+  it('fails an evaluation whose clock expires with its budget reason, and stays exhausted', () => {
+    let calls = 0;
+    const budget = new WorkBudget({
+      expired: () => {
+        calls += 1;
+        return calls > 2;
+      },
+      reason: 'out of time',
+    });
+    const value: Value = Array.from({ length: 5_000 }, (_, at) => at);
+
+    expect(evaluate(parse('body[?@ == 1]'), sourcesWith(bodyOf(value)), { budget })).toEqual({
+      present: false,
+      reason: 'out of time',
+    });
+    expect(budget.exhausted).toBe(true);
+    expect(evaluate(parse('body[0]'), sourcesWith(bodyOf(value)), { budget })).toEqual({
+      present: false,
+      reason: 'out of time',
+    });
+    expect(holds(parse('type == "A"', 'condition'), item({ type: 'A' }), { budget })).toBe(false);
+  });
+
   it('makes a condition false and marks its budget exhausted', () => {
-    const budget = workBudget(1_000);
+    const budget = new WorkBudget({ units: 1_000 });
 
     const result = holds(
       parse(`items[?@ in ${numbers(100)}]`, 'condition'),
@@ -1389,5 +1473,18 @@ describe('work budget', () => {
 
     expect(first).toEqual({ present: true, value: [1, 2, [3, 4]], path: '' });
     expect(first.present && second.present && first.value === second.value).toBe(true);
+  });
+
+  it('finds a text that spans the windows of a long string', () => {
+    const long = 'a'.repeat(200_000);
+    for (const at of [0, 65_535, 65_536, 131_071, 199_998]) {
+      const text = `${long.slice(0, at)}xy${long.slice(at + 2)}`;
+      expect(holdsFor('s contains "xy"', { s: text }), String(at)).toBe(true);
+      expect(holdsFor('s contains "xz"', { s: text }), String(at)).toBe(false);
+    }
+    const needle = 'b'.repeat(70_000);
+    expect(holdsFor('s contains t', { s: `${long}${needle}`, t: needle })).toBe(true);
+    expect(holdsFor('s contains t', { s: long, t: `${long}a` })).toBe(false);
+    expect(holdsFor('s contains ""', { s: long })).toBe(true);
   });
 });
