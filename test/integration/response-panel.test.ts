@@ -1,5 +1,5 @@
 import * as assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
@@ -25,6 +25,7 @@ interface ResponseState {
   released: boolean;
   title: string | undefined;
   bodyText: string | undefined;
+  statusText: string;
   statusBar: string | undefined;
 }
 
@@ -374,8 +375,15 @@ describe('the response panel', () => {
       (seen) => seen.status === 'failed' && seen.rendered === seen.events,
       'the failed stream did not keep its events',
     );
+    const target = vscode.Uri.file(path.join(folder, 'saved-broken.ndjson'));
+    await vscode.commands.executeCommand('streamscope.saveResponse', target);
 
     assert.equal(state.events, 5);
+    assert.match(
+      state.statusText,
+      /^200 OK · 5 events · .+ · The connection closed before the response was complete\b/,
+    );
+    assert.equal(readFileSync(target.fsPath, 'utf8'), lines);
   });
 
   it('says a text body is still arriving and shows it once it ends', async () => {
@@ -425,6 +433,18 @@ describe('the response panel', () => {
     const events = lines.map((line) => JSON.parse(line) as { type: string });
     assert.equal(events[0]?.type, 'RUN_STARTED');
     assert.equal(events.at(-1)?.type, 'RUN_FINISHED');
+  });
+
+  it('reports a save that cannot be written instead of failing the command', async () => {
+    const server = await streamServer();
+    await open('save-fails.http', [`GET ${server.url}/stream?rate=100&seconds=0.1&size=256`]);
+    await send();
+    await waitForState((seen) => seen.status === 'completed', 'the stream did not complete');
+    const target = vscode.Uri.file(path.join(folder, 'missing-folder', 'saved.ndjson'));
+
+    await vscode.commands.executeCommand('streamscope.saveResponse', target);
+
+    assert.equal(existsSync(target.fsPath), false);
   });
 
   it('saves the events a running stream has received so far', async function () {
@@ -974,6 +994,10 @@ describe('the response panel', () => {
         'the earlier run was not reopened in an active read-only panel',
       );
       await vscode.commands.executeCommand('streamscope.stopRequest');
+      await vscode.commands.executeCommand(
+        'streamscope.stopRequest',
+        vscode.Uri.from({ scheme: 'webview-panel', path: 'webview-panel/webview-synthetic' }),
+      );
       await new Promise((resolve) => setTimeout(resolve, 300));
 
       assert.equal(reopened.readOnly, true);

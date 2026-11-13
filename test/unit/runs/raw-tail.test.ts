@@ -74,6 +74,82 @@ describe('RawTail', () => {
     expect(tail.generation).toBeGreaterThan(100);
   });
 
+  it('cuts at the half point when the next line start is far past it', () => {
+    const tail = new RawTail(100);
+
+    tail.push(encoder.encode(`${'x'.repeat(98)}\n`));
+    tail.push(encoder.encode('ab'));
+
+    expect(tail.text).toBe(`${'x'.repeat(47)}\nab`);
+    expect(tail.generation).toBe(1);
+  });
+
+  it('cuts at the half point at full size when the next line start is more than 64 KiB past it', () => {
+    const limit = 2_097_152;
+    const tail = new RawTail(limit);
+
+    tail.push(encoder.encode(`${'x'.repeat(limit - 2)}\n`));
+    tail.push(encoder.encode('ab'));
+
+    expect(tail.text).toHaveLength(limit / 2);
+    expect(tail.text.endsWith('x\nab')).toBe(true);
+  });
+
+  it('starts at a line within 65,536 characters of the half point at full size', () => {
+    const limit = 2_097_152;
+    const length = limit + 1;
+    const half = length - limit / 2;
+    const near = new RawTail(limit);
+    const far = new RawTail(limit);
+
+    for (const [tail, newline] of [
+      [near, half - 1 + 65_536],
+      [far, half - 1 + 65_537],
+    ] as const) {
+      tail.push(encoder.encode(`${'x'.repeat(newline)}\n${'y'.repeat(length - newline - 1)}`));
+    }
+
+    expect(near.text).toBe('y'.repeat(length - (half + 65_536)));
+    expect(far.text).toHaveLength(limit / 2);
+  });
+
+  it('keeps at least a quarter of the limit after a trim of long lines, and never twice the limit', () => {
+    const limit = 256;
+    const tail = new RawTail(limit);
+    const random = seeded(11);
+
+    for (let push = 0; push < 2000; push += 1) {
+      const length = Math.floor(random() * 3 * limit);
+      const text = Array.from({ length }, () => (random() < 0.005 ? '\n' : 'x')).join('');
+      const before = tail.generation;
+      tail.push(encoder.encode(text));
+
+      expect(tail.text.length).toBeLessThanOrEqual(2 * limit);
+      if (tail.generation !== before) {
+        expect(tail.text.length).toBeGreaterThanOrEqual(limit / 4);
+      }
+    }
+    expect(tail.generation).toBeGreaterThan(100);
+  });
+
+  it('decodes multi-byte UTF-8 split at every pair of byte boundaries', () => {
+    const text = 'a\né\n€x🙂\nok ünïcödé 𝄞';
+    const bytes = encoder.encode(text);
+
+    for (let first = 0; first <= bytes.length; first += 1) {
+      for (let second = first; second <= bytes.length; second += 1) {
+        const tail = new RawTail(1024);
+        tail.push(bytes.subarray(0, first));
+        tail.push(bytes.subarray(first, second));
+        tail.push(bytes.subarray(second));
+        tail.end();
+
+        expect(tail.text).toBe(text);
+        expect(tail.total).toBe(text.length);
+      }
+    }
+  });
+
   it('gives the text appended since an offset while it still holds it', () => {
     const tail = new RawTail(64);
 

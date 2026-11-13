@@ -574,6 +574,41 @@ describe('SpillArea and SpillFile', () => {
       expect(fileHandles()).toBe(baseline);
     });
 
+    it('reports a read error during the copy as unavailable and leaves the destination alone', async () => {
+      const baseline = fileHandles();
+      const area = await SpillArea.open(root);
+      const file = await area.create();
+      file.append(pattern(3 * chunkBytes));
+      await file.finish();
+      const prototype = await handlePrototype();
+      const read = Reflect.get(prototype, 'read') as (
+        this: FileHandle,
+        ...args: unknown[]
+      ) => Promise<unknown>;
+      let reads = 0;
+      const spy = vi.spyOn(prototype, 'read').mockImplementation(function (
+        this: FileHandle,
+        ...args: unknown[]
+      ) {
+        reads += 1;
+        return reads === 2
+          ? Promise.reject(Object.assign(new Error('synthetic EBADF'), { code: 'EBADF' }))
+          : read.apply(this, args);
+      } as FileHandle['read']);
+      const { folder, destination } = savedFolder();
+
+      try {
+        expect(await file.copyTo(destination)).toBe('unavailable');
+      } finally {
+        spy.mockRestore();
+      }
+
+      expect(readFileSync(destination, 'utf8')).toBe('earlier');
+      expect(readdirSync(folder)).toEqual(['existing.bin']);
+      await area.dispose();
+      expect(fileHandles()).toBe(baseline);
+    });
+
     it('replaces an existing destination once the copy succeeds', async () => {
       const area = await SpillArea.open(root);
       const file = await area.create();

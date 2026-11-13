@@ -1,3 +1,5 @@
+const lineSnapChars = 65_536;
+
 function isLowSurrogate(code: number): boolean {
   return code >= 0xdc00 && code <= 0xdfff;
 }
@@ -70,10 +72,11 @@ export class RawTail {
     }
     const value = this.text;
     const half = value.length - Math.floor(this.maxChars / 2);
+    const reach = Math.min(lineSnapChars, Math.floor(this.maxChars / 4));
     const newline = value.indexOf('\n', half - 1);
     const lineStart = newline + 1;
     const start =
-      newline !== -1 && lineStart < value.length
+      newline !== -1 && newline - (half - 1) <= reach && lineStart < value.length
         ? lineStart
         : half + (isLowSurrogate(value.charCodeAt(half)) ? 1 : 0);
     this.pieces = [value.slice(start)];

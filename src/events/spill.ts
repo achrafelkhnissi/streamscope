@@ -223,7 +223,7 @@ export class SpillFile {
     try {
       for (let offset = 0; offset < end; offset += buffer.length) {
         const chunk = buffer.subarray(0, Math.min(buffer.length, end - offset));
-        if (!(await this.readInto(chunk, offset))) {
+        if (!(await this.readInto(chunk, offset).catch(() => false))) {
           return 'unavailable';
         }
         await target.writeFile(chunk);

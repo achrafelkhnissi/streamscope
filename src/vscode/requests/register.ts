@@ -402,7 +402,8 @@ export function registerRequestFeatures(
       void vscode.window.showInformationMessage('This request is not running.');
       return;
     }
-    const shown = uri === undefined && key === panels.active() ? panels.state(key) : undefined;
+    const shown =
+      editorUri(uri) === undefined && key === panels.active() ? panels.state(key) : undefined;
     const showsEarlierRun = shown?.readOnly === true && shown.run !== registry.latest(key)?.id;
     if (showsEarlierRun || !registry.cancel(key)) {
       void vscode.window.showInformationMessage('This request is not running.');
@@ -419,7 +420,10 @@ export function registerRequestFeatures(
       void vscode.window.showInformationMessage(noResponseMessage);
       return;
     }
-    await saveRun(run, documentUri, destination);
+    await saveRun(run, documentUri, destination).catch((error: unknown) => {
+      const reason = error instanceof Error ? error.message : String(error);
+      void vscode.window.showErrorMessage(`Streamscope could not save the response: ${reason}`);
+    });
   };
 
   const openDocument =

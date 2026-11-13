@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import * as vscode from 'vscode';
 import type { TaskTimer } from '../../benchmark/task-timer';
+import { panelStatus } from '../../response/panel-content';
 import { PanelFeed } from '../../response/panel-feed';
 import { panelHtml } from '../../response/panel-html';
 import { parsePanelMessage, type PanelBody, type PanelView } from '../../response/panel-protocol';
@@ -28,6 +29,7 @@ export interface ResponseState {
   released: boolean;
   title: string | undefined;
   bodyText: string | undefined;
+  statusText: string;
 }
 
 export interface PanelBenchmark {
@@ -205,6 +207,7 @@ export class ResponsePanels implements vscode.Disposable {
       released: snapshot.released,
       title: entry.panel?.title,
       bodyText: bodyText(entry.feed.body),
+      statusText: panelStatus(snapshot).text,
     };
   }
 
