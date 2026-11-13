@@ -28,10 +28,10 @@ interface CompiledPatterns {
 const maxPatternLength = 500;
 const maxCachedPatterns = 256;
 const maxDepth = 1000;
-const maxQueryLength = 4096;
-const maxParentheses = 8;
+const maxQueryLength = 2048;
+const maxParentheses = 4;
 const maxBrackets = 64;
-const lengthMessage = 'the query is longer than 4,096 characters';
+const lengthMessage = 'the query is longer than 2,048 characters';
 const parenthesesMessage = `the query nests too deeply (more than ${String(maxParentheses)} levels of parentheses)`;
 const bracketsMessage = `the query nests too deeply (more than ${String(maxBrackets)} levels of brackets)`;
 const patternFlags = 'u';
