@@ -202,12 +202,12 @@ function containsText(text: string, part: string, scope: Scope): boolean {
   }
   const window = Math.max(textWindow, part.length);
   if (text.length <= window) {
-    spend(scope, textUnits(text.length));
+    spend(scope, text.length);
     return text.includes(part);
   }
   for (let start = 0; start < text.length; start += window) {
     const end = Math.min(text.length, start + window + part.length - 1);
-    spend(scope, textUnits(end - start));
+    spend(scope, end - start);
     if (text.slice(start, end).includes(part)) {
       return true;
     }

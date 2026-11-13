@@ -383,6 +383,7 @@ export function startRun(
             : (event) => {
                 observer.event(event);
               },
+        backpressure: observer?.backpressure,
         limits: input.limits,
       });
       Object.assign(state, { head, sent, status: 'receiving', stream: session });

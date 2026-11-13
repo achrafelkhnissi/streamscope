@@ -603,6 +603,63 @@ describe('startRun streaming', () => {
     expect(snapshot.stream?.store.count).toBe(12);
   });
 
+  it('stops reading the socket while the observer is congested, until it drains', async () => {
+    const line = `${JSON.stringify({ type: 'TICK', pad: 'x'.repeat(200) })}\n`;
+    const body = line.repeat(Math.ceil((4 * 1_048_576) / line.length));
+    const server = await track(
+      startHttpServer((_request, response) => {
+        response.writeHead(200, { 'Content-Type': 'application/x-ndjson' });
+        response.end(body);
+      }),
+    );
+    const listeners = new Set<() => void>();
+    let events = 0;
+    const observer: RunObserver = {
+      head: () => undefined,
+      event: () => {
+        events += 1;
+      },
+      end: () => undefined,
+      backpressure: {
+        congested: true,
+        onDrain(listener) {
+          listeners.add(listener);
+          return () => {
+            listeners.delete(listener);
+          };
+        },
+      },
+    };
+
+    const run = startRun(
+      { ...runInput([`GET ${server.url}/paced`]), spill: undefined, observer },
+      dependencies,
+    );
+    await waitFor(() => run.snapshot().receivedBytes > 0);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    const held = run.snapshot().receivedBytes;
+    const heldEvents = events;
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    expect(run.snapshot().receivedBytes).toBe(held);
+    expect(events).toBe(heldEvents);
+    expect(held).toBeLessThan(body.length / 4);
+    expect(run.snapshot().status).toBe('receiving');
+    expect(listeners.size).toBe(1);
+
+    if (observer.backpressure !== undefined) {
+      Object.assign(observer.backpressure, { congested: false });
+    }
+    for (const listener of [...listeners]) {
+      listener();
+    }
+    const snapshot = await run.done;
+
+    expect(snapshot.status).toBe('completed');
+    expect(snapshot.receivedBytes).toBe(body.length);
+    expect(events).toBe(body.length / line.length);
+  });
+
   it('sends without a spill file when it cannot be created', async () => {
     const server = await track(startStreamServer());
     vi.spyOn(spillArea(), 'create').mockRejectedValue(new Error('synthetic disk full'));

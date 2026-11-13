@@ -1516,41 +1516,48 @@ describe('host work within one task', () => {
         },
       });
 
-      const { stallMs: ms } = await stalls(() => session.write(chunk));
+      const { stallMs: ms } = await longestStall(async () => {
+        session.write(chunk);
+        session.end();
+        await run.tracker.end(completed('ndjson'));
+      });
       session.dispose();
 
-      expect(run.results.get('heavy')).toEqual(failed(hostWork));
+      expect(run.results.get('heavy')).toMatchObject({
+        state: 'failed',
+        reason: expect.stringMatching(/^no event matched first\(items.*\(46 events\)$/) as unknown,
+      });
       return ms;
     });
 
     expect(stallMs).toBeLessThan(100);
   });
 
-  it('64 events resolving heavy captures in one task stall the host under 50 ms, and default(…) does not hide it', async () => {
-    const names = Array.from({ length: 64 }, (_, at) => `e${String(at)}`);
+  it('16 events with captures past 2,000,000 units each fail without stalling the host, and default(…) does not hide it', async () => {
+    const names = Array.from({ length: 16 }, (_, at) => `e${String(at)}`);
 
-    const stallMs = await stallOf(
-      () =>
+    const stallMs = await fastestOf(async () => {
+      const run = harness(
         names.map((name) =>
           capture(name, `first(type == "${name}").items[?@ in [${sevens}]] | default("none")`),
         ),
-      (run) => {
+        missingWorker,
+        hostBudget,
+      );
+      run.tracker.head(ndjsonHead);
+
+      const { stallMs: ms } = await longestStall(async () => {
         for (const name of names) {
-          run.send({ type: name, items: Array<number>(700).fill(0) }, { length: 1_430 });
+          run.send({ type: name, items: Array<number>(2_000).fill(0) }, { length: 4_000 });
         }
-      },
-      (run) => {
-        const resolvedCount = names.filter(
-          (name) => run.results.get(name)?.state === 'resolved',
-        ).length;
-        expect(resolvedCount).toBeLessThan(64);
-        for (const [at, name] of names.entries()) {
-          expect(run.results.get(name)).toEqual(
-            at < resolvedCount ? resolved('[]', at + 1, 'items[?…]') : failed(hostWork),
-          );
-        }
-      },
-    );
+        await run.tracker.end(completed('ndjson'));
+      });
+
+      for (const name of names) {
+        expect(run.results.get(name)).toEqual(failed(hostWork));
+      }
+      return ms;
+    });
 
     expect(stallMs).toBeLessThan(100);
   });
@@ -1618,50 +1625,7 @@ describe('host work within one task', () => {
     });
   });
 
-  it('counts only the time inside evaluations, shared by the events of a task, and starts again in the next task', () => {
-    let time = 0;
-    const tasks: (() => void)[] = [];
-    const budget = new TaskBudget({
-      now: () => (time += 1),
-      nextTask: (callback) => {
-        tasks.push(callback);
-      },
-    });
-    const first = harness([capture('a', 'first(items[?@ == 1]).items[-1]')], missingWorker, budget);
-    const second = harness(
-      [
-        capture('b', 'first(items[?@ == 2]).items[-1]'),
-        capture('c', 'first(items[?@ == 3]).items[-1]'),
-      ],
-      missingWorker,
-      budget,
-    );
-    first.tracker.head(ndjsonHead);
-    second.tracker.head(ndjsonHead);
-    const zeros = Array<number>(2_000).fill(0);
-    const sendUntilSettled = (run: Harness, name: string): number => {
-      let sent = 0;
-      while (!run.results.has(name) && sent < 100) {
-        run.send({ items: zeros });
-        time += 1_000;
-        sent += 1;
-      }
-      return sent;
-    };
-
-    expect(sendUntilSettled(first, 'a')).toBeGreaterThan(2);
-    expect(first.results.get('a')).toEqual(failed(hostWork));
-    expect(tasks).toHaveLength(1);
-
-    tasks.shift()?.();
-    second.send({ items: [...zeros, 2] });
-    expect(second.results.get('b')).toEqual(resolved('2', 1, 'items[-1]'));
-    expect(sendUntilSettled(second, 'c')).toBeGreaterThan(2);
-    expect(second.results.get('c')).toEqual(failed(hostWork));
-    expect(tasks).toHaveLength(1);
-  });
-
-  it('parser time does not count against the capture budget', async () => {
+  it('parser time does not count against the capture slice', async () => {
     let time = 0;
     const budget = new TaskBudget({ now: () => time, nextTask: () => undefined });
     const run = harness(
@@ -1777,5 +1741,245 @@ describe('host work within one task', () => {
     expect(run.results.get('chunks')).toEqual(resolved('9999', undefined, ''));
     expect(run.results.get('reply')).toEqual(resolved('x'.repeat(9_999), undefined, 'delta'));
     await expectNoChild();
+  });
+});
+
+describe('evaluation paced by slices and backpressure', () => {
+  const hostWork = 'the capture needs too much work for this stream';
+  const sevens = Array<string>(1_300).fill('7').join(',');
+
+  function stepped(step: number): { budget: TaskBudget; tasks: (() => void)[] } {
+    let time = 0;
+    const tasks: (() => void)[] = [];
+    const budget = new TaskBudget({
+      now: () => (time += step),
+      nextTask: (callback) => {
+        tasks.push(callback);
+      },
+    });
+    return { budget, tasks };
+  }
+
+  function runTasks(tasks: (() => void)[], limit = Number.POSITIVE_INFINITY): number {
+    let ran = 0;
+    while (tasks.length > 0 && ran < limit) {
+      tasks.shift()?.();
+      ran += 1;
+    }
+    return ran;
+  }
+
+  function drainListener(tracker: CaptureTracker): { drains: number; stop: () => void } {
+    const state = { drains: 0, stop: (): void => undefined };
+    state.stop = tracker.onDrain(() => {
+      state.drains += 1;
+    });
+    return state;
+  }
+
+  it('first(…) resolves synchronously at its event while nothing is queued', () => {
+    const run = harness(
+      [capture('threadId', 'first(type == "RUN_STARTED").threadId')],
+      missingWorker,
+      hostBudget,
+    );
+    run.tracker.head(ndjsonHead);
+
+    run.send({ type: 'TEXT_MESSAGE_CONTENT', delta: 'a' });
+    run.send({ type: 'RUN_STARTED', threadId: 'thread-1' });
+
+    expect(run.tracker.queued).toBe(0);
+    expect(run.results.get('threadId')).toEqual(resolved('thread-1', 2, 'threadId'));
+  });
+
+  it('evaluates events past the slice in later tasks, in order', async () => {
+    const { budget, tasks } = stepped(4);
+    const run = harness(
+      [
+        capture('counted', 'count(type == "x")'),
+        capture('latest', 'last(type == "x").n'),
+        capture('seventh', 'first(n == 6).n'),
+        capture('fifth', 'nth(5, type == "x").n'),
+      ],
+      missingWorker,
+      budget,
+    );
+    run.tracker.head(ndjsonHead);
+
+    for (let n = 0; n < 10; n += 1) {
+      run.send({ type: 'x', n });
+    }
+
+    expect(run.tracker.queued).toBe(7);
+    expect(run.results.has('fifth')).toBe(false);
+    expect(run.results.has('seventh')).toBe(false);
+    expect(runTasks(tasks, 2)).toBe(2);
+    expect(run.tracker.queued).toBe(4);
+    expect(run.results.get('fifth')).toEqual(resolved('4', 5, 'n'));
+    expect(run.results.has('seventh')).toBe(false);
+    runTasks(tasks);
+    expect(run.tracker.queued).toBe(0);
+    expect(run.results.get('seventh')).toEqual(resolved('6', 7, 'n'));
+    await run.tracker.end(completed('ndjson'));
+
+    expect(run.results.get('counted')).toEqual(resolved('10', undefined, ''));
+    expect(run.results.get('latest')).toEqual(resolved('9', 10, 'n'));
+  });
+
+  it('waits for the queue to drain before evaluating the end of the run', async () => {
+    const { budget, tasks } = stepped(4);
+    const run = harness([capture('counted', 'count(type == "x")')], missingWorker, budget);
+    run.tracker.head(ndjsonHead);
+    for (let n = 0; n < 20; n += 1) {
+      run.send({ type: 'x', n });
+    }
+
+    const ending = run.tracker.end(completed('ndjson'));
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(run.results.has('counted')).toBe(false);
+    runTasks(tasks);
+    await ending;
+
+    expect(run.results.get('counted')).toEqual(resolved('20', undefined, ''));
+  });
+
+  it('is congested past 5,000 queued events and drains once fewer than 1,000 remain', () => {
+    const { budget, tasks } = stepped(4);
+    const run = harness([capture('counted', 'count(type == "x")')], missingWorker, budget);
+    run.tracker.head(ndjsonHead);
+    for (let n = 0; n < 5_003; n += 1) {
+      run.send({ type: 'x', n }, { length: 38 });
+    }
+    expect(run.tracker.queued).toBe(5_000);
+    expect(run.tracker.congested).toBe(false);
+    run.send({ type: 'x', n: 5_003 }, { length: 38 });
+    expect(run.tracker.congested).toBe(true);
+    const listener = drainListener(run.tracker);
+
+    let before = run.tracker.queued;
+    for (let round = 0; listener.drains === 0 && round < 10_000; round += 1) {
+      before = run.tracker.queued;
+      runTasks(tasks, 2);
+    }
+
+    expect(listener.drains).toBe(1);
+
+    expect(before).toBeGreaterThanOrEqual(1_000);
+    expect(run.tracker.queued).toBeLessThan(1_000);
+    expect(run.tracker.congested).toBe(false);
+    listener.stop();
+  });
+
+  it('is congested past 8 MiB of queued event bytes and drains below 2 MiB', () => {
+    const { budget, tasks } = stepped(4);
+    const run = harness([capture('counted', 'count(type == "x")')], missingWorker, budget);
+    run.tracker.head(ndjsonHead);
+    const length = 65_536;
+    for (let n = 0; n < 131; n += 1) {
+      run.send({ type: 'x', n }, { length });
+    }
+    expect(run.tracker.queued).toBe(128);
+    expect(run.tracker.congested).toBe(false);
+    run.send({ type: 'x', n: 131 }, { length });
+    expect(run.tracker.congested).toBe(true);
+    const listener = drainListener(run.tracker);
+
+    let before = run.tracker.queued;
+    for (let round = 0; listener.drains === 0 && round < 10_000; round += 1) {
+      before = run.tracker.queued;
+      runTasks(tasks, 2);
+    }
+
+    expect(listener.drains).toBe(1);
+
+    expect(before * length).toBeGreaterThanOrEqual(2 * mebibyte);
+    expect(run.tracker.queued * length).toBeLessThan(2 * mebibyte);
+  });
+
+  it('a cancelled run drops the queue, tells drain listeners, and fails its captures', async () => {
+    const { budget, tasks } = stepped(4);
+    const run = harness(
+      [capture('counted', 'count(type == "x")'), capture('latest', 'last(type == "x").n')],
+      missingWorker,
+      budget,
+    );
+    run.tracker.head(ndjsonHead);
+    for (let n = 0; n < 5_010; n += 1) {
+      run.send({ type: 'x', n }, { length: 38 });
+    }
+    const listener = drainListener(run.tracker);
+
+    await run.tracker.end({ kind: 'cancelled' });
+    runTasks(tasks);
+
+    expect(run.tracker.queued).toBe(0);
+    expect(listener.drains).toBe(1);
+    expect(run.results.get('counted')).toEqual(
+      failed('startRun was cancelled before counted resolved'),
+    );
+    expect(run.results.get('latest')).toEqual(
+      failed('startRun was cancelled before latest resolved'),
+    );
+  });
+
+  it('a released run drops the queue at its next slice and fails its captures', async () => {
+    const { budget, tasks } = stepped(4);
+    const run = harness([capture('counted', 'count(type == "x")')], missingWorker, budget);
+    const controller = new AbortController();
+    run.tracker.head(ndjsonHead, {
+      spillPath: () => Promise.resolve(undefined),
+      signal: controller.signal,
+    });
+    for (let n = 0; n < 5_010; n += 1) {
+      run.send({ type: 'x', n }, { length: 38 });
+    }
+    const listener = drainListener(run.tracker);
+
+    controller.abort();
+    runTasks(tasks);
+    expect(run.tracker.queued).toBe(0);
+    expect(listener.drains).toBe(1);
+    await run.tracker.end({ ...completed('ndjson'), signal: controller.signal });
+
+    expect(run.results.get('counted')).toEqual(
+      failed('startRun was cancelled before counted resolved'),
+    );
+  });
+
+  it('a run whose captures all settle stops queueing and drains', () => {
+    const { budget, tasks } = stepped(4);
+    const run = harness([capture('seventh', 'first(n == 6).n')], missingWorker, budget);
+    run.tracker.head(ndjsonHead);
+    for (let n = 0; n < 5_010; n += 1) {
+      run.send({ type: 'x', n }, { length: 38 });
+    }
+    const listener = drainListener(run.tracker);
+
+    runTasks(tasks);
+
+    expect(run.results.get('seventh')).toEqual(resolved('6', 7, 'n'));
+    expect(run.tracker.queued).toBe(0);
+    expect(listener.drains).toBe(1);
+    run.send({ type: 'x', n: 5_010 }, { length: 38 });
+    expect(run.tracker.queued).toBe(0);
+  });
+
+  it('fails an evaluation past 2,000,000 units on a clock that never moves, whatever default(…) says', () => {
+    const run = harness(
+      [
+        capture('light', `first(items[?@ in [${sevens}]]).type`),
+        capture('twin', `first(items[?@ in [${sevens}]]).type`),
+        capture('heavy', `first(type == "B" && items[?@ in [${sevens}]]).type | default("none")`),
+      ],
+      missingWorker,
+    );
+    run.tracker.head(ndjsonHead);
+
+    run.send({ type: 'A', items: [...Array<number>(999).fill(0), 7] });
+    run.send({ type: 'B', items: Array<number>(2_000).fill(0) });
+
+    expect(run.results.get('light')).toEqual(resolved('A', 1, 'type'));
+    expect(run.results.get('twin')).toEqual(resolved('A', 1, 'type'));
+    expect(run.results.get('heavy')).toEqual(failed(hostWork));
   });
 });

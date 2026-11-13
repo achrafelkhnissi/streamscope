@@ -6,9 +6,8 @@ export interface TaskClock {
   nextTask(callback: () => void): void;
 }
 
-export const taskBudgetMs = 30;
-export const evaluationAllowanceMs = 0.005;
-export const taskEvaluationCapMs = 200;
+export const captureSliceMs = 10;
+export const hostEvaluationUnits = 2_000_000;
 
 const realClock: TaskClock = {
   now: () => performance.now(),
@@ -18,58 +17,37 @@ const realClock: TaskClock = {
 };
 
 export class TaskBudget {
-  private budget: WorkBudget | undefined;
-  private countedMs = 0;
-  private excessMs = 0;
-  private freeMs = 0;
-  private checked = false;
-  private since: number | undefined;
+  private readonly work = new WorkBudget({ units: hostEvaluationUnits, reason: hostWorkReason });
+  private open = false;
+  private spentMs = 0;
+  private since = 0;
 
   constructor(private readonly clock: TaskClock = realClock) {}
 
-  enter(evaluations = 1): WorkBudget {
-    this.freeMs = evaluationAllowanceMs * evaluations;
-    this.checked = false;
+  get hasRoom(): boolean {
+    return !this.open || this.spentMs < captureSliceMs;
+  }
+
+  enter(): WorkBudget {
+    if (!this.open) {
+      this.open = true;
+      this.spentMs = 0;
+      this.clock.nextTask(() => {
+        this.open = false;
+      });
+    }
     this.since = this.clock.now();
-    return this.budget ?? this.start();
+    this.work.restart();
+    return this.work;
   }
 
   leave(): void {
-    this.lap(this.checked);
-    this.since = undefined;
+    this.spentMs += this.clock.now() - this.since;
+    this.work.forget();
   }
 
-  private start(): WorkBudget {
-    this.countedMs = 0;
-    this.excessMs = 0;
-    const budget = new WorkBudget({
-      expired: () => {
-        this.lap(true);
-        this.checked = true;
-        return this.countedMs > taskBudgetMs || this.excessMs > taskEvaluationCapMs;
-      },
-      reason: hostWorkReason,
-    });
-    this.budget = budget;
-    this.clock.nextTask(() => {
-      this.budget = undefined;
-    });
-    return budget;
-  }
-
-  private lap(counts: boolean): void {
-    if (this.since === undefined) {
-      return;
-    }
-    const now = this.clock.now();
-    const elapsed = now - this.since;
-    const excess = Math.max(0, elapsed - this.freeMs);
-    this.excessMs += excess;
-    if (counts) {
-      this.countedMs += excess;
-    }
-    this.freeMs = Math.max(0, this.freeMs - elapsed);
-    this.since = now;
+  afterTask(callback: () => void): void {
+    this.clock.nextTask(callback);
   }
 }
 

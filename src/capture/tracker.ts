@@ -138,6 +138,12 @@ interface Phase {
 }
 
 type TrackedJob = BodyJob & { tracked: Tracked };
+
+export const congestedEvents = 5_000;
+export const congestedBytes = 8_388_608;
+export const drainedEvents = 1_000;
+export const drainedBytes = 2_097_152;
+const compactQueueAt = 1_024;
 type CompletedEnd = Extract<RunEnd, { kind: 'completed' }>;
 
 const headPhase: Phase = { events: 'unknown', reply: undefined, body: undefined };
@@ -324,6 +330,14 @@ export class CaptureTracker {
   private access: RunAccess | undefined;
   private readonly inFlight: Promise<void>[] = [];
   private ending: Promise<void> | undefined;
+  private queue: (StreamEvent | undefined)[] = [];
+  private queueStart = 0;
+  private queuedBytes = 0;
+  private draining = false;
+  private backlogged = false;
+  private dropped = false;
+  private idle: (() => void) | undefined;
+  private readonly drainListeners = new Set<() => void>();
 
   constructor(
     private readonly run: { id: number; label: string },
@@ -371,6 +385,21 @@ export class CaptureTracker {
     return retained / 2;
   }
 
+  get queued(): number {
+    return this.queue.length - this.queueStart;
+  }
+
+  get congested(): boolean {
+    return this.queued > congestedEvents || this.queuedBytes > congestedBytes;
+  }
+
+  onDrain(listener: () => void): () => void {
+    this.drainListeners.add(listener);
+    return () => {
+      this.drainListeners.delete(listener);
+    };
+  }
+
   head(head: ResponseHead, access?: RunAccess): void {
     this.response = headValues(head);
     this.access = access;
@@ -393,12 +422,37 @@ export class CaptureTracker {
     if (event.kind !== 'json' && event.kind !== 'text') {
       return;
     }
-    let changed = this.collectQuery(event);
+    if (this.collectQuery(event)) {
+      this.watching = this.watching.filter((tracked) => !tracked.settled && !tracked.inFlight);
+    }
     if (this.watching.length === 0) {
       return;
     }
+    if (this.queued > 0 || !this.budget.hasRoom) {
+      this.enqueue(event);
+      return;
+    }
+    this.process(event);
+  }
+
+  end(end: RunEnd): Promise<void> {
+    this.ending ??= this.drained(end)
+      .then(() => this.finish(end))
+      .catch((error: unknown) => {
+        const reason = unexpectedReason(error);
+        for (const tracked of this.tracked) {
+          if (!tracked.settled) {
+            this.fail(tracked, reason);
+          }
+        }
+      });
+    return this.ending;
+  }
+
+  private process(event: StreamEvent): void {
     const item: ConditionItem = { value: event.value, sse: event.sse, malformed: false };
-    const budget = this.budget.enter(this.watching.length);
+    const budget = this.budget.enter();
+    let changed = false;
     let inlineBytes = 0;
     const away: Tracked[] = [];
     let settled: [Tracked, Inserted][] | undefined;
@@ -406,6 +460,7 @@ export class CaptureTracker {
       if (tracked.settled) {
         continue;
       }
+      budget.restart();
       const overflow = this.observe(tracked, event, item, budget);
       if (overflow !== undefined) {
         (settled ??= []).push([tracked, { present: false, reason: overflow }]);
@@ -432,16 +487,94 @@ export class CaptureTracker {
     }
   }
 
-  end(end: RunEnd): Promise<void> {
-    this.ending ??= this.finish(end).catch((error: unknown) => {
-      const reason = unexpectedReason(error);
-      for (const tracked of this.tracked) {
-        if (!tracked.settled) {
-          this.fail(tracked, reason);
-        }
+  private enqueue(event: StreamEvent): void {
+    this.queue.push(event);
+    this.queuedBytes += event.length;
+    this.backlogged ||= this.congested;
+    this.scheduleDrain();
+  }
+
+  private scheduleDrain(): void {
+    if (!this.draining) {
+      this.draining = true;
+      this.budget.afterTask(() => {
+        this.drain();
+      });
+    }
+  }
+
+  private dequeue(): StreamEvent | undefined {
+    const event = this.queue[this.queueStart];
+    if (event === undefined) {
+      return undefined;
+    }
+    this.queue[this.queueStart] = undefined;
+    this.queueStart += 1;
+    this.queuedBytes -= event.length;
+    if (this.queueStart === this.queue.length) {
+      this.queue = [];
+      this.queueStart = 0;
+    } else if (this.queueStart >= compactQueueAt && this.queueStart * 2 >= this.queue.length) {
+      this.queue = this.queue.slice(this.queueStart);
+      this.queueStart = 0;
+    }
+    return event;
+  }
+
+  private drain(): void {
+    this.draining = false;
+    if (this.access?.signal.aborted === true) {
+      this.dropQueue(true);
+      return;
+    }
+    while (this.watching.length > 0 && this.budget.hasRoom) {
+      const next = this.dequeue();
+      if (next === undefined) {
+        break;
       }
-    });
-    return this.ending;
+      this.process(next);
+    }
+    if (this.watching.length === 0) {
+      this.dropQueue(false);
+      return;
+    }
+    if (this.queued > 0) {
+      this.scheduleDrain();
+    }
+    this.queueChanged();
+  }
+
+  private dropQueue(aborted: boolean): void {
+    this.queue = [];
+    this.queueStart = 0;
+    this.queuedBytes = 0;
+    this.dropped ||= aborted;
+    this.queueChanged();
+  }
+
+  private queueChanged(): void {
+    if (this.queued === 0) {
+      const idle = this.idle;
+      this.idle = undefined;
+      idle?.();
+    }
+    if (this.backlogged && this.queued < drainedEvents && this.queuedBytes < drainedBytes) {
+      this.backlogged = false;
+      for (const listener of [...this.drainListeners]) {
+        listener();
+      }
+    }
+  }
+
+  private drained(end: RunEnd): Promise<void> {
+    if (end.kind !== 'completed') {
+      this.dropQueue(false);
+    }
+    return this.queued === 0
+      ? Promise.resolve()
+      : new Promise((resolve) => {
+          this.idle = resolve;
+        });
   }
 
   private evaluateLater(batch: readonly Tracked[], match: Match): void {
@@ -481,9 +614,15 @@ export class CaptureTracker {
   private async finish(end: RunEnd): Promise<void> {
     this.watching = [];
     const pending = this.tracked.filter((tracked) => !tracked.settled && !tracked.inFlight);
-    if (end.kind !== 'completed') {
+    if (end.kind !== 'completed' || this.dropped) {
       for (const tracked of pending) {
-        this.fail(tracked, this.endReason(end, tracked.definition.name));
+        const name = tracked.definition.name;
+        this.fail(
+          tracked,
+          end.kind === 'completed'
+            ? cancelledReason(this.run.label, name)
+            : this.endReason(end, name),
+        );
       }
       this.query = undefined;
       await Promise.all(this.inFlight);

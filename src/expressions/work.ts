@@ -40,6 +40,16 @@ export class WorkBudget {
     return this.over;
   }
 
+  restart(): void {
+    this.used = 0;
+    this.next = Math.min(unitsPerCheck, this.limit + 1);
+    this.over = false;
+  }
+
+  forget(): void {
+    this.remembered = undefined;
+  }
+
   spend(units: number): void {
     this.used += units;
     if (this.used >= this.next) {

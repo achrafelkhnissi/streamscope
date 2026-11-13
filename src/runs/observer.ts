@@ -1,4 +1,5 @@
 import type { StreamEvent } from '../events/model';
+import type { EventBackpressure } from '../events/session';
 import type { StreamFormat } from '../streaming/detect';
 import type { ResponseHead } from '../transport/model';
 
@@ -27,4 +28,5 @@ export interface RunObserver {
   head(head: ResponseHead, access: RunAccess): void;
   event(event: StreamEvent): void;
   end(end: RunEnd): void;
+  backpressure?: EventBackpressure;
 }

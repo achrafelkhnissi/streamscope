@@ -7,10 +7,10 @@ import {
 } from '../../../src/capture/tracker';
 import { parseExpression } from '../../../src/expressions/parse';
 import type { RunObserver } from '../../../src/runs/observer';
-import { startRun } from '../../../src/runs/run';
+import { startRun, type RunDependencies } from '../../../src/runs/run';
 import { startHttpServer, type LocalServer } from '../../support/servers';
 import { dependencies, runInput, useSpillArea } from '../runs/support';
-import { missingWorker } from './worker';
+import { longestStall, missingWorker } from './worker';
 
 const mebibyte = 1_048_576;
 const servers: LocalServer[] = [];
@@ -53,15 +53,16 @@ function agentStream(bytes: number): { body: string; chunks: number; events: num
 
 const smallEventBytes = 38;
 
-function smallEvents(bytes: number): { body: string; events: number } {
-  const lines: string[] = [];
-  let size = 0;
-  while (size + smallEventBytes <= bytes) {
-    const base = `{"type":"x","n":${String(lines.length)},"p":""}`;
-    lines.push(base.replace('"p":""', `"p":"${'a'.repeat(smallEventBytes - 1 - base.length)}"`));
-    size += smallEventBytes;
+function smallEvents(bytes: number): { body: Buffer; events: number } {
+  const events = Math.floor(bytes / smallEventBytes);
+  const body = Buffer.alloc(events * smallEventBytes);
+  let offset = 0;
+  for (let n = 0; n < events; n += 1) {
+    const base = `{"type":"x","n":${String(n)},"p":""}`;
+    const line = base.replace('"p":""', `"p":"${'a'.repeat(smallEventBytes - 1 - base.length)}"`);
+    offset += body.write(`${line}\n`, offset, 'latin1');
   }
-  return { body: `${lines.join('\n')}\n`, events: lines.length };
+  return { body, events };
 }
 
 interface SmallEventCapture {
@@ -109,10 +110,56 @@ function expectSmallEventResults(
   }
 }
 
-async function trackedRun(
-  url: string,
-  definitions: CaptureDefinition[],
-): Promise<{ results: Map<string, CaptureResult>; events: number | undefined }> {
+interface Pacing {
+  pauses: number;
+  deliveredWhilePaused: number;
+}
+
+function pacedDependencies(pacing: Pacing): RunDependencies {
+  let paused = false;
+  return {
+    ...dependencies,
+    transport: {
+      send: (request, options, sink, signal) =>
+        dependencies.transport.send(
+          request,
+          options,
+          {
+            onRequest: (sent) => {
+              sink.onRequest(sent);
+            },
+            onHead: (head, sent) => {
+              sink.onHead(head, sent);
+            },
+            onData: (chunk) => {
+              if (paused) {
+                pacing.deliveredWhilePaused += 1;
+              }
+              const pending = sink.onData(chunk);
+              if (pending !== undefined) {
+                pacing.pauses += 1;
+                paused = true;
+                const resumed = (): void => {
+                  paused = false;
+                };
+                pending.then(resumed, resumed);
+              }
+              return pending;
+            },
+          },
+          signal,
+        ),
+    },
+  };
+}
+
+interface TrackedRun {
+  results: Map<string, CaptureResult>;
+  events: number | undefined;
+  pacing: Pacing;
+}
+
+async function trackedRun(url: string, definitions: CaptureDefinition[]): Promise<TrackedRun> {
   const results = new Map<string, CaptureResult>();
   const tracker = new CaptureTracker(
     { id: 1, label: 'startRun' },
@@ -134,34 +181,43 @@ async function trackedRun(
     end: (end) => {
       ended = tracker.end(end);
     },
+    backpressure: tracker,
   };
-  const run = startRun({ ...runInput([`GET ${url}`]), observer }, dependencies);
+  const pacing: Pacing = { pauses: 0, deliveredWhilePaused: 0 };
+  const run = startRun({ ...runInput([`GET ${url}`]), observer }, pacedDependencies(pacing));
   const snapshot = await run.done;
   await ended;
   expect(snapshot.status).toBe('completed');
   const events = snapshot.stream?.store.count;
   await run.release();
-  return { results, events };
+  return { results, events, pacing };
 }
 
 describe('many cheap captures on a fast stream of small events', () => {
-  it('64 captures over 16 MiB of 38-byte events resolve', async () => {
+  it('64 captures over 16 MiB of 38-byte events resolve, pacing the socket and keeping the host responsive', async () => {
     const stream = smallEvents(16 * mebibyte);
     const server = await startHttpServer((_request, response) => {
       response.writeHead(200, { 'Content-Type': 'application/x-ndjson' });
       response.end(stream.body);
     });
     servers.push(server);
-
     const captures = smallEventCaptures(64, stream.events);
 
-    const { results, events } = await trackedRun(
-      `${server.url}/small`,
-      captures.map(({ definition }) => definition),
+    const {
+      result: { results, events, pacing },
+      stallMs,
+    } = await longestStall(() =>
+      trackedRun(
+        `${server.url}/small`,
+        captures.map(({ definition }) => definition),
+      ),
     );
 
     expect(events).toBe(stream.events);
     expectSmallEventResults(results, captures);
+    expect(pacing.pauses).toBeGreaterThan(0);
+    expect(pacing.deliveredWhilePaused).toBe(0);
+    expect(stallMs).toBeLessThan(100);
   }, 60_000);
 
   it('3 concurrent runs of 24 captures resolve', async () => {
@@ -183,9 +239,10 @@ describe('many cheap captures on a fast stream of small events', () => {
       ),
     );
 
-    for (const { results, events } of runs) {
+    for (const { results, events, pacing } of runs) {
       expect(events).toBe(stream.events);
       expectSmallEventResults(results, captures);
+      expect(pacing.deliveredWhilePaused).toBe(0);
     }
   }, 60_000);
 });
@@ -225,6 +282,7 @@ describe('ordinary captures on a fast stream', () => {
         end: (end) => {
           ended = tracker.end(end);
         },
+        backpressure: tracker,
       };
 
       const run = startRun({ ...runInput([`GET ${server.url}/agent`]), observer }, dependencies);
