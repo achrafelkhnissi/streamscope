@@ -5,7 +5,14 @@ import { insertText, maxInsertedLength, valueTooLargeReason } from '../expressio
 import { sourcesOf } from '../expressions/parse';
 import type { RunEnd } from '../runs/observer';
 import type { ResponseHead } from '../transport/model';
-import { evaluateJobs, evaluateWith, sourceKey, type BodyJob, type BodySubject } from './body';
+import {
+  evaluateJobs,
+  evaluateWith,
+  inlineBodyLimit,
+  sourceKey,
+  type BodyJob,
+  type BodySubject,
+} from './body';
 import {
   bodyUnavailableReason,
   cancelledReason,
@@ -13,6 +20,7 @@ import {
   failedReason,
   maxCollectedBytes,
   maxCollectedEvents,
+  maxQueriedBytes,
   noEventMatchedReason,
   noHeadersReason,
   notAnEventStreamReason,
@@ -102,6 +110,7 @@ interface Phase {
 }
 
 type TrackedJob = BodyJob & { tracked: Tracked };
+type CompletedEnd = Extract<RunEnd, { kind: 'completed' }>;
 
 const headPhase: Phase = { events: 'unknown', reply: undefined, body: undefined };
 const eventPhase: Phase = {
@@ -187,6 +196,16 @@ function matchedNow(tracked: Tracked): boolean {
     (watch?.kind === 'first' || watch?.kind === 'nth') &&
     watch.match !== undefined
   );
+}
+
+async function bodySubject(end: CompletedEnd): Promise<BodySubject | undefined> {
+  const file =
+    end.bodyLength > inlineBodyLimit ? await end.bodyFile().catch(() => undefined) : undefined;
+  if (file !== undefined) {
+    return { kind: 'file', path: file.path, length: file.length, contentType: end.contentType };
+  }
+  const bytes = await end.readBody(Number.MAX_SAFE_INTEGER).catch(() => undefined);
+  return bytes === undefined ? undefined : { kind: 'body', bytes, contentType: end.contentType };
 }
 
 function readsSource(tracked: Tracked, name: 'body' | 'text'): boolean {
@@ -319,14 +338,16 @@ export class CaptureTracker {
         body: eventPhase.body,
       };
     } else {
-      const bytes = pending.some((tracked) => tracked.queries || readsSource(tracked, 'body'))
-        ? await end.readBody(Number.MAX_SAFE_INTEGER).catch(() => undefined)
-        : new Uint8Array();
-      subject = { kind: 'body', bytes: bytes ?? new Uint8Array(), contentType: end.contentType };
+      const needsBody = pending.some((tracked) => tracked.queries || readsSource(tracked, 'body'));
+      const read = needsBody ? await bodySubject(end) : undefined;
+      subject = read ?? { kind: 'body', bytes: new Uint8Array(), contentType: end.contentType };
       phase = {
         events: 'none',
         reply: { present: false, reason: notAnEventStreamReason },
-        body: bytes === undefined ? { present: false, reason: bodyUnavailableReason } : undefined,
+        body:
+          needsBody && read === undefined
+            ? { present: false, reason: bodyUnavailableReason }
+            : undefined,
       };
     }
     const jobs: TrackedJob[] = pending.map((tracked) => ({
@@ -360,7 +381,7 @@ export class CaptureTracker {
     const overflow =
       collection.values.length === maxCollectedEvents
         ? tooManyStreamEventsReason
-        : collection.bytes + event.length > maxCollectedBytes
+        : collection.bytes + event.length > maxQueriedBytes
           ? tooManyStreamBytesReason
           : undefined;
     if (overflow === undefined) {

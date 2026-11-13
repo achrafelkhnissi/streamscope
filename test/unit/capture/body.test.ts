@@ -1,9 +1,13 @@
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import * as path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { evaluateBodyExpressions } from '../../../src/capture/body';
+import { evaluateBodyExpressions, evaluateJobs, type BodyJob } from '../../../src/capture/body';
 import type { CaptureDefinition } from '../../../src/capture/tracker';
 import { parseExpression } from '../../../src/expressions/parse';
+import type { Outcome } from '../../../src/expressions/evaluate';
 import { insertText } from '../../../src/expressions/insert';
-import { missingWorker, useCaptureWorker } from './worker';
+import { expectNoChild, missingWorker, useCaptureWorker } from './worker';
 
 const encoder = new TextEncoder();
 const mebibyte = 1_048_576;
@@ -16,6 +20,11 @@ function capture(name: string, text: string): CaptureDefinition {
     throw new Error(`${text}: ${parsed.error.message}`);
   }
   return { name, secret: false, expression: parsed.expr, text };
+}
+
+function job(name: string, text: string): BodyJob {
+  const { expression } = capture(name, text);
+  return { name, expression, text, known: new Map() };
 }
 
 function jsonBody(bytes: number): Uint8Array {
@@ -278,7 +287,7 @@ describe('evaluateBodyExpressions', () => {
     expect(outcomes.get('id')).toEqual({ present: true, value: 1, path: 'items[1].id' });
   });
 
-  it('stops a worker that runs past 1 s', async () => {
+  it('kills a child that hangs after the time limit and fails its captures', async () => {
     const hanging = files().script('hanging', 'setInterval(() => undefined, 1000);');
     const started = performance.now();
 
@@ -287,21 +296,20 @@ describe('evaluateBodyExpressions', () => {
       'application/json',
       [capture('id', 'body.items[1].id'), capture('query', 'jsonpath("$.items[1].id")')],
       hanging,
+      { timeLimitMs: 300 },
     );
 
-    expect(performance.now() - started).toBeGreaterThanOrEqual(990);
+    expect(performance.now() - started).toBeGreaterThanOrEqual(290);
     expect(outcomes.get('id')).toEqual({ present: false, reason: bodyLimit });
     expect(outcomes.get('query')).toEqual({ present: false, reason: jsonPathLimit });
+    await expectNoChild();
   });
 
-  it('fails the captures of a worker that exits, throws or runs out of memory', async () => {
+  it('fails the captures of a child that exits, throws or cannot start, and leaves no child', async () => {
     const scripts = [
       files().script('exits', 'process.exit(0);'),
-      files().script('throws', "throw new Error('synthetic worker failure');"),
-      files().script(
-        'allocates',
-        'const kept = []; for (;;) { kept.push(new Array(1_000_000).fill(kept.length + 0.5)); }',
-      ),
+      files().script('throws', "throw new Error('synthetic child failure');"),
+      missingWorker,
     ];
 
     for (const script of scripts) {
@@ -315,15 +323,15 @@ describe('evaluateBodyExpressions', () => {
       expect(outcomes.get('id')).toEqual({ present: false, reason: bodyLimit });
       expect(outcomes.get('query')).toEqual({ present: false, reason: jsonPathLimit });
     }
+    await expectNoChild();
   });
 
-  it('keeps the answers a worker sent before it was stopped', async () => {
+  it('keeps the answers a child sent before it was killed', async () => {
     const partial = files().script(
       'partial',
       [
-        "const { parentPort } = require('node:worker_threads');",
-        "parentPort.once('message', () => {",
-        "  parentPort.postMessage({ name: 'id', outcome: { present: true, value: 1, path: 'items[1].id' } });",
+        "process.once('message', () => {",
+        "  process.send({ name: 'id', outcome: { present: true, value: 1, path: 'items[1].id' } });",
         '  setInterval(() => undefined, 1000);',
         '});',
       ].join('\n'),
@@ -334,9 +342,86 @@ describe('evaluateBodyExpressions', () => {
       'application/json',
       [capture('id', 'body.items[1].id'), capture('query', 'jsonpath("$.items[1].id")')],
       partial,
+      { timeLimitMs: 300 },
     );
 
     expect(outcomes.get('id')).toEqual({ present: true, value: 1, path: 'items[1].id' });
     expect(outcomes.get('query')).toEqual({ present: false, reason: jsonPathLimit });
+    await expectNoChild();
+  });
+
+  it('lets the child read a large body from its file', async () => {
+    const body = jsonBody(2 * mebibyte);
+    const folder = mkdtempSync(path.join(tmpdir(), 'streamscope-body-file-'));
+    const whole = path.join(folder, 'whole.spill');
+    const short = path.join(folder, 'short.spill');
+    writeFileSync(whole, body);
+    writeFileSync(short, body.subarray(0, mebibyte));
+    const read = async (file: string): Promise<ReadonlyMap<string, Outcome>> =>
+      new Map(
+        (
+          await evaluateJobs(
+            { kind: 'file', path: file, length: body.length, contentType: 'application/json' },
+            [job('id', 'body.items[1].id'), job('query', 'jsonpath("$.items[2].id")')],
+            files().worker,
+          )
+        ).map(([done, outcome]) => [done.name, outcome]),
+      );
+
+    try {
+      const outcomes = await read(whole);
+      const truncated = await read(short);
+      const missing = await read(path.join(folder, 'missing.spill'));
+
+      expect(outcomes.get('id')).toEqual({ present: true, value: 1, path: 'items[1].id' });
+      expect(outcomes.get('query')).toEqual({ present: true, value: 2, path: '$.items[2].id' });
+      for (const outcomes of [truncated, missing]) {
+        expect(outcomes.get('id')).toEqual({
+          present: false,
+          reason: 'the body is no longer available',
+        });
+        expect(outcomes.get('query')).toEqual({
+          present: false,
+          reason: 'the body is no longer available',
+        });
+      }
+    } finally {
+      rmSync(folder, { recursive: true, force: true });
+    }
+  });
+
+  it('sends a file body to the child by its path and other bodies by their bytes', async () => {
+    const echo = files().script(
+      'echo',
+      [
+        'const holdsBytes = (value) =>',
+        '  value instanceof Uint8Array ||',
+        '  (Array.isArray(value) ? value.some(holdsBytes) :',
+        "    value !== null && typeof value === 'object' && !(value instanceof Map) && Object.values(value).some(holdsBytes));",
+        "process.once('message', (message) => {",
+        '  for (const job of message.jobs) {',
+        '    const value = { kind: message.subject.kind, fields: Object.keys(message.subject).sort(), bytes: holdsBytes(message) };',
+        "    process.send({ name: job.name, outcome: { present: true, value, path: '' } });",
+        '  }',
+        '});',
+      ].join('\n'),
+    );
+    const sent = async (subject: Parameters<typeof evaluateJobs>[0]): Promise<unknown> => {
+      const [answer] = await evaluateJobs(subject, [job('id', 'body.items[1].id')], echo);
+      return answer?.[1].present === true ? answer[1].value : answer?.[1];
+    };
+
+    expect(
+      await sent({
+        kind: 'file',
+        path: '/synthetic/spill/body.spill',
+        length: 3 * mebibyte,
+        contentType: 'application/json',
+      }),
+    ).toEqual({ kind: 'file', fields: ['contentType', 'kind', 'length', 'path'], bytes: false });
+    expect(
+      await sent({ kind: 'body', bytes: jsonBody(2 * mebibyte), contentType: 'application/json' }),
+    ).toEqual({ kind: 'body', fields: ['bytes', 'contentType', 'kind'], bytes: true });
+    await expectNoChild();
   });
 });

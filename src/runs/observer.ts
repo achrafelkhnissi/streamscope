@@ -7,6 +7,8 @@ export type RunEnd =
       kind: 'completed';
       format: StreamFormat | undefined;
       contentType: string | undefined;
+      bodyLength: number;
+      bodyFile: () => Promise<{ path: string; length: number } | undefined>;
       readBody: (maxBytes: number) => Promise<Uint8Array | undefined>;
       readReply: () => Promise<string | undefined>;
     }

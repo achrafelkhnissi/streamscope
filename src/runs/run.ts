@@ -319,6 +319,14 @@ export function startRun(
     const bytes = await spillFile?.readSide();
     return bytes === undefined ? undefined : decoder.decode(bytes);
   };
+  const bodyFile = async (): Promise<{ path: string; length: number } | undefined> => {
+    const file = spillFile;
+    const length = state.bodyLength;
+    if (file === undefined || released || file.evicted || file.savedBytes < length) {
+      return undefined;
+    }
+    return (await file.whenWritten(length)) ? { path: file.path, length } : undefined;
+  };
   const endOf = (): RunEnd => {
     const { status, failure, head } = state;
     if (status === 'completed') {
@@ -326,6 +334,8 @@ export function startRun(
         kind: 'completed',
         format: session?.format?.format,
         contentType: head === undefined ? undefined : contentTypeOf(head),
+        bodyLength: state.bodyLength,
+        bodyFile,
         readBody,
         readReply,
       };

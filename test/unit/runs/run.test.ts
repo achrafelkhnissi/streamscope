@@ -1,4 +1,12 @@
-import { chmodSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import * as zlib from 'node:zlib';
@@ -1324,6 +1332,35 @@ describe('the observer sees head, events and exactly one end on every exit path'
       '{"token":"token-1"}',
     );
     expect(Buffer.from((await end.readBody(4)) ?? []).toString()).toBe('{"to');
+    expect(end.bodyLength).toBe(19);
+  });
+
+  it('completed: names the spill file that holds the whole body, while it does', async () => {
+    const body = Buffer.from(JSON.stringify({ padding: 'x'.repeat(2 * 1_048_576) }));
+    const server = await track(
+      startHttpServer((_request, response) => {
+        response.writeHead(200, { 'Content-Type': 'application/json' });
+        response.end(body);
+      }),
+    );
+    const spilled = recording();
+    const unspilled = recording();
+
+    const { run } = await observed(spilled, runInput([`GET ${server.url}`]));
+    await observed(unspilled, { ...runInput([`GET ${server.url}`]), spill: undefined });
+
+    const end = spilled.ends[0];
+    const without = unspilled.ends[0];
+    if (end?.kind !== 'completed' || without?.kind !== 'completed') {
+      throw new Error('expected completed ends');
+    }
+    expect(end.bodyLength).toBe(body.length);
+    const file = await end.bodyFile();
+    expect(file?.length).toBe(body.length);
+    expect(readFileSync(file?.path ?? '').equals(body)).toBe(true);
+    expect(await without.bodyFile()).toBeUndefined();
+    await run.release();
+    expect(await end.bodyFile()).toBeUndefined();
   });
 
   it('failed: a run that never reached headers', async () => {

@@ -1,14 +1,18 @@
-import { describe, expect, it } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import * as path from 'node:path';
+import { afterEach, describe, expect, it } from 'vitest';
 import {
   CaptureTracker,
   type CaptureDefinition,
   type CaptureResult,
 } from '../../../src/capture/tracker';
 import type { EventKind, JsonValue, SseFields, StreamEvent } from '../../../src/events/model';
+import { SpillArea } from '../../../src/events/spill';
 import { parseExpression } from '../../../src/expressions/parse';
 import type { RunEnd } from '../../../src/runs/observer';
 import type { ResponseHead } from '../../../src/transport/model';
-import { missingWorker, useCaptureWorker } from './worker';
+import { expectNoChild, missingWorker, useCaptureWorker } from './worker';
 
 const encoder = new TextEncoder();
 const mebibyte = 1_048_576;
@@ -94,9 +98,41 @@ function completed(
     kind: 'completed',
     format,
     contentType: options.contentType,
+    bodyLength: bytes?.length ?? 0,
+    bodyFile: () => Promise.resolve(undefined),
     readBody: (maxBytes) => Promise.resolve((bytes ?? new Uint8Array()).subarray(0, maxBytes)),
     readReply: () => Promise.resolve(options.reply ?? ''),
   };
+}
+
+function fromFile(file: { path: string; length: number }): RunEnd {
+  return {
+    kind: 'completed',
+    format: 'json',
+    contentType: 'application/json',
+    bodyLength: file.length,
+    bodyFile: () => Promise.resolve(file),
+    readBody: () => Promise.reject(new Error('the host read the body')),
+    readReply: () => Promise.resolve(''),
+  };
+}
+
+const spillRoots: string[] = [];
+
+afterEach(() => {
+  for (const root of spillRoots.splice(0)) {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+async function spilled(body: Uint8Array): Promise<{ path: string; length: number }> {
+  const root = mkdtempSync(path.join(tmpdir(), 'streamscope-capture-spill-'));
+  spillRoots.push(root);
+  const area = await SpillArea.open(root);
+  const file = await area.create();
+  file.append(body);
+  await file.finish();
+  return { path: file.path, length: body.length };
 }
 
 function resolved(text: string, event: number | undefined, path: string, secret = false) {
@@ -690,20 +726,133 @@ describe('CaptureTracker', () => {
     expect(run.tracker.retainedValues).toBe(0);
   });
 
-  it('fails jsonpath() over a stream past 16 MiB of events', () => {
+  it('jsonpath over events fails beyond 1 MiB of event bytes', () => {
     const run = harness([capture('ids', 'jsonpath("$[*].id")')]);
     run.tracker.head(ndjsonHead);
 
     for (let count = 0; count < 16; count += 1) {
-      run.send({ id: count }, { length: mebibyte });
+      run.send({ id: count }, { length: mebibyte / 16 });
     }
     expect(run.results.size).toBe(0);
+    expect(run.tracker.retainedValues).toBe(16);
     run.send({ id: 16 }, { length: 1 });
 
     expect(run.results.get('ids')).toEqual(
-      failed('jsonpath("$[*].id") reads at most 16 MiB of events, and the stream has more'),
+      failed('jsonpath("$[*].id") reads at most 1 MiB of events, and the stream has more'),
     );
+    expect(run.tracker.retainedValues).toBe(0);
   });
+
+  it('posting a 1 MiB jsonpath collection takes under 50 ms on the host', async () => {
+    const run = harness([capture('first', 'jsonpath("$[0][0]")')], files().worker);
+    run.tracker.head(ndjsonHead);
+    const eventBytes = mebibyte / 16;
+    for (let count = 0; count < 16; count += 1) {
+      const tiny: JsonValue[] = Array.from({ length: Math.floor(eventBytes / 3) }, () => ({}));
+      run.send(tiny, { length: eventBytes });
+    }
+    expect(run.tracker.retainedValues).toBe(16);
+    let longest = 0;
+    let last = performance.now();
+    const ticker = setInterval(() => {
+      const now = performance.now();
+      longest = Math.max(longest, now - last);
+      last = now;
+    }, 5);
+
+    try {
+      const started = performance.now();
+      const ending = run.tracker.end(completed('ndjson'));
+      longest = Math.max(longest, performance.now() - started + 5);
+      await ending;
+    } finally {
+      clearInterval(ticker);
+    }
+
+    expect(longest - 5).toBeLessThan(50);
+    expect(run.results.get('first')).toEqual(resolved('{}', undefined, '$[0][0]'));
+    await expectNoChild();
+  });
+
+  it('a large body is read from the spill file, and the message to the child carries no body bytes', async () => {
+    const body = encoder.encode(
+      JSON.stringify({ items: [{ id: 'a-0' }, { id: 'a-1' }], padding: 'x'.repeat(2 * mebibyte) }),
+    );
+    const file = await spilled(body);
+    const echo = files().script(
+      'echo',
+      [
+        'const holdsBytes = (value) =>',
+        '  value instanceof Uint8Array ||',
+        '  (Array.isArray(value) ? value.some(holdsBytes) :',
+        "    value !== null && typeof value === 'object' && !(value instanceof Map) && Object.values(value).some(holdsBytes));",
+        "process.once('message', (message) => {",
+        '  for (const job of message.jobs) {',
+        '    const value = { kind: message.subject.kind, path: message.subject.path, length: message.subject.length, bytes: holdsBytes(message) };',
+        "    process.send({ name: job.name, outcome: { present: true, value, path: '' } });",
+        '  }',
+        '});',
+      ].join('\n'),
+    );
+    const definitions = [
+      capture('id', 'body.items[1].id'),
+      capture('query', 'jsonpath("$.items[0].id")'),
+    ];
+    const real = harness(definitions, files().worker);
+    const echoed = harness(definitions, echo);
+    real.tracker.head(head('application/json'));
+    echoed.tracker.head(head('application/json'));
+
+    await real.tracker.end(fromFile(file));
+    await echoed.tracker.end(fromFile(file));
+
+    expect(real.results.get('id')).toEqual(resolved('a-1', undefined, 'items[1].id'));
+    expect(real.results.get('query')).toEqual(resolved('a-0', undefined, '$.items[0].id'));
+    expect(echoed.results.get('id')).toEqual(
+      resolved(
+        JSON.stringify({ kind: 'file', path: file.path, length: body.length, bytes: false }),
+        undefined,
+        '',
+      ),
+    );
+    await expectNoChild();
+  });
+
+  it('sends the bytes of a large body that no spill file holds', async () => {
+    const body = JSON.stringify({
+      items: [{ id: 'a-0' }, { id: 'a-1' }],
+      padding: 'x'.repeat(2 * mebibyte),
+    });
+    const run = harness([capture('id', 'body.items[1].id')], files().worker);
+    run.tracker.head(head('application/json'));
+
+    await run.tracker.end(completed('json', { body, contentType: 'application/json' }));
+
+    expect(run.results.get('id')).toEqual(resolved('a-1', undefined, 'items[1].id'));
+  });
+
+  it('an out-of-memory in the child fails the capture and leaves the host running', async () => {
+    const body = encoder.encode(
+      `[${'{},'.repeat(Math.floor(16_000_000 / 3))}12345678901234567890]`,
+    );
+    const file = await spilled(body);
+    const run = harness(
+      [capture('first', 'body[0]'), capture('query', 'jsonpath("$[0]")')],
+      files().worker,
+    );
+    run.tracker.head(head('application/json'));
+
+    await run.tracker.end(fromFile(file));
+
+    expect(run.results.get('first')).toEqual(
+      failed('evaluating the body took too long or used too much memory'),
+    );
+    expect(run.results.get('query')).toEqual(
+      failed('jsonpath() took too long or used too much memory'),
+    );
+    expect(process.kill(process.pid, 0)).toBe(true);
+    await expectNoChild();
+  }, 30_000);
 
   it('fails a value larger than 1 MiB', () => {
     const run = harness([capture('big', 'first().text')]);
@@ -727,6 +876,8 @@ describe('CaptureTracker', () => {
       kind: 'completed',
       format: 'json',
       contentType: 'application/json',
+      bodyLength: 7,
+      bodyFile: () => Promise.resolve(undefined),
       readBody: () => Promise.reject(new Error('synthetic read failure')),
       readReply: () => Promise.reject(new Error('synthetic read failure')),
     });
@@ -734,6 +885,8 @@ describe('CaptureTracker', () => {
       kind: 'completed',
       format: 'json',
       contentType: 'application/json',
+      bodyLength: 7,
+      bodyFile: () => Promise.resolve(undefined),
       readBody: () => Promise.resolve(undefined),
       readReply: () => Promise.resolve(undefined),
     });
@@ -741,6 +894,8 @@ describe('CaptureTracker', () => {
       kind: 'completed',
       format: 'ndjson',
       contentType: 'application/x-ndjson',
+      bodyLength: 0,
+      bodyFile: () => Promise.resolve(undefined),
       readBody: () => Promise.reject(new Error('synthetic read failure')),
       readReply: () => Promise.reject(new Error('synthetic read failure')),
     });

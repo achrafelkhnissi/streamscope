@@ -1,4 +1,4 @@
-import { Worker } from 'node:worker_threads';
+import { fork, type ChildProcess } from 'node:child_process';
 import type { Expr, SourceNode, Value } from '../expressions/ast';
 import { evaluate, type Outcome } from '../expressions/evaluate';
 import { queryJsonPath } from '../expressions/jsonpath';
@@ -6,6 +6,7 @@ import { sourcesOf } from '../expressions/parse';
 import { parseJson } from '../streaming/json';
 import {
   bodyLimitReason,
+  bodyUnavailableReason,
   checkSourceReason,
   eventStreamBodyReason,
   jsonPathLimitReason,
@@ -19,7 +20,12 @@ import type { CaptureDefinition } from './tracker';
 
 export type BodySubject =
   | { kind: 'body'; bytes: Uint8Array; contentType: string | undefined }
+  | { kind: 'file'; path: string; length: number; contentType: string | undefined }
   | { kind: 'events'; values: readonly Value[] };
+
+export interface EvaluationOptions {
+  timeLimitMs?: number;
+}
 
 export interface BodyJob {
   name: string;
@@ -38,10 +44,10 @@ export interface WorkerReply {
   outcome: Outcome;
 }
 
-const inlineBodyLimit = 1_048_576;
+export const inlineBodyLimit = 1_048_576;
 
-const workerTimeLimitMs = 1000;
-const workerMemoryLimitMb = 256;
+const childTimeLimitMs = 5000;
+const childHeapLimit = '--max-old-space-size=1024';
 const noneKnown: ReadonlyMap<string, Outcome> = new Map();
 
 export function sourceKey(node: SourceNode): string {
@@ -138,34 +144,41 @@ export function runJobs(
   report: (name: string, outcome: Outcome) => void,
 ): void {
   let target: { value: Value } | undefined;
-  const subjectValue = (): Value => {
+  const subjectValue = (): Value | undefined => {
+    if (subject.kind === 'file') {
+      return undefined;
+    }
     target ??= {
       value:
         subject.kind === 'body' ? bodyValue(subject.bytes, subject.contentType) : subject.values,
     };
     return target.value;
   };
+  const unavailable: Outcome = { present: false, reason: bodyUnavailableReason };
   const computed = (node: SourceNode, text: string): Outcome => {
     if (node.kind === 'jsonpath') {
-      return queryOutcome(subjectValue(), node.query);
+      const value = subjectValue();
+      return value === undefined ? unavailable : queryOutcome(value, node.query);
     }
     if (node.kind === 'check') {
       return { present: false, reason: checkSourceReason };
     }
     if (node.kind === 'source' && node.name === 'body') {
-      return subject.kind === 'body'
-        ? { present: true, value: subjectValue(), path: '' }
-        : { present: false, reason: eventStreamBodyReason };
+      if (subject.kind === 'events') {
+        return { present: false, reason: eventStreamBodyReason };
+      }
+      const value = subjectValue();
+      return value === undefined ? unavailable : { present: true, value, path: '' };
     }
     if (node.kind === 'source' && node.name !== 'text') {
       return { present: false, reason: unavailableSourceReason(node.name) };
     }
-    return subject.kind === 'body'
-      ? { present: false, reason: notAnEventStreamReason }
-      : {
+    return subject.kind === 'events'
+      ? {
           present: false,
           reason: unavailableSourceReason(text.slice(node.span.start, node.span.end)),
-        };
+        }
+      : { present: false, reason: notAnEventStreamReason };
   };
   for (const job of jobs) {
     const outcome = evaluateWith(
@@ -184,67 +197,65 @@ function limitOutcome(job: BodyJob): Outcome {
   };
 }
 
-function workerMessage(
-  subject: BodySubject,
-  jobs: readonly BodyJob[],
-): { request: WorkerRequest; transfer: ArrayBuffer[] } {
-  const described = jobs.map(({ name, text, known }) => ({ name, text, known }));
-  if (subject.kind === 'events') {
-    return { request: { subject, jobs: described }, transfer: [] };
-  }
-  const bytes = new Uint8Array(subject.bytes);
-  return {
-    request: {
-      subject: { kind: 'body', bytes, contentType: subject.contentType },
-      jobs: described,
-    },
-    transfer: [bytes.buffer],
-  };
-}
-
-function runInWorker(
+function runInChild(
   subject: BodySubject,
   jobs: readonly BodyJob[],
   workerFile: string,
+  timeLimitMs: number,
 ): Promise<Map<string, Outcome>> {
   const ordered = jobs.toSorted(
     (left, right) => Number(hasJsonPath(left.expression)) - Number(hasJsonPath(right.expression)),
   );
+  const request: WorkerRequest = {
+    subject,
+    jobs: ordered.map(({ name, text, known }) => ({ name, text, known })),
+  };
   return new Promise((resolve) => {
     const answers = new Map<string, Outcome>();
-    let settled = false;
-    let worker: Worker | undefined;
+    let child: ChildProcess | undefined;
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const finish = (): void => {
-      if (settled) {
-        return;
-      }
-      settled = true;
+    const closed = (): void => {
       clearTimeout(timer);
-      void worker?.terminate();
+      child?.removeAllListeners();
       resolve(answers);
     };
+    const stop = (): void => {
+      clearTimeout(timer);
+      child?.kill('SIGKILL');
+    };
     try {
-      const started = new Worker(workerFile, {
-        resourceLimits: { maxOldGenerationSizeMb: workerMemoryLimitMb },
+      const started = fork(workerFile, [], {
+        execArgv: [childHeapLimit],
+        serialization: 'advanced',
+        stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
       });
-      worker = started;
+      child = started;
       started.on('message', (reply: WorkerReply) => {
-        if (settled) {
-          return;
-        }
         answers.set(reply.name, reply.outcome);
         if (answers.size === ordered.length) {
-          finish();
+          stop();
         }
       });
-      started.on('error', finish);
-      started.on('exit', finish);
-      timer = setTimeout(finish, workerTimeLimitMs);
-      const { request, transfer } = workerMessage(subject, ordered);
-      started.postMessage(request, transfer);
+      started.on('error', () => {
+        if (started.pid === undefined) {
+          closed();
+        } else {
+          stop();
+        }
+      });
+      started.on('close', closed);
+      timer = setTimeout(stop, timeLimitMs);
+      started.send(request, (error: Error | null) => {
+        if (error !== null) {
+          stop();
+        }
+      });
     } catch {
-      finish();
+      if (child === undefined) {
+        closed();
+      } else {
+        stop();
+      }
     }
   });
 }
@@ -253,8 +264,10 @@ export async function evaluateJobs<Job extends BodyJob>(
   subject: BodySubject,
   jobs: readonly Job[],
   workerFile: string,
+  options: EvaluationOptions = {},
 ): Promise<(readonly [Job, Outcome])[]> {
-  const large = subject.kind === 'body' && subject.bytes.length > inlineBodyLimit;
+  const large =
+    subject.kind === 'file' || (subject.kind === 'body' && subject.bytes.length > inlineBodyLimit);
   const inline: Job[] = [];
   const offThread: Job[] = [];
   for (const job of jobs) {
@@ -262,7 +275,9 @@ export async function evaluateJobs<Job extends BodyJob>(
     (away ? offThread : inline).push(job);
   }
   const answering =
-    offThread.length === 0 ? undefined : runInWorker(subject, offThread, workerFile);
+    offThread.length === 0
+      ? undefined
+      : runInChild(subject, offThread, workerFile, options.timeLimitMs ?? childTimeLimitMs);
   const outcomes = new Map<string, Outcome>();
   runJobs(subject, inline, (name, outcome) => {
     outcomes.set(name, outcome);
@@ -279,11 +294,13 @@ export async function evaluateBodyExpressions(
   contentType: string | undefined,
   definitions: readonly CaptureDefinition[],
   workerFile: string,
+  options: EvaluationOptions = {},
 ): Promise<ReadonlyMap<string, Outcome>> {
   const outcomes = await evaluateJobs(
     { kind: 'body', bytes, contentType },
     definitions.map(({ name, expression, text }) => ({ name, expression, text, known: noneKnown })),
     workerFile,
+    options,
   );
   return new Map(outcomes.map(([job, outcome]) => [job.name, outcome]));
 }

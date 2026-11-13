@@ -6,6 +6,16 @@ import { afterAll, beforeAll } from 'vitest';
 
 export const missingWorker = path.join(tmpdir(), 'streamscope-missing', 'capture-worker.js');
 
+export async function expectNoChild(): Promise<void> {
+  const deadline = performance.now() + 2000;
+  while (process.getActiveResourcesInfo().includes('ProcessWrap')) {
+    if (performance.now() > deadline) {
+      throw new Error('a child process is still running');
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
 export interface WorkerFiles {
   worker: string;
   script(name: string, source: string): string;

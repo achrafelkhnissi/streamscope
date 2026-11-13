@@ -14,6 +14,7 @@ export interface Subject {
 
 export const maxCollectedEvents = 10_000;
 export const maxCollectedBytes = 16_777_216;
+export const maxQueriedBytes = 1_048_576;
 
 export const notAnEventStreamReason = 'the response is not an event stream';
 export const eventStreamBodyReason =
@@ -84,7 +85,7 @@ export function tooManyStreamEventsReason(source: string): string {
 }
 
 export function tooManyStreamBytesReason(source: string): string {
-  return `${source} reads at most 16 MiB of events, and the stream has more`;
+  return `${source} reads at most 1 MiB of events, and the stream has more`;
 }
 
 export function unavailableSourceReason(source: string): string {
