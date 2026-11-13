@@ -10,6 +10,7 @@ import {
   type CSTNode,
 } from '@swaggerexpert/jsonpath';
 import type { Value } from './ast';
+import { BoundedCache } from './bounded-cache';
 import { iRegexpProblem } from './iregexp';
 import { compilePattern, type CompiledPattern, type CompileResult } from './regex';
 
@@ -29,6 +30,7 @@ interface CompiledPatterns {
 
 const maxPatternLength = 500;
 const maxCachedPatterns = 256;
+const maxCachedChecks = 256;
 const maxDepth = 1000;
 const maxQueryLength = 384;
 const maxParentheses = 3;
@@ -41,6 +43,7 @@ const bracketsMessage = `the query nests too deeply (more than ${String(maxBrack
 const patternFlags = 'u';
 
 const compiledPatterns = new Map<string, CompiledPatterns>();
+const checkedQueries = new BoundedCache<JsonPathProblem | null>(maxCachedChecks);
 
 function toLinearSyntax(pattern: string): string {
   let result = '';
@@ -295,7 +298,18 @@ function structureProblem(query: string, withPatterns: boolean): JsonPathProblem
 }
 
 export function checkJsonPath(query: string): JsonPathProblem | undefined {
-  return limitProblem(query) ?? structureProblem(query, true);
+  if (query.length > maxQueryLength) {
+    return limitProblem(query);
+  }
+  const cached = checkedQueries.get(query);
+  if (cached !== undefined) {
+    return cached ?? undefined;
+  }
+  const problem = limitProblem(query) ?? structureProblem(query, true);
+  if (problem?.message !== complexMessage) {
+    checkedQueries.set(query, problem ?? null);
+  }
+  return problem;
 }
 
 function isContainer(value: Value): value is Container {

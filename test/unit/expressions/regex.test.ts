@@ -690,6 +690,53 @@ describe('the case-folding cache', () => {
   });
 });
 
+describe('the compiled pattern cache', () => {
+  it('returns the same result for the same pattern and flags', () => {
+    const result = compilePattern('cached+(x)', 'iu');
+
+    expect(compilePattern('cached+(x)', 'iu')).toBe(result);
+    expect(result.ok).toBe(true);
+  });
+
+  it('keeps a rejection too', () => {
+    const result = compilePattern('(cached', 'u');
+
+    expect(compilePattern('(cached', 'u')).toBe(result);
+    expect(result.ok).toBe(false);
+  });
+
+  it('keeps the flags and the pattern apart', () => {
+    const plain = compile('cased', '');
+    const folded = compile('cased', 'i');
+
+    expect(folded).not.toBe(plain);
+    expect(plain.test('CASED')).toBe(false);
+    expect(folded.test('CASED')).toBe(true);
+    expect(compilePattern('i/cased', '')).not.toBe(compilePattern('cased', 'i'));
+  });
+
+  it('does not keep a pattern over 500 characters or an unsupported flag', () => {
+    const long = 'a'.repeat(501);
+
+    expect(compilePattern(long, '')).toEqual(compilePattern(long, ''));
+    expect(compilePattern(long, '')).not.toBe(compilePattern(long, ''));
+    expect(compilePattern('a', 'g')).not.toBe(compilePattern('a', 'g'));
+  });
+
+  it('keeps at most 256 compiled patterns and evicts the oldest', () => {
+    const pattern = (index: number): string => `bound${String(index)}x`;
+    const results = Array.from({ length: 256 }, (_, index) => compilePattern(pattern(index), ''));
+
+    expect(compilePattern(pattern(0), '')).toBe(results[0]);
+
+    compilePattern(pattern(256), '');
+
+    expect(compilePattern(pattern(0), '')).not.toBe(results[0]);
+    expect(compilePattern(pattern(2), '')).toBe(results[2]);
+    expect(compilePattern(pattern(1), '')).not.toBe(results[1]);
+  });
+});
+
 describe('rejected syntax', () => {
   const backreference = 'Backreferences such as `\\1` are not supported in regular expressions.';
   const lookahead = 'Lookahead such as `(?=…)` is not supported in regular expressions.';

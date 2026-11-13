@@ -1,3 +1,4 @@
+import { CaptureReader } from './captures';
 import { directiveDiagnostics, requestNamePattern } from './directives';
 import {
   directiveKinds,
@@ -350,7 +351,12 @@ function parseBlock(
     }
     break;
   }
-  diagnostics.push(...directives.flatMap(directiveDiagnostics));
+  const reader = new CaptureReader();
+  for (const directive of directives) {
+    diagnostics.push(
+      ...(directive.kind === 'capture' ? reader.read(directive) : directiveDiagnostics(directive)),
+    );
+  }
   const firstDirective = directives[0];
   if (requestLineIndex === undefined) {
     if (firstDirective) {
@@ -380,6 +386,7 @@ function parseBlock(
           : separatorTitle(lines[block.separatorLine] ?? ''),
       name: name !== undefined && requestNamePattern.test(name) ? name : undefined,
       directives,
+      captures: reader.captures,
       requestLine: parseRequestLine(lines, sections.urlLines),
       headers: sections.headerLines.map((line) => parseHeader(lines, line)),
       body,

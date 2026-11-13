@@ -1,3 +1,5 @@
+import type { Expr } from '../expressions/ast';
+
 export interface Position {
   line: number;
   character: number;
@@ -29,6 +31,16 @@ export interface Directive {
   argument: string;
   range: Range;
   argumentRange: Range;
+}
+
+export interface CaptureDirective {
+  secret: boolean;
+  name: string;
+  nameRange: Range;
+  expressionText: string;
+  expressionRange: Range;
+  expression: Expr | undefined;
+  range: Range;
 }
 
 export interface FileVariable {
@@ -77,6 +89,7 @@ export interface HttpRequest {
   title: string | undefined;
   name: string | undefined;
   directives: Directive[];
+  captures: readonly CaptureDirective[];
   requestLine: RequestLine;
   headers: Header[];
   body: BodyPart[];
@@ -89,6 +102,9 @@ export type DiagnosticCode =
   | 'invalid-name'
   | 'duplicate-name'
   | 'invalid-capture'
+  | 'invalid-expression'
+  | 'duplicate-capture'
+  | 'too-many-captures'
   | 'empty-expect'
   | 'invalid-stream'
   | 'invalid-timeout'

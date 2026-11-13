@@ -109,6 +109,45 @@ describe('parseHttpFile diagnostics', () => {
     expect(diagnostic).toMatchObject({ severity: 'error', range: at(0, 11, 20) });
   });
 
+  it('keeps the invalid-capture message for a line that is not name = expression', () => {
+    const diagnostic = only('invalid-capture', '# @capture id', 'GET https://api.example.test/a');
+
+    expect(diagnostic).toMatchObject({
+      message: 'Expected "# @capture [secret] name = expression".',
+      severity: 'error',
+      range: at(0, 11, 13),
+    });
+  });
+
+  it('reports an invalid expression in a capture, an expect and an until', () => {
+    const found = diagnosticsOf(
+      '# @capture id = first(type == "x"',
+      '# @expect status ==',
+      '# @until type ==',
+      'GET https://api.example.test/a',
+    );
+
+    expect(found.map(({ code, range }) => ({ code, range }))).toEqual([
+      { code: 'invalid-expression', range: at(0, 33, 33) },
+      { code: 'invalid-expression', range: at(1, 19, 19) },
+      { code: 'invalid-expression', range: at(2, 16, 16) },
+    ]);
+  });
+
+  it('reports an invalid expression in a block without a request', () => {
+    const found = diagnosticsOf(
+      '# @capture id = body.',
+      '',
+      '###',
+      'GET https://api.example.test/a',
+    );
+
+    expect(found.map((diagnostic) => diagnostic.code)).toEqual([
+      'invalid-expression',
+      'directives-without-request',
+    ]);
+  });
+
   it('reports an empty expect', () => {
     const diagnostic = only('empty-expect', '# @expect', 'GET https://api.example.test/a');
 

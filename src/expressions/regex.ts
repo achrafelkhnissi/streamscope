@@ -1,4 +1,7 @@
+import { BoundedCache } from './bounded-cache';
+
 const maxPatternLength = 500;
+const maxCachedPatterns = 256;
 const maxInstructions = 2000;
 const maxCount = maxInstructions;
 const maxWork = 1_000_000;
@@ -15,6 +18,7 @@ const groupName = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
 const modifierCharacter = /[A-Za-z-]/;
 const letter = /^[A-Za-z]$/;
 const syntaxCharacters = '^$\\.*+?()[]{}|/';
+const compiledPatterns = new BoundedCache<CompileResult>(maxCachedPatterns);
 
 const opChar = 0;
 const opAny = 1;
@@ -167,6 +171,16 @@ export function compilePattern(pattern: string, flags: string): CompileResult {
       length: pattern.length - maxPatternLength,
     };
   }
+  const key = `${flags}/${pattern}`;
+  let result = compiledPatterns.get(key);
+  if (result === undefined) {
+    result = build(pattern, flags);
+    compiledPatterns.set(key, result);
+  }
+  return result;
+}
+
+function build(pattern: string, flags: string): CompileResult {
   const mode: Mode = {
     ignoreCase: flags.includes('i'),
     multiline: flags.includes('m'),

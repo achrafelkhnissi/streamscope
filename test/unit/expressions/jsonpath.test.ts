@@ -1,4 +1,4 @@
-import { JSONPathEvaluateError, evaluate } from '@swaggerexpert/jsonpath';
+import { JSONPathEvaluateError, evaluate, parse } from '@swaggerexpert/jsonpath';
 import { describe, expect, it, vi } from 'vitest';
 import type { Value } from '../../../src/expressions/ast';
 import { checkJsonPath, queryJsonPath } from '../../../src/expressions/jsonpath';
@@ -6,7 +6,7 @@ import { compilePattern } from '../../../src/expressions/regex';
 
 vi.mock('@swaggerexpert/jsonpath', async (importOriginal) => {
   const original = await importOriginal<typeof import('@swaggerexpert/jsonpath')>();
-  return { ...original, evaluate: vi.fn(original.evaluate) };
+  return { ...original, evaluate: vi.fn(original.evaluate), parse: vi.fn(original.parse) };
 });
 
 vi.mock('../../../src/expressions/regex', async (importOriginal) => {
@@ -536,8 +536,8 @@ function withRoom<T>(room: number, action: () => T): { result?: T; thrown?: unkn
   return outcome;
 }
 
-function nestedFilters(levels: number): string {
-  return `$${'[?@'.repeat(levels)}[?match(@, "a")${']'.repeat(levels + 1)}`;
+function nestedFilters(levels: number, literal = 'a'): string {
+  return `$${'[?@'.repeat(levels)}[?match(@, "${literal}")${']'.repeat(levels + 1)}`;
 }
 
 describe('query limits', () => {
@@ -656,13 +656,13 @@ describe('query limits', () => {
   });
 
   it('reports a real stack overflow inside the library as too complex', () => {
-    const query = nestedFilters(30);
     for (let warm = 0; warm < 5; warm += 1) {
-      checkJsonPath(query);
+      checkJsonPath(nestedFilters(30, `warm${String(warm)}`));
     }
     let message: string | undefined = 'valid';
 
     for (let room = 4000; room >= 100 && message === 'valid'; room -= 10) {
+      const query = nestedFilters(30, `room${String(room)}`);
       const { result, thrown } = withRoom(room, () => checkJsonPath(query)?.message ?? 'valid');
       expect(thrown, `room ${String(room)}`).toBeUndefined();
       message = result;
@@ -696,6 +696,15 @@ describe('query limits', () => {
 });
 
 const worstQueryLength = 384;
+
+let flushed = 0;
+
+function emptyCheckCache(): void {
+  for (let index = 0; index < 256; index += 1) {
+    flushed += 1;
+    checkJsonPath(`$.flush${String(flushed)}`);
+  }
+}
 
 function filled(term: string, joiner: string, prefix: string, suffix: string): string {
   const terms: string[] = [];
@@ -817,5 +826,96 @@ describe('worst accepted queries', () => {
       expect(elapsed, `call ${String(call)}`).toBeLessThan(100);
       expect(problem?.message ?? '').not.toMatch(/nests too deeply|longer than/);
     }
+  });
+
+  it('checks every one again in under 100 ms after the cache has been emptied', () => {
+    for (let round = 0; round < 3; round += 1) {
+      emptyCheckCache();
+      for (const [name, query] of worst) {
+        const start = performance.now();
+        const problem = checkJsonPath(query);
+        const elapsed = performance.now() - start;
+
+        expect(elapsed, name).toBeLessThan(100);
+        expect(problem?.message ?? '').not.toMatch(/nests too deeply|longer than/);
+      }
+    }
+  });
+});
+
+describe('the checkJsonPath cache', () => {
+  const tooComplex = 'the query is too complex to check';
+
+  function parseCalls(): number {
+    return vi.mocked(parse).mock.calls.length;
+  }
+
+  function parsesFor(query: string): number {
+    const before = parseCalls();
+    checkJsonPath(query);
+    return parseCalls() - before;
+  }
+
+  it('checks a valid query once', () => {
+    const query = '$.cache.valid.once';
+
+    expect(parsesFor(query)).toBeGreaterThan(0);
+    expect(parsesFor(query)).toBe(0);
+    expect(checkJsonPath(query)).toBeUndefined();
+  });
+
+  it('remembers a problem and returns it again', () => {
+    const query = '$.cache.problem[';
+    const first = checkJsonPath(query);
+
+    expect(first).toEqual({ message: 'The JSONPath ends unexpectedly.', offset: 16 });
+    expect(parsesFor(query)).toBe(0);
+    expect(checkJsonPath(query)).toBe(first);
+  });
+
+  it('keeps a result for each query separately', () => {
+    expect(checkJsonPath('$.cache.separate.a[')).toBeDefined();
+    expect(checkJsonPath('$.cache.separate.a')).toBeUndefined();
+    expect(checkJsonPath('$.cache.separate.a[')).toBeDefined();
+  });
+
+  it('keeps at most 256 results and evicts the oldest', () => {
+    const query = (index: number): string => `$.bound${String(index)}`;
+
+    for (let index = 0; index < 256; index += 1) {
+      checkJsonPath(query(index));
+    }
+    expect(parsesFor(query(0))).toBe(0);
+    expect(parsesFor(query(255))).toBe(0);
+
+    checkJsonPath(query(256));
+
+    expect(parsesFor(query(0))).toBeGreaterThan(0);
+    expect(parsesFor(query(2))).toBe(0);
+    expect(parsesFor(query(1))).toBeGreaterThan(0);
+  });
+
+  it('does not keep a query over 384 characters', () => {
+    const query = `$${'.a'.repeat(193)}`;
+    const first = checkJsonPath(query);
+
+    expect(first).toEqual({ message: 'the query is longer than 384 characters', offset: 384 });
+    expect(checkJsonPath(query)).not.toBe(first);
+    expect(parsesFor(query)).toBe(0);
+  });
+
+  it('does not remember a result that depended on the remaining stack', () => {
+    let overflowed: string | undefined;
+
+    for (let room = 4000; room >= 100 && overflowed === undefined; room -= 10) {
+      const query = nestedFilters(30, `stack${String(room)}`);
+      const { result } = withRoom(room, () => checkJsonPath(query));
+      if (result?.message === tooComplex) {
+        overflowed = query;
+      }
+    }
+
+    expect(overflowed).toBeDefined();
+    expect(checkJsonPath(overflowed ?? '')).toBeUndefined();
   });
 });

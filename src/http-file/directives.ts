@@ -1,8 +1,8 @@
 import { parseDuration } from '../runs/duration';
+import { checkExpression } from './captures';
 import type { DiagnosticCode, Directive, ParseDiagnostic } from './model';
 
 export const requestNamePattern = /^\w+$/;
-const capturePattern = /^(secret\s+)?[A-Za-z_]\w*\s*=\s*\S/;
 const streamFormats: ReadonlySet<string> = new Set([
   'sse',
   'ndjson',
@@ -32,18 +32,15 @@ export function directiveDiagnostics(directive: Directive): ParseDiagnostic[] {
       'Request names may only contain letters, digits and underscores.',
     );
   }
-  if (kind === 'capture' && !capturePattern.test(argument)) {
-    return problem(
-      directive,
-      'invalid-capture',
-      'Expected "# @capture [secret] name = expression".',
-    );
+  if (kind === 'expect') {
+    return argument === ''
+      ? problem(directive, 'empty-expect', 'Expected an expression after "# @expect".')
+      : checkExpression(argument, directive.argumentRange.start, 'expect').diagnostics;
   }
-  if (kind === 'expect' && argument === '') {
-    return problem(directive, 'empty-expect', 'Expected an expression after "# @expect".');
-  }
-  if (kind === 'until' && argument === '') {
-    return problem(directive, 'empty-until', 'Expected an event condition after "# @until".');
+  if (kind === 'until') {
+    return argument === ''
+      ? problem(directive, 'empty-until', 'Expected an event condition after "# @until".')
+      : checkExpression(argument, directive.argumentRange.start, 'condition').diagnostics;
   }
   if (kind === 'stream' && !streamFormats.has(argument)) {
     return problem(
