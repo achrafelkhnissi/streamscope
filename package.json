@@ -272,6 +272,14 @@
           "scope": "resource",
           "markdownDescription": "A PEM file of extra certificate authorities to trust, added to the default and system ones. An absolute path, or a path relative to the workspace folder."
         },
+        "streamscope.capture.waitTimeout": {
+          "type": "string",
+          "default": "30s",
+          "scope": "window",
+          "pattern": "^\\d+(ms|s|m)$",
+          "patternErrorMessage": "Use a duration such as 500ms, 30s or 5m.",
+          "markdownDescription": "How long a request waits for a captured value that has not arrived yet. A duration such as `500ms`, `30s` or `5m`."
+        },
         "streamscope.stream.maxEventSize": {
           "type": "string",
           "scope": "resource",

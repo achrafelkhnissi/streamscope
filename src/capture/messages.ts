@@ -145,6 +145,10 @@ export function waitCancelledReason(label: string, name: string): string {
   return `Waiting for ${label} › ${name} was cancelled.`;
 }
 
+export function captureFailedMessage(label: string, name: string, reason: string): string {
+  return `${label} › ${name} failed: ${clause(reason)}.`;
+}
+
 export function ownCaptureReason(label: string, name: string): string {
   return `${label} cannot use its own capture ${name}.`;
 }

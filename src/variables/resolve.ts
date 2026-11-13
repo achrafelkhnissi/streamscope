@@ -51,8 +51,16 @@ export interface ResolvedRequest {
   body: ResolvedBodyPart[];
 }
 
+export type TextResolution =
+  | { ok: true; text: string }
+  | {
+      ok: false;
+      problems: Omit<ResolutionProblem, 'range'>[];
+      waits: readonly CaptureWait[];
+    };
+
 export interface VariableScope {
-  resolveText(text: string): { ok: true; text: string } | { ok: false; messages: string[] };
+  resolveText(text: string): TextResolution;
 }
 
 export type Resolution =
@@ -166,14 +174,21 @@ class Scope implements VariableScope {
     return this.evaluateWithin(expression, [], target);
   }
 
-  resolveText(text: string): { ok: true; text: string } | { ok: false; messages: string[] } {
+  resolveText(text: string): TextResolution {
     const substituted = substitute(text, (expression) => this.evaluate(expression));
-    return substituted.failures.length === 0
-      ? { ok: true, text: substituted.text }
-      : {
-          ok: false,
-          messages: [...new Set(substituted.failures.map((entry) => entry.message))],
-        };
+    if (substituted.failures.length === 0) {
+      return { ok: true, text: substituted.text };
+    }
+    const problems = new Map<string, Omit<ResolutionProblem, 'range'>>();
+    const waits = new Map<string, CaptureWait>();
+    for (const { message, producer, wait } of substituted.failures) {
+      if (wait !== undefined) {
+        waits.set(waitKey(wait), wait);
+      } else if (!problems.has(message)) {
+        problems.set(message, producer === undefined ? { message } : { message, producer });
+      }
+    }
+    return { ok: false, problems: [...problems.values()], waits: [...waits.values()] };
   }
 
   private evaluateWithin(

@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { CaptureRegistry } from './capture/registry';
 import { offerToHideOtherSendLenses } from './vscode/coexistence';
 import { EnvironmentStore } from './vscode/environments/environment-store';
 import { registerEnvironmentPicker } from './vscode/environments/picker';
@@ -28,7 +29,8 @@ export function activate(context: vscode.ExtensionContext): void {
   const variables = createLanguageVariables(context, environments, secrets);
   registerVariableFeatures(context, cache, variables, secrets);
   registerLanguageFeatures(context, cache, variables);
-  shutdown = registerRequestFeatures(context, log, cache, environments, secrets);
+  const captures = new CaptureRegistry();
+  shutdown = registerRequestFeatures(context, log, cache, environments, secrets, captures);
   void offerToHideOtherSendLenses(context);
   log.info('Extension activated');
 }

@@ -31,6 +31,7 @@ function status(overrides: Partial<PanelStatus> = {}): PanelStatus {
 describe('stateLabels', () => {
   it('names every run state', () => {
     expect(stateLabels).toEqual({
+      waiting: 'Waiting',
       sending: 'Sending',
       receiving: 'Receiving',
       completed: 'Completed',

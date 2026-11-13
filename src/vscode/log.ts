@@ -14,6 +14,10 @@ export function logRunStart(log: vscode.LogOutputChannel, method: string, url: s
   log.info(`→ ${method.toUpperCase()} ${maskUrl(url)}`);
 }
 
+export function logRunWaiting(log: vscode.LogOutputChannel, run: RunSnapshot): void {
+  log.info(`… ${maskValues(run.label, run.sensitiveValues)} waits for ${run.waitingFor ?? ''}`);
+}
+
 export function logRunEnd(log: vscode.LogOutputChannel, run: RunSnapshot): void {
   const masked = (text: string): string => maskValues(text, run.sensitiveValues);
   const line = `← ${describeOutcome(run)}`;

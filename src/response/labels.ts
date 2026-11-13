@@ -87,7 +87,7 @@ export function noBodyMessage(run: RunSnapshot): string {
   if (!run.bodyKept) {
     return 'This response is a stream: see its events in the response panel, or save it.';
   }
-  if (run.status === 'sending' || run.status === 'receiving') {
+  if (run.status === 'waiting' || run.status === 'sending' || run.status === 'receiving') {
     return 'The response body is still arriving.';
   }
   return run.bodyLength > 0
@@ -118,6 +118,8 @@ function outcomeText(run: RunSnapshot): string {
       return `Cancelled after ${formatDuration(run.elapsedMs)}`;
     case 'blocked':
       return `Not sent: ${run.problems[0]?.message ?? ''}`;
+    case 'waiting':
+      return `Waiting for ${run.waitingFor ?? ''} · ${String(Math.floor(run.elapsedMs / 1000))} s`;
     default:
       return events === undefined
         ? `Running · ${formatDuration(run.elapsedMs)}`

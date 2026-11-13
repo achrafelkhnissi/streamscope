@@ -1,0 +1,83 @@
+import type { HttpFile, HttpRequest } from '../http-file/model';
+import { maskUrl } from '../masking/masking';
+import type { CaptureLookup, CaptureLookupResult } from '../variables/sources';
+import { captureFailedMessage } from './messages';
+import type { CaptureEntry, CaptureRegistry } from './registry';
+
+const producers = new WeakMap<HttpFile, ReadonlyMap<string, HttpRequest>>();
+
+export function namedRequestKey(documentUri: string, requestName: string): string {
+  return `${documentUri}\n@${requestName}`;
+}
+
+export function responseKey(requestName: string, reference: string): string {
+  return `${requestName}\n${reference}`;
+}
+
+function producerLabel(request: HttpRequest): string {
+  return (
+    request.name ??
+    request.title ??
+    `${request.requestLine.method.toUpperCase()} ${maskUrl(request.requestLine.url)}`
+  );
+}
+
+export function lookupResult(entry: CaptureEntry): CaptureLookupResult {
+  const { result, label, name } = entry;
+  switch (result.state) {
+    case 'pending':
+      return { kind: 'pending', request: entry.request, label, name };
+    case 'resolved':
+      return {
+        kind: 'value',
+        text: result.text,
+        secret: entry.secret,
+        label,
+        provenance: result.provenance,
+      };
+    case 'failed':
+      return { kind: 'failed', message: captureFailedMessage(label, name, result.reason) };
+  }
+}
+
+function firstProducers(file: HttpFile): ReadonlyMap<string, HttpRequest> {
+  const known = producers.get(file);
+  if (known !== undefined) {
+    return known;
+  }
+  const first = new Map<string, HttpRequest>();
+  for (const request of file.requests) {
+    for (const capture of request.captures) {
+      if (!first.has(capture.name)) {
+        first.set(capture.name, request);
+      }
+    }
+  }
+  producers.set(file, first);
+  return first;
+}
+
+export function captureLookup(
+  registry: CaptureRegistry,
+  documentUri: string,
+  file: HttpFile,
+  responses: ReadonlyMap<string, CaptureLookupResult>,
+): CaptureLookup {
+  return {
+    request: (requestName, captureName) => {
+      const entry = registry.get(namedRequestKey(documentUri, requestName), captureName);
+      return entry === undefined ? undefined : lookupResult(entry);
+    },
+    bare: (captureName) => {
+      const entry = registry.latest(captureName);
+      if (entry !== undefined) {
+        return lookupResult(entry);
+      }
+      const producer = firstProducers(file).get(captureName);
+      return producer === undefined
+        ? undefined
+        : { kind: 'not-run', label: producerLabel(producer), producerName: producer.name };
+    },
+    response: (requestName, reference) => responses.get(responseKey(requestName, reference)),
+  };
+}

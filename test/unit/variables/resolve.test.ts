@@ -213,9 +213,13 @@ describe('resolveRequest', () => {
     });
     expect(scope.resolveText('{{missing}}')).toEqual({
       ok: false,
-      messages: [
-        '`{{missing}}` is not defined in this file or `$shared` (no environment selected).',
+      problems: [
+        {
+          message:
+            '`{{missing}}` is not defined in this file or `$shared` (no environment selected).',
+        },
       ],
+      waits: [],
     });
   });
 

@@ -22,7 +22,7 @@ export const panelLimits = {
 export type PanelEventKind = 'json' | 'text' | 'malformed' | 'oversize' | 'comment';
 
 export type PanelRunState =
-  'sending' | 'receiving' | 'completed' | 'failed' | 'cancelled' | 'blocked';
+  'waiting' | 'sending' | 'receiving' | 'completed' | 'failed' | 'cancelled' | 'blocked';
 
 export interface PanelRow {
   index: number;

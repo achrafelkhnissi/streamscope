@@ -1,11 +1,18 @@
 import { StreamSession } from '../events/session';
 import type { SpillArea, SpillFile } from '../events/spill';
-import type { Directive, DirectiveKind, HttpFile, HttpRequest } from '../http-file/model';
+import type {
+  DiagnosticCode,
+  Directive,
+  DirectiveKind,
+  HttpFile,
+  HttpRequest,
+} from '../http-file/model';
 import { formatBytes } from '../response/labels';
 import type { FormatDecision, StreamDirective } from '../streaming/detect';
 import type { StreamLimits } from '../streaming/limits';
 import type {
   FailureKind,
+  OutgoingRequest,
   Outcome,
   RedirectHop,
   ResponseHead,
@@ -15,18 +22,19 @@ import type {
   Transport,
   TransportOptions,
 } from '../transport/model';
-import { resolveRequest, type ResolutionProblem } from '../variables/resolve';
+import { resolveRequest, type CaptureWait, type ResolutionProblem } from '../variables/resolve';
 import type { VariableSources } from '../variables/sources';
 import type { SystemContext } from '../variables/system';
 import type { BodyFileContext } from './body-files';
 import { buildOutgoingRequest, type BuildResult } from './build-request';
 import { parseDuration } from './duration';
 import { bodySourceOf, readBodyFromSpill, type DataSource } from './body-spill';
-import type { RunEnd, RunObserver } from './observer';
+import type { CaptureWaitOutcome, RunCaptures, RunEnd, RunObserver } from './observer';
 import { readRawTail } from './raw-read';
 import { RawTail } from './raw-tail';
 
-export type RunStatus = 'sending' | 'receiving' | 'completed' | 'failed' | 'cancelled' | 'blocked';
+export type RunStatus =
+  'waiting' | 'sending' | 'receiving' | 'completed' | 'failed' | 'cancelled' | 'blocked';
 
 export type RawData = 'saved' | 'stopped' | 'removed' | 'unsaved';
 
@@ -40,6 +48,7 @@ export interface RunSnapshot {
   key: string;
   label: string;
   status: RunStatus;
+  waitingFor: string | undefined;
   startedAt: number;
   wallStartedAt: number;
   elapsedMs: number;
@@ -87,6 +96,8 @@ export interface RunInput {
   spill: SpillArea | undefined;
   limits: StreamLimits;
   observer?: RunObserver;
+  captures?: RunCaptures;
+  waitTimeoutMs: number;
 }
 
 export interface RunDependencies {
@@ -98,11 +109,13 @@ export interface RunDependencies {
 export interface RunHandle {
   readonly id: number;
   readonly done: Promise<RunSnapshot>;
+  readonly headArrived: Promise<void>;
   snapshot(): RunSnapshot;
   cancel(): void;
   onUpdate(listener: () => void): () => void;
   compact(): void;
   readBody(maxBytes: number): Promise<Uint8Array | undefined>;
+  bodyFile(): Promise<{ path: string; length: number } | undefined>;
   readRaw(): Promise<string | undefined>;
   readReply(): Promise<string | undefined>;
   indexBytes(): number;
@@ -120,7 +133,18 @@ type RunState = Omit<
   | 'bodySource'
 >;
 
+type Prepared =
+  | { kind: 'ready'; request: OutgoingRequest }
+  | { kind: 'waiting'; waits: readonly CaptureWait[] }
+  | { kind: 'ended'; snapshot: RunSnapshot };
+
 const timeoutMessage = 'Expected a duration such as 500ms, 30s or 5m.';
+const maxWaitRounds = 4;
+const blockingCodes: ReadonlySet<DiagnosticCode> = new Set([
+  'invalid-expression',
+  'duplicate-capture',
+  'too-many-captures',
+]);
 const rawTailChars = 2_097_152;
 const streamDirectives: ReadonlySet<string> = new Set<StreamDirective>([
   'sse',
@@ -140,6 +164,28 @@ function lastDirective(request: HttpRequest, kind: DirectiveKind): Directive | u
 
 function hasDirective(request: HttpRequest, kind: DirectiveKind): boolean {
   return lastDirective(request, kind) !== undefined;
+}
+
+function waitLabel(wait: CaptureWait): string {
+  return wait.kind === 'capture'
+    ? `${wait.label} › ${wait.name}`
+    : `${wait.requestName} › ${wait.reference}`;
+}
+
+function changingMessage(label: string): string {
+  return `The captured values kept changing while ${label} waited.`;
+}
+
+function expressionProblems(file: HttpFile, request: HttpRequest): ResolutionProblem[] {
+  const { start, end } = request.range;
+  return file.diagnostics
+    .filter(
+      (diagnostic) =>
+        blockingCodes.has(diagnostic.code) &&
+        diagnostic.range.start.line >= start.line &&
+        diagnostic.range.start.line <= end.line,
+    )
+    .map(({ message, range }) => ({ message, range }));
 }
 
 function isStreamDirective(argument: string): argument is StreamDirective {
@@ -205,7 +251,7 @@ export function startRun(
   dependencies: RunDependencies,
   onChange?: (snapshot: RunSnapshot) => void,
 ): RunHandle {
-  const { request, settings, observer } = input;
+  const { request, settings, captures } = input;
   const id = nextRunId++;
   const controller = new AbortController();
   const chunks: Uint8Array[] = [];
@@ -224,11 +270,17 @@ export function startRun(
   let endedAt: number | undefined;
   let session: StreamSession | undefined;
   let spillFile: SpillFile | undefined;
+  let observer = input.observer;
+  let markHead = (): void => undefined;
+  const headArrived = new Promise<void>((resolve) => {
+    markHead = resolve;
+  });
   const state: RunState = {
     id,
     key: input.key,
     label: input.label,
     status: 'sending',
+    waitingFor: undefined,
     startedAt: dependencies.clock(),
     wallStartedAt: dependencies.system.now().getTime(),
     sent: undefined,
@@ -355,13 +407,22 @@ export function startRun(
     }
     return { kind: 'cancelled' };
   };
+  const observe = (): RunObserver | undefined => {
+    observer ??= captures?.observer({
+      id,
+      label: input.label,
+      wallStartedAt: state.wallStartedAt,
+    });
+    return observer;
+  };
   const finish = (changes: Partial<RunState>): RunSnapshot => {
-    Object.assign(state, changes, { body: Buffer.concat(chunks) });
+    Object.assign(state, changes, { body: Buffer.concat(chunks), waitingFor: undefined });
     state.bodyLength = state.body.length;
     chunks.length = 0;
     endedAt = dependencies.clock();
+    markHead();
     notify();
-    observer?.end(endOf());
+    observe()?.end(endOf());
     return snapshot();
   };
 
@@ -370,6 +431,7 @@ export function startRun(
       state.sent = sent;
     },
     onHead: (head, sent) => {
+      const watcher = observer;
       session = new StreamSession({
         contentType: contentTypeOf(head),
         directive: streamDirective(request),
@@ -378,16 +440,17 @@ export function startRun(
         onUpdate: update,
         onText: () => undefined,
         onEvent:
-          observer === undefined
+          watcher === undefined
             ? undefined
             : (event) => {
-                observer.event(event);
+                watcher.event(event);
               },
-        backpressure: observer?.backpressure,
+        backpressure: watcher?.backpressure,
         limits: input.limits,
       });
       Object.assign(state, { head, sent, status: 'receiving', stream: session });
-      observer?.head(head, { spillPath, signal: controller.signal });
+      watcher?.head(head, { spillPath, signal: controller.signal });
+      markHead();
       notify();
     },
     onData: (chunk) => {
@@ -427,22 +490,22 @@ export function startRun(
     ];
   };
 
-  const run = async (): Promise<RunSnapshot> => {
-    notify();
-    if (wasCancelled()) {
-      return finish({ status: 'cancelled' });
-    }
+  const prepare = async (blocking: readonly ResolutionProblem[]): Promise<Prepared> => {
     const resolution = resolveRequest(input.file, request, {
       ...input.variables,
+      captures: captures?.lookup ?? input.variables.captures,
       system: dependencies.system,
       restricted: input.restricted,
     });
     if (resolution.ok) {
       state.sensitiveValues = resolution.sensitiveValues;
     }
-    const problems = [...timeoutProblems(), ...(resolution.ok ? [] : resolution.problems)];
-    if (!resolution.ok || problems.length > 0) {
-      return finish({ status: 'blocked', problems });
+    const problems = [...blocking, ...(resolution.ok ? [] : resolution.problems)];
+    if (problems.length > 0) {
+      return { kind: 'ended', snapshot: finish({ status: 'blocked', problems }) };
+    }
+    if (!resolution.ok) {
+      return { kind: 'waiting', waits: resolution.waits };
     }
     let built: BuildResult;
     try {
@@ -452,13 +515,65 @@ export function startRun(
       });
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
-      return finish({
-        status: 'failed',
-        failure: { kind: 'body-file', message: `A body file could not be read: ${reason}.` },
-      });
+      return {
+        kind: 'ended',
+        snapshot: finish({
+          status: 'failed',
+          failure: { kind: 'body-file', message: `A body file could not be read: ${reason}.` },
+        }),
+      };
     }
-    if (!built.ok) {
-      return finish({ status: 'blocked', problems: built.problems });
+    if (built.ok) {
+      return { kind: 'ready', request: built.request };
+    }
+    return built.waits === undefined
+      ? { kind: 'ended', snapshot: finish({ status: 'blocked', problems: built.problems }) }
+      : { kind: 'waiting', waits: built.waits };
+  };
+
+  const waitFor = (waits: readonly CaptureWait[]): Promise<CaptureWaitOutcome> => {
+    if (captures === undefined) {
+      throw new Error('A run without captures cannot wait for one.');
+    }
+    const [first] = waits;
+    Object.assign(state, {
+      status: 'waiting',
+      waitingFor: first === undefined ? undefined : waitLabel(first),
+    });
+    notify();
+    return captures.wait(waits, id, { timeoutMs: input.waitTimeoutMs, signal: controller.signal });
+  };
+
+  const run = async (): Promise<RunSnapshot> => {
+    notify();
+    if (wasCancelled()) {
+      return finish({ status: 'cancelled' });
+    }
+    captures?.begin({ id, key: input.key, label: input.label, startedAt: state.startedAt });
+    const blocking = [...timeoutProblems(), ...expressionProblems(input.file, request)];
+    let prepared = await prepare(blocking);
+    for (let round = 1; prepared.kind === 'waiting'; round += 1) {
+      if (round > maxWaitRounds) {
+        return finish({
+          status: 'blocked',
+          problems: [{ message: changingMessage(input.label), range: request.requestLine.range }],
+        });
+      }
+      const waited = await waitFor(prepared.waits);
+      if (wasCancelled()) {
+        return finish({ status: 'cancelled' });
+      }
+      if (!waited.ok) {
+        return finish({ status: 'blocked', problems: [waited.problem] });
+      }
+      prepared = await prepare(blocking);
+    }
+    if (prepared.kind === 'ended') {
+      return prepared.snapshot;
+    }
+    if (state.status === 'waiting') {
+      Object.assign(state, { status: 'sending', waitingFor: undefined });
+      notify();
     }
     if (input.confirmSend && !(await input.confirmSend())) {
       return finish({ status: 'cancelled' });
@@ -478,9 +593,15 @@ export function startRun(
       maxRedirects: settings.maxRedirects,
     };
     spillFile = await createSpillFile(input.spill);
+    observe();
     let outcome: Outcome;
     try {
-      outcome = await dependencies.transport.send(built.request, options, sink, controller.signal);
+      outcome = await dependencies.transport.send(
+        prepared.request,
+        options,
+        sink,
+        controller.signal,
+      );
     } catch (error) {
       await closeStream(false);
       const reason = error instanceof Error ? error.message : String(error);
@@ -517,6 +638,7 @@ export function startRun(
   return {
     id,
     done: Promise.resolve().then(run),
+    headArrived,
     snapshot,
     cancel,
     onUpdate: (listener) => {
@@ -551,6 +673,10 @@ export function startRun(
       }
     },
     readBody,
+    bodyFile: async () => {
+      const path = await spillPath(state.bodyLength);
+      return path === undefined ? undefined : { path, length: state.bodyLength };
+    },
     readRaw: () => (rawDropped ? readRawTail(spillFile, released) : Promise.resolve(raw.text)),
     readReply,
     indexBytes: () => session?.store.indexBytes ?? 0,

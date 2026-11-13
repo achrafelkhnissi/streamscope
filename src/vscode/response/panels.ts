@@ -96,7 +96,7 @@ function bodyText(body: PanelBody): string | undefined {
 
 function isRunning(run: RunHandle): boolean {
   const { status } = run.snapshot();
-  return status === 'sending' || status === 'receiving';
+  return status === 'waiting' || status === 'sending' || status === 'receiving';
 }
 
 export class ResponsePanels implements vscode.Disposable {

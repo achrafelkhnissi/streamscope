@@ -176,6 +176,20 @@ describe('labels', () => {
     ).toBe('Running · 2.1 s');
   });
 
+  it('a waiting run reads Waiting for startRun › threadId · 3 s', () => {
+    expect(
+      describeOutcome(
+        snapshot({
+          status: 'waiting',
+          head: undefined,
+          sent: undefined,
+          waitingFor: 'startRun › threadId',
+          elapsedMs: 3400,
+        }),
+      ),
+    ).toBe('Waiting for startRun › threadId · 3 s');
+  });
+
   it('masks sensitive values in the outcome text', () => {
     expect(
       describeOutcome(

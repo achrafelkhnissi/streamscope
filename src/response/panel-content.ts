@@ -77,7 +77,7 @@ export function panelStatus(run: RunSnapshot): PanelStatus {
   return {
     state: run.status,
     text: maskValues(parts.join(' · '), run.sensitiveValues),
-    running: run.status === 'sending' || run.status === 'receiving',
+    running: run.status === 'waiting' || run.status === 'sending' || run.status === 'receiving',
     events,
     warnings: stream?.warnings.length ?? 0,
     format: stream?.format === undefined ? undefined : formatLabel(stream.format),

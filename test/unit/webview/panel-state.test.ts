@@ -64,6 +64,10 @@ describe('canSave', () => {
     }
   });
 
+  it('does not allow saving while the run waits for a captured value', () => {
+    expect(canSave(status({ state: 'waiting' }))).toBe(false);
+  });
+
   it('allows saving a run shown read-only from history', () => {
     expect(canSave(status({ state: 'completed', running: false }))).toBe(true);
   });

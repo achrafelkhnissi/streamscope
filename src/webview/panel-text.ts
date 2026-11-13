@@ -1,6 +1,7 @@
 import type { PanelBody, PanelRunState, PanelStatus } from '../response/panel-protocol';
 
 export const stateLabels: Record<PanelRunState, string> = {
+  waiting: 'Waiting',
   sending: 'Sending',
   receiving: 'Receiving',
   completed: 'Completed',

@@ -2,6 +2,8 @@ import type { StreamEvent } from '../events/model';
 import type { EventBackpressure } from '../events/session';
 import type { StreamFormat } from '../streaming/detect';
 import type { ResponseHead } from '../transport/model';
+import type { CaptureWait, ResolutionProblem } from '../variables/resolve';
+import type { CaptureLookup } from '../variables/sources';
 
 export type RunEnd =
   | {
@@ -29,4 +31,17 @@ export interface RunObserver {
   event(event: StreamEvent): void;
   end(end: RunEnd): void;
   backpressure: EventBackpressure;
+}
+
+export type CaptureWaitOutcome = { ok: true } | { ok: false; problem: ResolutionProblem };
+
+export interface RunCaptures {
+  lookup: CaptureLookup;
+  observer(run: { id: number; label: string; wallStartedAt: number }): RunObserver | undefined;
+  begin(run: { id: number; key: string; label: string; startedAt: number }): void;
+  wait(
+    waits: readonly CaptureWait[],
+    runId: number,
+    options: { timeoutMs: number; signal: AbortSignal },
+  ): Promise<CaptureWaitOutcome>;
 }

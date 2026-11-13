@@ -85,28 +85,38 @@ function stream(request: http.IncomingMessage, response: http.ServerResponse): v
   const contentType =
     url.searchParams.get('type') ??
     (format === 'sse' ? 'text/event-stream' : 'application/x-ndjson');
+  const delayMs = numberParameter(url.searchParams.get('delayMs'), 0);
   response.writeHead(200, { 'Content-Type': contentType, 'Cache-Control': 'no-store' });
-  response.write(runStarted(format, size, now()));
-  const startedAt = performance.now();
-  let sent = 0;
-  const tick = (): void => {
-    const elapsed = (performance.now() - startedAt) / 1000;
-    const due = Math.min(total, Math.floor(rate * elapsed));
-    const sentAt = now();
-    let batch = '';
-    while (sent < due) {
-      sent += 1;
-      batch += contentEvent(format, sent, size, sentAt);
-    }
-    if (batch !== '') {
-      response.write(batch);
-    }
-    if (elapsed >= seconds) {
-      clearInterval(timer);
-      response.end(runFinished(format, size, now()));
-    }
+  let timer: NodeJS.Timeout | undefined;
+  const begin = (): void => {
+    response.write(runStarted(format, size, now()));
+    const startedAt = performance.now();
+    let sent = 0;
+    const tick = (): void => {
+      const elapsed = (performance.now() - startedAt) / 1000;
+      const due = Math.min(total, Math.floor(rate * elapsed));
+      const sentAt = now();
+      let batch = '';
+      while (sent < due) {
+        sent += 1;
+        batch += contentEvent(format, sent, size, sentAt);
+      }
+      if (batch !== '') {
+        response.write(batch);
+      }
+      if (elapsed >= seconds) {
+        clearInterval(timer);
+        response.end(runFinished(format, size, now()));
+      }
+    };
+    timer = setInterval(tick, 10);
   };
-  const timer = setInterval(tick, 10);
+  if (delayMs === 0) {
+    begin();
+  } else {
+    response.flushHeaders();
+    timer = setTimeout(begin, delayMs);
+  }
   response.on('close', () => {
     clearInterval(timer);
   });

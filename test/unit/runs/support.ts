@@ -91,5 +91,6 @@ export function runInput(
     confirmSend: options.confirmSend,
     spill: spillArea(),
     limits: defaultStreamLimits,
+    waitTimeoutMs: 30_000,
   };
 }

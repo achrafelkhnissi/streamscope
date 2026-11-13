@@ -1,9 +1,11 @@
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { benchmarkEnabled } from '../../benchmark/contract';
+import type { CaptureRegistry } from '../../capture/registry';
+import { CaptureService } from '../../capture/service';
 import type { StreamSession } from '../../events/session';
 import { SpillArea } from '../../events/spill';
-import type { HttpFile, HttpRequest } from '../../http-file/model';
+import type { HttpFile, HttpRequest, Range } from '../../http-file/model';
 import { fileSafeName, formatBytes, requestLabel, saveExtension } from '../../response/labels';
 import { historyItems, type HistoryItem } from '../../response/run-status';
 import type { BodyFileContext } from '../../runs/body-files';
@@ -26,7 +28,7 @@ import { PanelProbe, registerBenchmarkCommands } from '../benchmark/commands';
 import type { EnvironmentStore } from '../environments/environment-store';
 import type { ParseCache } from '../language/parse-cache';
 import { httpSelector } from '../language/register';
-import { logRunEnd, logRunStart } from '../log';
+import { logRunEnd, logRunStart, logRunWaiting } from '../log';
 import { ResponsePanels } from '../response/panels';
 import { closeResponseTabs, ResponsePresenter } from '../response/presenter';
 import { ResponseFileSystem, responseScheme } from '../response/response-file-system';
@@ -34,7 +36,12 @@ import { RequestCodeLenses } from './code-lens';
 import { RunStatusBar } from './status-bar';
 import type { SecretStore } from '../secrets/secret-store';
 import { liveSystemContext } from '../system-context';
-import { readRequestSettings, readSpillLimits, readStreamSettings } from './settings';
+import {
+  readCaptureSettings,
+  readRequestSettings,
+  readSpillLimits,
+  readStreamSettings,
+} from './settings';
 import { variablesFor } from './variables';
 
 interface Target {
@@ -42,6 +49,19 @@ interface Target {
   file: HttpFile;
   request: HttpRequest;
   key: string;
+}
+
+interface RunAction {
+  title: string;
+  command: string;
+  arguments: unknown[];
+}
+
+interface BlockedToast {
+  message: string;
+  actions: string[];
+  run: RunAction | undefined;
+  range: Range;
 }
 
 const sendableSchemes: ReadonlySet<string> = new Set(['file', 'untitled']);
@@ -128,20 +148,51 @@ async function openSpillArea(context: vscode.ExtensionContext): Promise<SpillAre
   }
 }
 
-async function showBlocked(document: vscode.TextDocument, run: RunSnapshot): Promise<void> {
+function producerAction(
+  document: vscode.TextDocument,
+  file: HttpFile,
+  producer: string | undefined,
+): RunAction | undefined {
+  if (producer === undefined) {
+    return undefined;
+  }
+  const request = file.requests.find(({ name }) => name === producer);
+  return request === undefined
+    ? undefined
+    : {
+        title: `Run ${producer}`,
+        command: 'streamscope.sendRequest',
+        arguments: [document.uri, request.requestLine.range.start.line],
+      };
+}
+
+function blockedToast(
+  document: vscode.TextDocument,
+  file: HttpFile,
+  run: RunSnapshot,
+): BlockedToast | undefined {
   const problem = run.problems[0];
   if (!problem) {
-    return;
+    return undefined;
   }
-  const { start, end } = problem.range;
-  const choice = await vscode.window.showErrorMessage(
-    `Not sent: ${problem.message} (line ${String(start.line + 1)}).`,
-    'Go to Line',
-  );
+  const action = producerAction(document, file, problem.producer);
+  return {
+    message: `Not sent: ${problem.message} (line ${String(problem.range.start.line + 1)}).`,
+    actions: action === undefined ? ['Go to Line'] : [action.title, 'Go to Line'],
+    run: action,
+    range: problem.range,
+  };
+}
+
+async function showBlocked(document: vscode.TextDocument, toast: BlockedToast): Promise<void> {
+  const choice = await vscode.window.showErrorMessage(toast.message, ...toast.actions);
+  const { start, end } = toast.range;
   if (choice === 'Go to Line') {
     await vscode.window.showTextDocument(document, {
       selection: new vscode.Range(start.line, start.character, end.line, end.character),
     });
+  } else if (toast.run !== undefined && choice === toast.run.title) {
+    await vscode.commands.executeCommand(toast.run.command, ...toast.run.arguments);
   }
 }
 
@@ -151,6 +202,7 @@ export function registerRequestFeatures(
   cache: ParseCache,
   environments: EnvironmentStore,
   secrets: SecretStore,
+  captures: CaptureRegistry,
 ): () => Promise<void> {
   const confirmRestrictedSend = confirmOnce(async () => {
     const choice = await vscode.window.showWarningMessage(
@@ -171,6 +223,12 @@ export function registerRequestFeatures(
     files,
     vscode.Uri.joinPath(context.extensionUri, 'dist', 'format-worker.js').fsPath,
   );
+  const captureWorker = vscode.Uri.joinPath(
+    context.extensionUri,
+    'dist',
+    'capture-worker.js',
+  ).fsPath;
+  let lastBlocked: BlockedToast | undefined;
   const dependencies: RunDependencies = {
     transport: new NodeTransport(),
     system: liveSystemContext,
@@ -342,6 +400,11 @@ export function registerRequestFeatures(
       void vscode.window.showErrorMessage(limits.message);
       return;
     }
+    const captureSettings = readCaptureSettings();
+    if (!captureSettings.ok) {
+      void vscode.window.showErrorMessage(captureSettings.message);
+      return;
+    }
     const { document, file, request, key } = found;
     const prepared = await variablesFor(document, file, request, environments, secrets);
     if (!prepared) {
@@ -362,6 +425,15 @@ export function registerRequestFeatures(
       confirmSend: restricted ? confirmRestrictedSend : undefined,
       spill: area,
       limits: limits.limits,
+      captures: new CaptureService({
+        registry: captures,
+        documentUri: document.uri.toString(),
+        file,
+        request,
+        workerFile: captureWorker,
+        runs: (producer) => registry.latest(producer),
+      }),
+      waitTimeoutMs: captureSettings.waitTimeoutMs,
     });
     history.add(handle);
     started?.(handle);
@@ -371,8 +443,14 @@ export function registerRequestFeatures(
         panels.show(handle, document.uri, { reveal: true, readOnly: false });
       }
     };
+    let loggedWait: string | undefined;
     const stopWatching = handle.onUpdate(() => {
-      if (handle.snapshot().status === 'receiving') {
+      const snapshot = handle.snapshot();
+      if (snapshot.status === 'waiting' && snapshot.waitingFor !== loggedWait) {
+        loggedWait = snapshot.waitingFor;
+        logRunWaiting(log, snapshot);
+      }
+      if (snapshot.status === 'receiving') {
         showRun();
         stopWatching();
       }
@@ -384,7 +462,11 @@ export function registerRequestFeatures(
       return;
     }
     if (run.status === 'blocked') {
-      void showBlocked(document, run);
+      const toast = blockedToast(document, file, run);
+      if (toast !== undefined) {
+        lastBlocked = testMode ? toast : undefined;
+        void showBlocked(document, toast);
+      }
       return;
     }
     if (hasResponse(run) && !panels.keepsOpenedRun(handle)) {
@@ -584,6 +666,7 @@ export function registerRequestFeatures(
       vscode.commands.registerCommand('streamscope.test.runStatus', (id?: unknown) =>
         typeof id === 'number' ? statuses.get(id) : undefined,
       ),
+      vscode.commands.registerCommand('streamscope.test.blockedActions', () => lastBlocked),
       vscode.commands.registerCommand('streamscope.test.closeResponseTabs', closeResponseTabs),
       vscode.commands.registerCommand(
         'streamscope.test.openEvent',

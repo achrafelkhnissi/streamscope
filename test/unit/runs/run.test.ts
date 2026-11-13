@@ -11,9 +11,12 @@ import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import * as zlib from 'node:zlib';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { CaptureRegistry } from '../../../src/capture/registry';
+import { CaptureService } from '../../../src/capture/service';
+import type { CaptureResult } from '../../../src/capture/tracker';
 import type { SpillFile } from '../../../src/events/spill';
 import { parseHttpFile } from '../../../src/http-file/parse';
-import { describeOutcome, formatBytes } from '../../../src/response/labels';
+import { describeOutcome, formatBytes, requestLabel } from '../../../src/response/labels';
 import type { RunAccess, RunEnd, RunObserver } from '../../../src/runs/observer';
 import {
   requestKey,
@@ -28,6 +31,7 @@ import { createSelfSignedCertificate } from '../../support/certificate';
 import { startHttpServer, startHttpsServer, type LocalServer } from '../../support/servers';
 import { startStreamServer } from '../../support/stream-server';
 import { collect } from '../../support/memory';
+import { missingWorker } from '../capture/worker';
 import { waitFor } from '../transport/harness';
 import { dependencies, runInput, useSpillArea } from './support';
 
@@ -1291,6 +1295,27 @@ describe('release', () => {
   });
 });
 
+describe('headArrived', () => {
+  it('settles when the head arrives, and when the run ends without one', async () => {
+    const server = await track(
+      startHttpServer((_request, response) => {
+        response.writeHead(200);
+        response.write('partial');
+      }),
+    );
+    const receiving = startRun(runInput([`GET ${server.url}/hold`]), dependencies);
+    await receiving.headArrived;
+    expect(receiving.snapshot().head?.status).toBe(200);
+    receiving.cancel();
+    await receiving.done;
+
+    const blocked = startRun(runInput(['GET https://api.example.test/{{missing}}']), dependencies);
+    await blocked.done;
+    await blocked.headArrived;
+    expect(blocked.snapshot().head).toBeUndefined();
+  });
+});
+
 describe('wall-clock start', () => {
   it('records the time of day the run started, not the monotonic clock', async () => {
     const snapshot = await startRun(
@@ -1597,5 +1622,340 @@ describe('requestKey', () => {
     expect(requestKeyDocument(requestKey(document, login, 0))).toBe(document);
     expect(requestKeyDocument(requestKey(document, me, 1))).toBe(document);
     expect(requestKeyDocument('untitled:Untitled-1\n@x')).toBe('untitled:Untitled-1');
+  });
+});
+
+describe('waiting for captured values', () => {
+  const documentUri = 'file:///requests.http';
+  const threadId = [{ name: 'threadId', secret: false }];
+  const followUp = [
+    '# @name startRun',
+    '# @capture threadId = first(type == "RUN_STARTED").threadId',
+    'POST https://api.example.test/agent/run',
+    '',
+    '###',
+    '# @name continue',
+    'GET https://api.example.test/threads/{{startRun.threadId}}',
+  ];
+  const startKey = `${documentUri}\n@startRun`;
+  const folders: string[] = [];
+
+  afterEach(() => {
+    vi.useRealTimers();
+    for (const folder of folders.splice(0)) {
+      rmSync(folder, { recursive: true, force: true });
+    }
+  });
+
+  function capturing(registry: CaptureRegistry, lines: string[], index: number): RunInput {
+    const input = runInput(lines, { index });
+    return {
+      ...input,
+      key: requestKey(documentUri, input.request, index),
+      label: requestLabel(input.request),
+      captures: new CaptureService({
+        registry,
+        documentUri,
+        file: input.file,
+        request: input.request,
+        workerFile: missingWorker,
+        runs: () => undefined,
+      }),
+    };
+  }
+
+  function resolved(text: string, runId: number): CaptureResult {
+    return {
+      state: 'resolved',
+      text,
+      secret: false,
+      provenance: { runId, event: 1, path: 'threadId', time: 0 },
+    };
+  }
+
+  function pendingProducer(registry: CaptureRegistry, id: number): void {
+    registry.begin({ id, key: startKey, label: 'startRun', startedAt: -id }, threadId);
+  }
+
+  function at(line: number, start: number, end: number) {
+    return { start: { line, character: start }, end: { line, character: end } };
+  }
+
+  function bodyFolder(name: string, contents: string): string {
+    const folder = realpathSync.native(mkdtempSync(path.join(tmpdir(), 'streamscope-wait-')));
+    folders.push(folder);
+    writeFileSync(path.join(folder, name), contents);
+    return folder;
+  }
+
+  it('a request waits for a pending capture, then sends with its value', async () => {
+    const streams = await track(startStreamServer());
+    const api = await track(
+      startHttpServer((_request, response) => {
+        response.end('ok');
+      }),
+    );
+    const registry = new CaptureRegistry();
+    const lines = [
+      '# @name startRun',
+      '# @capture threadId = first(type == "RUN_STARTED").threadId',
+      `GET ${streams.url}/stream?delayMs=300&seconds=0`,
+      '',
+      '###',
+      '# @name continue',
+      `GET ${api.url}/threads/{{startRun.threadId}}`,
+    ];
+
+    const producer = startRun(capturing(registry, lines, 0), dependencies);
+    const consumer = startRun(capturing(registry, lines, 1), dependencies);
+    await waitFor(() => consumer.snapshot().status === 'waiting');
+
+    expect(consumer.snapshot().waitingFor).toBe('startRun › threadId');
+    expect(api.requests).toEqual([]);
+    const sent = await consumer.done;
+    expect(sent.status).toBe('completed');
+    expect(sent.waitingFor).toBeUndefined();
+    expect(api.requests.map((request) => request.url)).toEqual(['/threads/thread-1']);
+    expect(registry.waitCount).toBe(0);
+    expect((await producer.done).status).toBe('completed');
+  });
+
+  it('the wait times out and blocks with the decision 10 message', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const registry = new CaptureRegistry();
+    pendingProducer(registry, -1);
+
+    const consumer = startRun(capturing(registry, followUp, 1), dependencies);
+    await vi.advanceTimersByTimeAsync(30_000);
+    const blocked = await consumer.done;
+
+    expect(blocked.status).toBe('blocked');
+    expect(blocked.problems).toEqual([
+      { message: 'startRun › threadId did not arrive within 30 s.', range: at(6, 37, 58) },
+    ]);
+    expect(blocked.sent).toBeUndefined();
+    expect(registry.waitCount).toBe(0);
+  });
+
+  it('cancelling a waiting run ends it cancelled and releases the wait', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const registry = new CaptureRegistry();
+    pendingProducer(registry, -1);
+
+    const consumer = startRun(capturing(registry, followUp, 1), dependencies);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(consumer.snapshot().status).toBe('waiting');
+    expect(registry.waitCount).toBe(1);
+    consumer.cancel();
+    const cancelled = await consumer.done;
+
+    expect(cancelled.status).toBe('cancelled');
+    expect(cancelled.waitingFor).toBeUndefined();
+    expect(registry.waitCount).toBe(0);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('a producer never run blocks at once with a producer name on the problem', async () => {
+    const registry = new CaptureRegistry();
+    const lines = [...followUp, 'X-Thread: {{threadId}}'];
+
+    const blocked = await startRun(capturing(registry, lines, 1), dependencies).done;
+
+    expect(blocked.status).toBe('blocked');
+    expect(blocked.problems).toEqual([
+      {
+        message: '`{{startRun.threadId}}` comes from startRun, which has not run in this session.',
+        range: at(6, 37, 58),
+        producer: 'startRun',
+      },
+      {
+        message: '`{{threadId}}` comes from startRun, which has not run in this session.',
+        range: at(7, 10, 22),
+        producer: 'startRun',
+      },
+    ]);
+    expect(registry.waitCount).toBe(0);
+  });
+
+  it("begin resets the producer's captures before it resolves", async () => {
+    const registry = new CaptureRegistry();
+    pendingProducer(registry, -1);
+    registry.update(-1, 'threadId', resolved('thread-0', -1));
+    const changes: string[] = [];
+    registry.onDidChange((entry) => {
+      changes.push(`${String(entry.runId)} ${entry.result.state}`);
+    });
+    const lines = [
+      '# @name startRun',
+      '# @capture threadId = first(type == "RUN_STARTED").threadId',
+      'POST https://api.example.test/{{missing}}',
+    ];
+
+    const producer = startRun(capturing(registry, lines, 0), dependencies);
+    expect((await producer.done).status).toBe('blocked');
+    await waitFor(() => registry.get(startKey, 'threadId')?.result.state === 'failed');
+
+    expect(changes).toEqual([`${String(producer.id)} pending`, `${String(producer.id)} failed`]);
+    expect(registry.get(startKey, 'threadId')?.result).toEqual({
+      state: 'failed',
+      reason:
+        'startRun was not sent: `{{missing}}` is not defined in this file or `$shared` (no environment selected)',
+    });
+  });
+
+  it('a request that re-captures the name it consumes sends its previous value', async () => {
+    const api = await track(
+      startHttpServer((_request, response) => {
+        response.writeHead(200, { 'Content-Type': 'application/json' });
+        response.end('{"next":"cursor-2"}');
+      }),
+    );
+    const registry = new CaptureRegistry();
+    const itemsKey = `${documentUri}\n@items`;
+    registry.begin({ id: -1, key: itemsKey, label: 'items', startedAt: 0 }, [
+      { name: 'nextCursor', secret: false },
+    ]);
+    registry.update(-1, 'nextCursor', resolved('cursor-1', -1));
+    const lines = [
+      '# @name items',
+      '# @capture nextCursor = body.next',
+      `GET ${api.url}/items?cursor={{nextCursor}}`,
+    ];
+
+    const sent = await startRun(capturing(registry, lines, 0), dependencies).done;
+    await waitFor(() => registry.get(itemsKey, 'nextCursor')?.result.state === 'resolved');
+
+    expect(sent.status).toBe('completed');
+    expect(api.requests.map((request) => request.url)).toEqual(['/items?cursor=cursor-1']);
+    expect(registry.get(itemsKey, 'nextCursor')?.result).toMatchObject({
+      state: 'resolved',
+      text: 'cursor-2',
+    });
+  });
+
+  it('a request that consumes its own capture with no previous value is refused at once', async () => {
+    const lines = [
+      '# @name items',
+      '# @capture nextCursor = body.next',
+      'GET https://api.example.test/items?cursor={{nextCursor}}',
+    ];
+
+    const blocked = await startRun(capturing(new CaptureRegistry(), lines, 0), dependencies).done;
+
+    expect(blocked.status).toBe('blocked');
+    expect(blocked.problems).toEqual([
+      { message: 'items cannot use its own capture nextCursor.', range: at(2, 42, 56) },
+    ]);
+  });
+
+  it('a request whose capture, expect or until line has an expression error is blocked with it', async () => {
+    const server = await track(startHttpServer((_request, response) => response.end()));
+    const lines = [
+      '# @name startRun',
+      '# @capture threadId = first(type = "RUN_STARTED").threadId',
+      '# @capture runId = first(type == "RUN_STARTED").runId',
+      '# @capture runId = first(type == "RUN_STARTED").runId',
+      '# @expect status = 201',
+      '# @until type = "RUN_FINISHED"',
+      `POST ${server.url}/agent/run`,
+    ];
+    const blocking = ['invalid-expression', 'duplicate-capture', 'too-many-captures'];
+    const diagnostics = parseHttpFile(lines.join('\n')).diagnostics.filter((diagnostic) =>
+      blocking.includes(diagnostic.code),
+    );
+    const expected = diagnostics.map(({ message, range }) => ({ message, range }));
+
+    const blocked = await startRun(capturing(new CaptureRegistry(), lines, 0), dependencies).done;
+
+    expect(diagnostics.map((diagnostic) => diagnostic.range.start.line)).toEqual([1, 3, 4, 5]);
+    expect(blocked.status).toBe('blocked');
+    expect(blocked.problems).toEqual(expected);
+    expect(server.sockets.opened).toBe(0);
+  });
+
+  it('a capture used only inside a <@ body file waits like one in the request', async () => {
+    const api = await track(
+      startHttpServer((_request, response) => {
+        response.end('ok');
+      }),
+    );
+    const registry = new CaptureRegistry();
+    pendingProducer(registry, -1);
+    const folder = bodyFolder('template.json', '{"thread":"{{startRun.threadId}}"}');
+    const lines = [
+      ...followUp.slice(0, 6),
+      `POST ${api.url}/continue`,
+      'Content-Type: application/json',
+      '',
+      '<@ ./template.json',
+    ];
+
+    const consumer = startRun(
+      {
+        ...capturing(registry, lines, 1),
+        bodyFiles: { documentDir: folder, containmentRoot: folder },
+      },
+      dependencies,
+    );
+    await waitFor(() => consumer.snapshot().status === 'waiting');
+    expect(consumer.snapshot().waitingFor).toBe('startRun › threadId');
+    registry.update(-1, 'threadId', resolved('thread-1', -1));
+    const sent = await consumer.done;
+
+    expect(sent.status).toBe('completed');
+    expect(api.requests.map((request) => request.body.toString())).toEqual([
+      '{"thread":"thread-1"}\n',
+    ]);
+  });
+
+  it('a producer never run, used inside a <@ body file, blocks with its producer', async () => {
+    const folder = bodyFolder('template.json', '{"thread":"{{startRun.threadId}}"}');
+    const lines = [
+      ...followUp.slice(0, 6),
+      'POST https://api.example.test/continue',
+      'Content-Type: application/json',
+      '',
+      '<@ ./template.json',
+    ];
+
+    const blocked = await startRun(
+      {
+        ...capturing(new CaptureRegistry(), lines, 1),
+        bodyFiles: { documentDir: folder, containmentRoot: folder },
+      },
+      dependencies,
+    ).done;
+
+    expect(blocked.status).toBe('blocked');
+    expect(blocked.problems).toEqual([
+      {
+        message: '`{{startRun.threadId}}` comes from startRun, which has not run in this session.',
+        range: at(9, 3, 18),
+        producer: 'startRun',
+      },
+    ]);
+  });
+
+  it('a fifth wait blocks with The captured values kept changing while continue waited.', async () => {
+    const registry = new CaptureRegistry();
+    pendingProducer(registry, -1);
+
+    const consumer = startRun(capturing(registry, followUp, 1), dependencies);
+    for (let round = 1; round <= 4; round += 1) {
+      await waitFor(() => registry.waitCount === 1);
+      expect(consumer.snapshot().status).toBe('waiting');
+      registry.update(-round, 'threadId', resolved(`thread-${String(round)}`, -round));
+      pendingProducer(registry, -round - 1);
+    }
+    const blocked = await consumer.done;
+
+    expect(blocked.status).toBe('blocked');
+    expect(blocked.problems).toEqual([
+      {
+        message: 'The captured values kept changing while continue waited.',
+        range: at(6, 0, 58),
+      },
+    ]);
+    expect(registry.waitCount).toBe(0);
   });
 });
