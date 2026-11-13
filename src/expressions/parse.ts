@@ -540,9 +540,12 @@ class Parser {
   private check(token: Token, name: CheckName): SourceNode {
     this.advance();
     this.openCall();
-    const args = [this.or()];
+    const args: Expr[] = [];
     if (name === 'before') {
+      args.push(this.conditionExpression());
       this.expectPunctuation(',');
+      args.push(this.conditionExpression());
+    } else {
       args.push(this.or());
     }
     this.closeCall();

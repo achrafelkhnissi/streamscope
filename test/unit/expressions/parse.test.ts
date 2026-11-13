@@ -12,6 +12,8 @@ const unknownSource =
 const expectedLiteral = 'Expected a string, number, true, false, null, regular expression or list.';
 const nestedRepetition =
   'This regular expression can take very long on some inputs, because a repeated group contains another repetition. Rewrite it without nested repetition.';
+const adjacentRepetitions =
+  'This regular expression can take very long on some inputs, because two repetitions next to each other can match the same text. Separate them with a character only one of them matches.';
 const repeatedAlternatives =
   'This regular expression can take very long on some inputs, because a repeated group contains alternatives. Rewrite it without alternatives inside a repeated group.';
 
@@ -273,12 +275,12 @@ describe('parseExpression', () => {
         name: 'unique',
         args: [named(events('all'), 'id')],
       });
-      expect(shape('before(first(type == "a"), first(type == "b"))', 'expect')).toStrictEqual({
+      expect(shape('before(type == "a", type == "b")', 'expect')).toStrictEqual({
         kind: 'check',
         name: 'before',
         args: [
-          events('first', compare('==', field('type'), literal('a'))),
-          events('first', compare('==', field('type'), literal('b'))),
+          compare('==', field('type'), literal('a')),
+          compare('==', field('type'), literal('b')),
         ],
       });
       expect(shape('!exists(body.x) || count() > 1', 'expect')).toStrictEqual(
@@ -290,6 +292,48 @@ describe('parseExpression', () => {
       );
     });
 
+    it('reads both arguments of before as event conditions and the others as expressions', () => {
+      const before = parse('before(type == "a", type == "b")', 'expect');
+
+      expect(before).toMatchObject({
+        kind: 'check',
+        name: 'before',
+        args: [
+          { kind: 'compare', left: { kind: 'field', name: 'type', span: { start: 7, end: 11 } } },
+          { kind: 'compare', left: { kind: 'field', name: 'type', span: { start: 20, end: 24 } } },
+        ],
+      });
+      expect(
+        shape('before(status == 1, @.kind == "b" && @sse.event != null)', 'expect'),
+      ).toStrictEqual({
+        kind: 'check',
+        name: 'before',
+        args: [
+          compare('==', field('status'), literal(1)),
+          logical(
+            '&&',
+            compare('==', named({ kind: 'item' }, 'kind'), literal('b')),
+            compare('!=', named({ kind: 'sse' }, 'event'), literal(null)),
+          ),
+        ],
+      });
+      expect(shape('before(done, !done)', 'expect')).toStrictEqual({
+        kind: 'check',
+        name: 'before',
+        args: [field('done'), not(field('done'))],
+      });
+      expect(shape('exists(status)', 'expect')).toStrictEqual({
+        kind: 'check',
+        name: 'exists',
+        args: [source('status')],
+      });
+      expect(shape('unique(body.ids)', 'expect')).toStrictEqual({
+        kind: 'check',
+        name: 'unique',
+        args: [named(source('body'), 'ids')],
+      });
+    });
+
     it('reports a check outside # @expect over the whole call', () => {
       expect(failure('exists(body.x)')).toStrictEqual({
         message: 'exists(…) is only available in # @expect.',
@@ -299,9 +343,9 @@ describe('parseExpression', () => {
         message: 'unique(…) is only available in # @expect.',
         span: { start: 0, end: 14 },
       });
-      expect(failure('before(first(), last())')).toStrictEqual({
+      expect(failure('before(type == "a", type == "b")')).toStrictEqual({
         message: 'before(…) is only available in # @expect.',
-        span: { start: 0, end: 23 },
+        span: { start: 0, end: 32 },
       });
       expect(failure('1 && exists(body.x)')).toStrictEqual({
         message: 'exists(…) is only available in # @expect.',
@@ -806,13 +850,17 @@ describe('parseExpression', () => {
         message: 'Expected ")".',
         span: { start: 13, end: 14 },
       });
-      expect(failure('before(first())', 'expect')).toStrictEqual({
+      expect(failure('before(a)', 'expect')).toStrictEqual({
         message: 'Expected ",".',
-        span: { start: 14, end: 15 },
+        span: { start: 8, end: 9 },
       });
-      expect(failure('before(first(), last(), all())', 'expect')).toStrictEqual({
+      expect(failure('before(a, b, c)', 'expect')).toStrictEqual({
         message: 'Expected ")".',
-        span: { start: 22, end: 23 },
+        span: { start: 11, end: 12 },
+      });
+      expect(failure('before(first(), last())', 'expect')).toStrictEqual({
+        message: 'Expected ",".',
+        span: { start: 12, end: 13 },
       });
     });
 
@@ -853,6 +901,28 @@ describe('parseExpression', () => {
         message: repeatedAlternatives,
         span: { start: 11, end: 21 },
       });
+    });
+
+    it('rejects a nested repetition that hides behind a brace escape without the u flag', () => {
+      expect(failure(String.raw`text matches /(a\p{1,})+/`)).toStrictEqual({
+        message: nestedRepetition,
+        span: { start: 13, end: 25 },
+      });
+      expect(failure(String.raw`text matches /(a\p{1,})+/u`).message).toMatch(
+        /^Invalid regular expression/,
+      );
+    });
+
+    it('rejects two repetitions next to each other over the literal', () => {
+      expect(failure(String.raw`text matches /\d+\d+x/`)).toStrictEqual({
+        message: adjacentRepetitions,
+        span: { start: 13, end: 22 },
+      });
+      expect(failure('text | match(/a*a*b/)')).toStrictEqual({
+        message: adjacentRepetitions,
+        span: { start: 13, end: 20 },
+      });
+      expect(parse(String.raw`text | match(/\w+@\w+\.\w+/)`)).toMatchObject({ kind: 'filter' });
     });
 
     it('rejects a catastrophic pattern in match() over the literal', () => {
@@ -1160,9 +1230,16 @@ describe('sourcesOf', () => {
   });
 
   it('puts a check before the sources of its arguments', () => {
-    expect(
-      names('before(first(type == "A"), first(type == "B")) && exists(body.x)', 'expect'),
-    ).toStrictEqual(['before', 'first', 'first', 'exists', 'body']);
+    expect(names('before(type == "A", type == "B") && exists(first(a).b)', 'expect')).toStrictEqual(
+      ['before', 'exists', 'first'],
+    );
+    expect(names('exists(body.x) && before(a, b) && unique(all().id)', 'expect')).toStrictEqual([
+      'exists',
+      'body',
+      'before',
+      'unique',
+      'all',
+    ]);
     expect(names('unique(all().id) && count() == 1', 'expect')).toStrictEqual([
       'unique',
       'all',
