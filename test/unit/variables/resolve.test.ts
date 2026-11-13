@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { parseHttpFile } from '../../../src/http-file/parse';
 import { resolveRequest, type Resolution } from '../../../src/variables/resolve';
-import type { VariableSources } from '../../../src/variables/sources';
-import { sourced, testSources } from './sources';
+import type { CaptureLookupResult, VariableSources } from '../../../src/variables/sources';
+import { inMemoryCaptures, sourced, testSources } from './sources';
 import type { SystemContext } from '../../../src/variables/system';
 
 function counter(): SystemContext {
@@ -179,16 +179,6 @@ describe('resolveRequest', () => {
     ]);
   });
 
-  it('reports request references as not supported yet', () => {
-    expect(problems('GET https://api.example.test/{{login.response.body.$.token}}')).toEqual([
-      {
-        message:
-          'Request references such as `{{login.response.body.$.token}}` are not supported yet.',
-        range: at(0, 29, 60),
-      },
-    ]);
-  });
-
   it('reports system variable problems where they are used', () => {
     expect(problems('GET https://api.example.test/{{$aadToken}}')).toEqual([
       { message: '`{{$aadToken}}` is not supported yet.', range: at(0, 29, 42) },
@@ -344,5 +334,316 @@ describe('resolveRequest', () => {
     expect(!result.ok && result.problems[0]?.message).toBe(
       '`{{token}}` is not defined in this file, the `dev` environment or `$shared`. A restricted workspace does not read http-client.private.env.json or environments from your user settings.',
     );
+  });
+});
+
+const producer = [
+  '### Start agent run',
+  '# @name startRun',
+  '# @capture threadId = first(type == "RUN_STARTED").threadId',
+  '# @capture secret sessionToken = headers["x-session-token"]',
+  'POST https://api.example.test/agent/run',
+  '',
+  '###',
+];
+const producerKey = 'file:///agent.http\n@startRun';
+
+function captured(text: string, secret = false, label = 'startRun'): CaptureLookupResult {
+  return {
+    kind: 'value',
+    text,
+    secret,
+    label,
+    provenance: { runId: 1, event: 1, path: 'threadId', time: 0 },
+  };
+}
+
+function followUp(sources: Partial<VariableSources>, ...lines: string[]): Resolution {
+  const file = parseHttpFile([...producer, ...lines].join('\n'));
+  const request = file.requests.at(-1);
+  if (!request) {
+    throw new Error('expected a request');
+  }
+  return resolveRequest(file, request, testSources({ system: counter(), ...sources }));
+}
+
+describe('resolveRequest with captures', () => {
+  it('a bare name reads a capture before a file variable of the same name', () => {
+    const result = followUp(
+      {
+        captures: inMemoryCaptures({ bare: { threadId: captured('thread-1') } }),
+        environmentName: 'dev',
+        environment: sourced({ threadId: 'environment' }, 'dev environment (settings)'),
+        shared: sourced({ threadId: 'shared' }, '$shared (settings)'),
+      },
+      '@threadId = file',
+      'GET https://api.example.test/threads/{{threadId}}',
+    );
+
+    expect(result.ok && result.request.url).toBe('https://api.example.test/threads/thread-1');
+  });
+
+  it("`{{startRun.threadId}}` reads that request's capture", () => {
+    const result = followUp(
+      {
+        captures: inMemoryCaptures({
+          requests: { 'startRun.threadId': captured('thread-1') },
+          bare: { threadId: captured('thread-2', false, 'otherRun') },
+        }),
+      },
+      'GET https://api.example.test/threads/{{startRun.threadId}}',
+    );
+
+    expect(result.ok && result.request.url).toBe('https://api.example.test/threads/thread-1');
+  });
+
+  it('a pending capture yields a wait, not a problem', () => {
+    const pending: CaptureLookupResult = {
+      kind: 'pending',
+      request: producerKey,
+      label: 'startRun',
+      name: 'threadId',
+    };
+    const result = followUp(
+      {
+        captures: inMemoryCaptures({
+          requests: { 'startRun.threadId': pending },
+          bare: { threadId: pending },
+        }),
+      },
+      '@thread = {{threadId}}',
+      'GET https://api.example.test/threads/{{startRun.threadId}}',
+      'X-Thread: {{thread}}',
+    );
+
+    expect(result).toEqual({
+      ok: false,
+      problems: [],
+      waits: [{ kind: 'capture', request: producerKey, name: 'threadId', label: 'startRun' }],
+    });
+  });
+
+  it('a failed capture blocks with startRun › threadId failed: …', () => {
+    const message =
+      'startRun › threadId failed: no event matched first(type == "RUN_STARTED") (12 events, 1 malformed).';
+    const result = followUp(
+      {
+        captures: inMemoryCaptures({
+          requests: { 'startRun.threadId': { kind: 'failed', message } },
+        }),
+      },
+      'GET https://api.example.test/threads/{{startRun.threadId}}',
+    );
+
+    expect(result).toEqual({
+      ok: false,
+      problems: [{ message, range: at(7, 37, 58) }],
+      waits: [],
+    });
+  });
+
+  it('a producer that never ran blocks with the decision 10 message and its producer name', () => {
+    const bare = followUp(
+      {
+        captures: inMemoryCaptures({
+          bare: { threadId: { kind: 'not-run', label: 'startRun', producerName: 'startRun' } },
+        }),
+      },
+      'GET https://api.example.test/threads/{{threadId}}',
+    );
+    const named = followUp({}, 'GET https://api.example.test/threads/{{startRun.threadId}}');
+
+    expect(bare).toEqual({
+      ok: false,
+      problems: [
+        {
+          message: '`{{threadId}}` comes from startRun, which has not run in this session.',
+          range: at(7, 37, 49),
+          producer: 'startRun',
+        },
+      ],
+      waits: [],
+    });
+    expect(named).toEqual({
+      ok: false,
+      problems: [
+        {
+          message:
+            '`{{startRun.threadId}}` comes from startRun, which has not run in this session.',
+          range: at(7, 37, 58),
+          producer: 'startRun',
+        },
+      ],
+      waits: [],
+    });
+  });
+
+  it('a name no request captures falls back to file, environment and $shared', () => {
+    const result = followUp(
+      {
+        captures: inMemoryCaptures({ bare: { threadId: captured('thread-1') } }),
+        environmentName: 'dev',
+        environment: sourced({ a: 'environment', b: 'environment' }, 'dev environment (settings)'),
+        shared: sourced({ a: 'shared', b: 'shared', c: 'shared' }, '$shared (settings)'),
+      },
+      '@a = file',
+      'GET https://api.example.test/{{a}}/{{b}}/{{c}}',
+    );
+
+    expect(result.ok && result.request.url).toBe(
+      'https://api.example.test/file/environment/shared',
+    );
+  });
+
+  it('`{{startRun.threadI}}` blocks with startRun has no capture named threadI.', () => {
+    const result = followUp(
+      { captures: inMemoryCaptures({ requests: { 'startRun.threadI': captured('stale') } }) },
+      'GET https://api.example.test/threads/{{startRun.threadI}}',
+    );
+
+    expect(result).toEqual({
+      ok: false,
+      problems: [{ message: 'startRun has no capture named threadI.', range: at(7, 37, 57) }],
+      waits: [],
+    });
+  });
+
+  it('response references read through the lookup and wait when needed', () => {
+    const lines = [
+      'POST https://api.example.test/agent/continue',
+      'X-Session: {{startRun.response.headers.X-Session}}',
+      '',
+      '{"token": "{{startRun.response.body.$.token}}"}',
+    ];
+    const header = { 'startRun.response.headers.X-Session': captured('session-1') };
+    const waiting = followUp({ captures: inMemoryCaptures({ responses: header }) }, ...lines);
+    const done = followUp(
+      {
+        captures: inMemoryCaptures({
+          responses: { ...header, 'startRun.response.body.$.token': captured('token-1') },
+        }),
+      },
+      ...lines,
+    );
+
+    expect(waiting).toEqual({
+      ok: false,
+      problems: [],
+      waits: [{ kind: 'response', requestName: 'startRun', reference: 'response.body.$.token' }],
+    });
+    expect(done.ok && done.request.headers).toEqual([{ name: 'X-Session', value: 'session-1' }]);
+    expect(done.ok && done.request.body).toEqual([
+      { kind: 'text', lines: ['{"token": "token-1"}'] },
+    ]);
+  });
+
+  it('`{{x.request.headers.A}}` and XPath block with the decision 10 messages', () => {
+    const file = parseHttpFile(
+      [
+        '# @name x',
+        'GET https://api.example.test/x',
+        '',
+        '###',
+        'GET https://api.example.test/{{x.request.headers.A}}',
+        'X-Token: {{x.response.body.token}}',
+      ].join('\n'),
+    );
+    const request = file.requests[1];
+    if (!request) {
+      throw new Error('expected a request');
+    }
+
+    expect(resolveRequest(file, request, testSources())).toEqual({
+      ok: false,
+      problems: [
+        {
+          message:
+            'Request references such as `{{x.request.headers.A}}` are not supported; use `{{x.response.…}}`.',
+          range: at(4, 29, 52),
+        },
+        {
+          message:
+            'XPath is not supported in `{{x.response.body…}}`; use a JSONPath starting with `$`.',
+          range: at(5, 9, 34),
+        },
+      ],
+      waits: [],
+    });
+  });
+
+  it('a response reference with an invalid JSONPath blocks without waiting', () => {
+    expect(followUp({}, 'GET https://api.example.test/{{startRun.response.body.$.a[}}')).toEqual({
+      ok: false,
+      problems: [
+        {
+          message: '`{{startRun.response.body.$.a[}}`: The JSONPath ends unexpectedly.',
+          range: at(7, 29, 60),
+        },
+      ],
+      waits: [],
+    });
+  });
+
+  it('a response reference to a request the file does not name blocks', () => {
+    expect(followUp({}, 'GET https://api.example.test/{{login.response.body.$.token}}')).toEqual({
+      ok: false,
+      problems: [
+        {
+          message: '`{{login.response.body.$.token}}`: no request in this file is named login.',
+          range: at(7, 29, 60),
+        },
+      ],
+      waits: [],
+    });
+  });
+
+  it("a secret capture's value joins sensitiveValues", () => {
+    const result = followUp(
+      {
+        captures: inMemoryCaptures({
+          bare: { threadId: captured('synthetic-thread', true), cursor: captured('cursor-1') },
+        }),
+      },
+      'GET https://api.example.test/threads/{{threadId}}?after={{cursor}}',
+    );
+
+    expect(result.ok && result.request.url).toBe(
+      'https://api.example.test/threads/synthetic-thread?after=cursor-1',
+    );
+    expect(result.ok && result.sensitiveValues).toEqual(['synthetic-thread']);
+  });
+
+  it('a large integer capture is inserted with every digit', () => {
+    const result = followUp(
+      {
+        captures: inMemoryCaptures({
+          requests: { 'startRun.threadId': captured('123456789012345678901234567890') },
+        }),
+      },
+      'POST https://api.example.test/agent/continue',
+      '',
+      '{"threadId": {{startRun.threadId}}}',
+    );
+
+    expect(result.ok && result.request.body).toEqual([
+      { kind: 'text', lines: ['{"threadId": 123456789012345678901234567890}'] },
+    ]);
+  });
+
+  it('a captured value is inserted as it is, never scanned for references', () => {
+    const result = followUp(
+      {
+        captures: inMemoryCaptures({ bare: { threadId: captured('{{$secret apiToken}}') } }),
+        secrets: new Map([['apiToken', 'synthetic-token']]),
+      },
+      'POST https://api.example.test/agent/continue',
+      '',
+      '{"threadId": "{{threadId}}"}',
+    );
+
+    expect(result.ok && result.request.body).toEqual([
+      { kind: 'text', lines: ['{"threadId": "{{$secret apiToken}}"}'] },
+    ]);
+    expect(result.ok && result.sensitiveValues).toEqual([]);
   });
 });

@@ -3,18 +3,14 @@ import type { Outcome } from '../expressions/evaluate';
 import { checkJsonPath } from '../expressions/jsonpath';
 import { parseExpression, sourcesOf } from '../expressions/parse';
 import type { ResponseHead } from '../transport/model';
+import { responseSelector } from '../variables/references';
 import { evaluateJobs, fileBodyBytes, sourceKey, type BodySubject } from './body';
 import {
-  bodySelectorReason,
   bodyUnavailableReason,
   cancelledReason,
   failedReason,
-  headerNameReason,
   noHeadersReason,
   notSentReason,
-  requestReferenceReason,
-  unsupportedResponseReason,
-  xpathReason,
 } from './messages';
 import { headValues } from './tracker';
 
@@ -37,16 +33,7 @@ type Translation =
   | { ok: true; part: 'head' | 'body'; expression: Expr; text: string }
   | { ok: false; reason: string };
 
-const bodyPrefix = 'response.body';
-const headersPrefix = 'response.headers';
 const noneCollected = new Map<string, never>();
-
-function under(reference: string, prefix: string): string | undefined {
-  if (reference === prefix) {
-    return '';
-  }
-  return reference.startsWith(`${prefix}.`) ? reference.slice(prefix.length + 1) : undefined;
-}
 
 function parsed(part: 'head' | 'body', text: string): Translation {
   const result = parseExpression(text, 'capture');
@@ -56,32 +43,20 @@ function parsed(part: 'head' | 'body', text: string): Translation {
 }
 
 function translate(name: string, reference: string): Translation {
-  if (reference.split('.', 1)[0] === 'request') {
-    return { ok: false, reason: requestReferenceReason(name, reference) };
+  const selector = responseSelector(name, reference);
+  if (!selector.ok) {
+    return selector;
   }
-  const selector = under(reference, bodyPrefix);
-  if (selector !== undefined) {
-    if (selector === '*') {
-      return parsed('body', 'body');
-    }
-    if (selector === '') {
-      return { ok: false, reason: bodySelectorReason(name) };
-    }
-    if (!selector.startsWith('$')) {
-      return { ok: false, reason: xpathReason(name) };
-    }
-    const problem = checkJsonPath(selector);
-    return problem === undefined
-      ? parsed('body', `jsonpath(${JSON.stringify(selector)})`)
-      : { ok: false, reason: problem.message };
+  if (selector.part === 'head') {
+    return parsed('head', `headers[${JSON.stringify(selector.header)}]`);
   }
-  const header = under(reference, headersPrefix);
-  if (header !== undefined) {
-    return header === ''
-      ? { ok: false, reason: headerNameReason(name) }
-      : parsed('head', `headers[${JSON.stringify(header)}]`);
+  if (selector.query === undefined) {
+    return parsed('body', 'body');
   }
-  return { ok: false, reason: unsupportedResponseReason(name, reference) };
+  const problem = checkJsonPath(selector.query);
+  return problem === undefined
+    ? parsed('body', `jsonpath(${JSON.stringify(selector.query)})`)
+    : { ok: false, reason: problem.message };
 }
 
 function endedReason(run: ReferencedRun, reference: string): string | undefined {

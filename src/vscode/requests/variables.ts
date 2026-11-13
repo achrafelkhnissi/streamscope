@@ -5,7 +5,7 @@ import type { EnvironmentCatalog } from '../../environments/model';
 import type { HttpFile, HttpRequest } from '../../http-file/model';
 import type { RunInput } from '../../runs/run';
 import { referencedSecrets } from '../../variables/secrets';
-import type { DotenvState } from '../../variables/sources';
+import { emptyCaptureLookup, type DotenvState } from '../../variables/sources';
 import type { SystemContext } from '../../variables/system';
 import type { EnvironmentStore } from '../environments/environment-store';
 import { askForSecret } from '../secrets/commands';
@@ -80,6 +80,7 @@ export async function variablesFor(
         ? await readDotenv(document.uri, catalog.active)
         : { kind: 'missing' },
     processEnv: restricted ? {} : process.env,
+    captures: emptyCaptureLookup,
   };
   if (restricted) {
     return { variables, insecureEnvironment: catalog.insecure };

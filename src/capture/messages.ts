@@ -156,26 +156,6 @@ export function waitCycleReason(labels: readonly string[]): string {
   return `${listText(labels)} wait for each other's captures.`;
 }
 
-export function requestReferenceReason(name: string, reference: string): string {
-  return `Request references such as \`{{${name}.${reference}}}\` are not supported; use \`{{${name}.response.…}}\`.`;
-}
-
-export function xpathReason(name: string): string {
-  return `XPath is not supported in \`{{${name}.response.body…}}\`; use a JSONPath starting with \`$\`.`;
-}
-
-export function bodySelectorReason(name: string): string {
-  return `A body reference needs \`*\` or a JSONPath, such as \`{{${name}.response.body.*}}\` or \`{{${name}.response.body.$.id}}\`.`;
-}
-
-export function headerNameReason(name: string): string {
-  return `A header reference needs a header name, such as \`{{${name}.response.headers.Content-Type}}\`.`;
-}
-
-export function unsupportedResponseReason(name: string, reference: string): string {
-  return `\`{{${name}.${reference}}}\` is not supported; use \`{{${name}.response.body.*}}\`, \`{{${name}.response.body.$…}}\` or \`{{${name}.response.headers.<name>}}\`.`;
-}
-
 export function unexpectedReason(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   return `evaluating the capture failed: ${clause(message)}`;

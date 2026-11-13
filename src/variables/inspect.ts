@@ -1,6 +1,14 @@
+import { JsonPathBudget, type Clock } from '../http-file/captures';
 import type { FileVariable, HttpFile, ParseDiagnostic } from '../http-file/model';
-import { looksLikeCredential } from '../masking/masking';
-import { evaluateExpression } from './resolve';
+import { looksLikeCredential, maskedValue } from '../masking/masking';
+import { formatTimeOfDay } from '../response/labels';
+import {
+  declaredCaptures,
+  jsonPathMessage,
+  referenceTarget,
+  type ReferenceTarget,
+} from './references';
+import { evaluateExpression, type CapturedValue } from './resolve';
 import type { VariableSources } from './sources';
 import { resolveSystemVariable, type SystemContext } from './system';
 
@@ -41,12 +49,17 @@ const systemCompletions: readonly VariableCompletion[] = [
   { label: '$secret', detail: '$secret <name>' },
   { label: '$shared', detail: '$shared <name>' },
 ];
-const requestReferencePattern = /^[^.\s]+\.(?:request|response)\./;
 const inertSystem: SystemContext = {
   now: () => new Date(0),
   uuid: () => '',
   randomInt: (minInclusive) => minInclusive,
 };
+
+type Problem = Pick<ParseDiagnostic, 'code' | 'message' | 'severity'>;
+
+function wallClock(): number {
+  return performance.now();
+}
 
 function head(expression: string): string {
   return expression.split(/\s/, 1)[0] ?? '';
@@ -96,29 +109,80 @@ export function describeReference(
   if (!evaluated.ok) {
     return { kind: 'problem', message: evaluated.message };
   }
+  const sensitive = evaluated.sensitiveValues.length > 0 || looksLikeCredential(expression);
+  const { capture } = evaluated;
+  if (capture !== undefined) {
+    return {
+      kind: 'value',
+      value: capture.secret ? maskedValue : evaluated.value,
+      origin: provenance(capture),
+      sensitive: capture.secret || sensitive,
+    };
+  }
   return {
     kind: 'value',
     value: evaluated.value,
     origin: origin(file, expression, sources),
-    sensitive: evaluated.sensitiveValues.length > 0 || looksLikeCredential(expression),
+    sensitive,
   };
+}
+
+function provenance({ label, name, provenance: from }: CapturedValue): string {
+  const where = [
+    from.event === undefined ? '' : `event ${String(from.event)}`,
+    from.path === '' ? '' : `at ${from.path}`,
+  ]
+    .filter((part) => part !== '')
+    .join(' ');
+  return [`${label} › ${name}`, `run ${String(from.runId)}`, where, formatTimeOfDay(from.time)]
+    .filter((part) => part !== '')
+    .join(' · ');
 }
 
 function definedName(file: HttpFile, name: string, sources: VariableSources): boolean {
   return (
     file.fileVariables.some((variable) => variable.name === name) ||
     sources.environment.has(name) ||
-    sources.shared.has(name)
+    sources.shared.has(name) ||
+    declaredCaptures(file).names.has(name) ||
+    sources.captures.bare(name) !== undefined
   );
+}
+
+function requestReferenceProblem(
+  target: Exclude<ReferenceTarget, { kind: 'name' }>,
+  expression: string,
+  budget: JsonPathBudget,
+): Problem | undefined {
+  switch (target.kind) {
+    case 'invalid':
+      return { code: target.code, severity: 'error', message: target.message };
+    case 'response': {
+      const problem = target.query === undefined ? undefined : budget.check(target.query)?.problem;
+      return problem === undefined
+        ? undefined
+        : {
+            code: 'invalid-variable',
+            severity: 'error',
+            message: jsonPathMessage(expression, problem.message),
+          };
+    }
+    case 'capture':
+      return undefined;
+  }
 }
 
 function referenceProblem(
   file: HttpFile,
   expression: string,
   sources: VariableSources,
-): Pick<ParseDiagnostic, 'code' | 'message' | 'severity'> | undefined {
-  if (requestReferencePattern.test(expression)) {
-    return undefined;
+  budget: JsonPathBudget,
+): Problem | undefined {
+  if (!expression.startsWith('$')) {
+    const target = referenceTarget(file, expression);
+    if (target.kind !== 'name') {
+      return requestReferenceProblem(target, expression, budget);
+    }
   }
   const format = sendTimeFormats[head(expression)];
   if (format) {
@@ -151,10 +215,15 @@ function referenceProblem(
     : { code: 'invalid-variable', severity: 'error', message: problem };
 }
 
-export function variableDiagnostics(file: HttpFile, sources: VariableSources): ParseDiagnostic[] {
+export function variableDiagnostics(
+  file: HttpFile,
+  sources: VariableSources,
+  clock: Clock = wallClock,
+): ParseDiagnostic[] {
+  const budget = new JsonPathBudget(clock);
   return file.requests.flatMap((request) =>
     request.variableReferences.flatMap((reference) => {
-      const problem = referenceProblem(file, reference.expression, sources);
+      const problem = referenceProblem(file, reference.expression, sources, budget);
       return problem ? [{ ...problem, range: reference.range }] : [];
     }),
   );

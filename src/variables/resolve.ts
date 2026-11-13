@@ -1,13 +1,35 @@
 import type { SourcedValue } from '../environments/model';
+import { checkJsonPath } from '../expressions/jsonpath';
 import type { FileVariable, HttpFile, HttpRequest, Range } from '../http-file/model';
 import { scanReferences } from '../http-file/references';
 import { looksLikeCredential } from '../masking/masking';
-import type { VariableSources } from './sources';
+import {
+  jsonPathMessage,
+  notRunMessage,
+  pendingMessage,
+  quoted,
+  referenceTarget,
+  unknownRequestMessage,
+  type ReferenceTarget,
+} from './references';
+import type { CaptureLookupResult, VariableSources } from './sources';
 import { resolveSystemVariable } from './system';
 
 export interface ResolutionProblem {
   message: string;
   range: Range;
+  producer?: string;
+}
+
+export type CaptureWait =
+  | { kind: 'capture'; request: string; name: string; label: string }
+  | { kind: 'response'; requestName: string; reference: string };
+
+export interface CapturedValue {
+  label: string;
+  name: string;
+  secret: boolean;
+  provenance: Extract<CaptureLookupResult, { kind: 'value' }>['provenance'];
 }
 
 export type ResolvedBodyPart =
@@ -35,16 +57,19 @@ export interface VariableScope {
 
 export type Resolution =
   | { ok: true; request: ResolvedRequest; scope: VariableScope; sensitiveValues: string[] }
-  | { ok: false; problems: ResolutionProblem[] };
+  | { ok: false; problems: ResolutionProblem[]; waits: readonly CaptureWait[] };
 
 interface Failure {
   expression: string;
   message: string;
   range: Range | undefined;
   inEnvironment: boolean;
+  producer?: string;
+  wait?: CaptureWait;
 }
 
-type Evaluated = { ok: true; value: string } | { ok: false; failures: Failure[] };
+type Evaluated =
+  { ok: true; value: string; capture?: CapturedValue } | { ok: false; failures: Failure[] };
 
 interface Substituted {
   text: string;
@@ -53,7 +78,6 @@ interface Substituted {
 
 const escapePattern = /\\(.)/g;
 const escapes: Record<string, string> = { n: '\n', r: '\r', t: '\t' };
-const requestReferencePattern = /^[^.\s]+\.(?:request|response)\./;
 const sharedPattern = /^\$shared(?:\s+(\S+))?$/;
 const secretPattern = /^\$secret\s+([\w.-]+)$/;
 const dotenvPattern = /^\$dotenv\s+(%)?([\w.-]+)$/;
@@ -62,10 +86,6 @@ const sharedName = '$shared';
 
 export function unescapeFileVariable(value: string): string {
   return value.replace(escapePattern, (_, character: string) => escapes[character] ?? character);
-}
-
-function quoted(name: string): string {
-  return `\`{{${name}}}\``;
 }
 
 function cycleMessage(names: readonly string[]): string {
@@ -97,8 +117,23 @@ function substitute(text: string, evaluate: (expression: string) => Evaluated): 
   return { text: result + text.slice(from), failures };
 }
 
-function failure(expression: string, message: string): Evaluated {
-  return { ok: false, failures: [{ expression, message, range: undefined, inEnvironment: false }] };
+function failure(
+  expression: string,
+  message: string,
+  cause: Pick<Failure, 'producer' | 'wait'> = {},
+): Evaluated {
+  return {
+    ok: false,
+    failures: [{ expression, message, range: undefined, inEnvironment: false, ...cause }],
+  };
+}
+
+function waitKey(wait: CaptureWait): string {
+  return JSON.stringify(
+    wait.kind === 'capture'
+      ? [wait.kind, wait.request, wait.name]
+      : [wait.kind, wait.requestName, wait.reference],
+  );
 }
 
 function lookedUp(written: string, indirect: boolean, name: string, kind: string): string {
@@ -119,7 +154,7 @@ class Scope implements VariableScope {
   private readonly cache = new Map<string, Evaluated>();
 
   constructor(
-    file: HttpFile,
+    private readonly file: HttpFile,
     private readonly sources: VariableSources,
   ) {
     for (const variable of file.fileVariables) {
@@ -158,6 +193,14 @@ class Scope implements VariableScope {
       const value = resolveSystemVariable(expression, this.sources.system);
       return value.ok ? value : failure(expression, value.message);
     }
+    const target = referenceTarget(this.file, expression);
+    if (target.kind !== 'name') {
+      return this.requestReference(expression, target);
+    }
+    const captured = this.sources.captures.bare(expression);
+    if (captured !== undefined) {
+      return this.captured(expression, expression, captured);
+    }
     const variable = this.variables.get(expression);
     if (variable) {
       return this.fileVariable(variable, stack);
@@ -170,12 +213,84 @@ class Scope implements VariableScope {
     if (shared) {
       return this.sourcedVariable(expression, shared, 'shared', stack);
     }
-    return failure(
-      expression,
-      requestReferencePattern.test(expression)
-        ? `Request references such as ${quoted(expression)} are not supported yet.`
-        : this.undefinedMessage(expression),
-    );
+    return failure(expression, this.undefinedMessage(expression));
+  }
+
+  private captured(expression: string, name: string, result: CaptureLookupResult): Evaluated {
+    switch (result.kind) {
+      case 'value':
+        if (result.secret && result.text !== '') {
+          this.sensitive.add(result.text);
+        }
+        return {
+          ok: true,
+          value: result.text,
+          capture: {
+            label: result.label,
+            name,
+            secret: result.secret,
+            provenance: result.provenance,
+          },
+        };
+      case 'pending':
+        return failure(expression, pendingMessage(result.label, result.name), {
+          wait: {
+            kind: 'capture',
+            request: result.request,
+            name: result.name,
+            label: result.label,
+          },
+        });
+      case 'failed':
+        return failure(expression, result.message);
+      case 'not-run':
+        return failure(
+          expression,
+          notRunMessage(expression, result.label),
+          result.producerName === undefined ? {} : { producer: result.producerName },
+        );
+    }
+  }
+
+  private requestReference(
+    expression: string,
+    target: Exclude<ReferenceTarget, { kind: 'name' }>,
+  ): Evaluated {
+    switch (target.kind) {
+      case 'invalid':
+        return failure(expression, target.message);
+      case 'capture':
+        return this.captured(
+          expression,
+          target.name,
+          this.sources.captures.request(target.request, target.name) ?? {
+            kind: 'not-run',
+            label: target.request,
+            producerName: target.request,
+          },
+        );
+      case 'response':
+        return this.response(expression, target);
+    }
+  }
+
+  private response(
+    expression: string,
+    target: Extract<ReferenceTarget, { kind: 'response' }>,
+  ): Evaluated {
+    const problem = target.query === undefined ? undefined : checkJsonPath(target.query);
+    if (problem !== undefined) {
+      return failure(expression, jsonPathMessage(expression, problem.message));
+    }
+    if (!target.known) {
+      return failure(expression, unknownRequestMessage(expression, target.request));
+    }
+    const result = this.sources.captures.response(target.request, target.reference);
+    return result === undefined
+      ? failure(expression, pendingMessage(target.request, target.reference), {
+          wait: { kind: 'response', requestName: target.request, reference: target.reference },
+        })
+      : this.captured(expression, target.reference, result);
   }
 
   private undefinedMessage(name: string): string {
@@ -413,7 +528,11 @@ function locate(failures: readonly Failure[], request: HttpRequest): ResolutionP
       const key = `${failure.message}@${String(range.start.line)}:${String(range.start.character)}`;
       if (!seen.has(key)) {
         seen.add(key);
-        problems.push({ message: failure.message, range });
+        problems.push(
+          failure.producer === undefined
+            ? { message: failure.message, range }
+            : { message: failure.message, range, producer: failure.producer },
+        );
       }
     }
   }
@@ -463,12 +582,28 @@ function resolveInScope(
           },
     ),
   };
+  if (failures.length === 0) {
+    return {
+      scope,
+      resolution: { ok: true, request: resolved, scope, sensitiveValues: [...scope.sensitive] },
+    };
+  }
+  const waits = new Map<string, CaptureWait>();
+  for (const { wait } of failures) {
+    if (wait !== undefined) {
+      waits.set(waitKey(wait), wait);
+    }
+  }
   return {
     scope,
-    resolution:
-      failures.length === 0
-        ? { ok: true, request: resolved, scope, sensitiveValues: [...scope.sensitive] }
-        : { ok: false, problems: locate(failures, request) },
+    resolution: {
+      ok: false,
+      problems: locate(
+        failures.filter((entry) => entry.wait === undefined),
+        request,
+      ),
+      waits: [...waits.values()],
+    },
   };
 }
 
@@ -492,10 +627,17 @@ export function evaluateExpression(
   file: HttpFile,
   expression: string,
   sources: VariableSources,
-): { ok: true; value: string; sensitiveValues: string[] } | { ok: false; message: string } {
+):
+  | { ok: true; value: string; sensitiveValues: string[]; capture: CapturedValue | undefined }
+  | { ok: false; message: string } {
   const scope = new Scope(file, sources);
   const evaluated = scope.evaluate(expression);
   return evaluated.ok
-    ? { ok: true, value: evaluated.value, sensitiveValues: [...scope.sensitive] }
+    ? {
+        ok: true,
+        value: evaluated.value,
+        sensitiveValues: [...scope.sensitive],
+        capture: evaluated.capture,
+      }
     : { ok: false, message: evaluated.failures[0]?.message ?? '' };
 }

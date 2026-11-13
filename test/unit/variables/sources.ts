@@ -1,11 +1,31 @@
 import type { SourcedValue } from '../../../src/environments/model';
-import type { VariableSources } from '../../../src/variables/sources';
+import {
+  emptyCaptureLookup,
+  type CaptureLookup,
+  type CaptureLookupResult,
+  type VariableSources,
+} from '../../../src/variables/sources';
 
 export function sourced(
   values: Record<string, string>,
   origin: string,
 ): ReadonlyMap<string, SourcedValue> {
   return new Map(Object.entries(values).map(([name, value]) => [name, { value, origin }]));
+}
+
+export function inMemoryCaptures(results: {
+  requests?: Record<string, CaptureLookupResult>;
+  bare?: Record<string, CaptureLookupResult>;
+  responses?: Record<string, CaptureLookupResult>;
+}): CaptureLookup {
+  const requests = new Map(Object.entries(results.requests ?? {}));
+  const bare = new Map(Object.entries(results.bare ?? {}));
+  const responses = new Map(Object.entries(results.responses ?? {}));
+  return {
+    request: (requestName, captureName) => requests.get(`${requestName}.${captureName}`),
+    bare: (captureName) => bare.get(captureName),
+    response: (requestName, reference) => responses.get(`${requestName}.${reference}`),
+  };
 }
 
 export function testSources(overrides: Partial<VariableSources> = {}): VariableSources {
@@ -22,6 +42,7 @@ export function testSources(overrides: Partial<VariableSources> = {}): VariableS
     secrets: new Map(),
     dotenv: { kind: 'missing' },
     processEnv: {},
+    captures: emptyCaptureLookup,
     ...overrides,
   };
 }

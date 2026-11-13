@@ -6,6 +6,30 @@ export type DotenvState =
   | { kind: 'missing' }
   | { kind: 'restricted' };
 
+export type CaptureLookupResult =
+  | {
+      kind: 'value';
+      text: string;
+      secret: boolean;
+      label: string;
+      provenance: { runId: number; event: number | undefined; path: string; time: number };
+    }
+  | { kind: 'pending'; request: string; label: string; name: string }
+  | { kind: 'failed'; message: string }
+  | { kind: 'not-run'; label: string; producerName: string | undefined };
+
+export interface CaptureLookup {
+  request(requestName: string, captureName: string): CaptureLookupResult | undefined;
+  bare(captureName: string): CaptureLookupResult | undefined;
+  response(requestName: string, reference: string): CaptureLookupResult | undefined;
+}
+
+export const emptyCaptureLookup: CaptureLookup = {
+  request: () => undefined,
+  bare: () => undefined,
+  response: (requestName) => ({ kind: 'not-run', label: requestName, producerName: requestName }),
+};
+
 export interface VariableSources {
   system: SystemContext;
   restricted: boolean;
@@ -15,4 +39,5 @@ export interface VariableSources {
   secrets: ReadonlyMap<string, string>;
   dotenv: DotenvState;
   processEnv: Readonly<Record<string, string | undefined>>;
+  captures: CaptureLookup;
 }

@@ -6,7 +6,7 @@ import { SpillArea } from '../../../src/events/spill';
 import { parseHttpFile } from '../../../src/http-file/parse';
 import type { RequestSettings, RunDependencies, RunInput } from '../../../src/runs/run';
 import { defaultStreamLimits } from '../../../src/streaming/limits';
-import type { VariableSources } from '../../../src/variables/sources';
+import { emptyCaptureLookup, type VariableSources } from '../../../src/variables/sources';
 import { NodeTransport } from '../../../src/transport/node-transport';
 
 let currentSpillArea: SpillArea | undefined;
@@ -49,6 +49,7 @@ export const emptyVariables: Omit<VariableSources, 'system' | 'restricted'> = {
   secrets: new Map(),
   dotenv: { kind: 'missing' },
   processEnv: {},
+  captures: emptyCaptureLookup,
 };
 
 export const dependencies: RunDependencies = {

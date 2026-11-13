@@ -4,7 +4,7 @@ import { scanReferences } from '../../http-file/references';
 import { maskedValue, maskUrl } from '../../masking/masking';
 import { unescapeFileVariable } from '../../variables/resolve';
 import { describeReference, secretCandidates, variableCompletions } from '../../variables/inspect';
-import type { VariableSources } from '../../variables/sources';
+import { emptyCaptureLookup, type VariableSources } from '../../variables/sources';
 import type { EnvironmentStore } from '../environments/environment-store';
 import { readDotenv, usesDotenv } from '../requests/variables';
 import type { SecretStore } from '../secrets/secret-store';
@@ -55,6 +55,7 @@ export function createLanguageVariables(
             ? await readDotenv(document.uri, catalog.active)
             : { kind: 'missing' },
         processEnv: restricted ? {} : process.env,
+        captures: emptyCaptureLookup,
       };
     },
     dispose: () => {

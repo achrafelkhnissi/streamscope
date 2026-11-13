@@ -180,6 +180,39 @@ describe('secret, .env and process variables', () => {
     );
   });
 
+  it('with no captures in the session, a response reference blocks as not run', () => {
+    const file = parseHttpFile(
+      [
+        '# @name login',
+        'POST https://api.example.test/login',
+        '',
+        '###',
+        'GET https://api.example.test/items',
+        'Authorization: Bearer {{login.response.body.$.token}}',
+      ].join('\n'),
+    );
+    const request = file.requests[1];
+    if (!request) {
+      throw new Error('expected a request');
+    }
+
+    expect(resolveRequest(file, request, testSources())).toEqual({
+      ok: false,
+      problems: [
+        {
+          message:
+            '`{{login.response.body.$.token}}` comes from login, which has not run in this session.',
+          range: {
+            start: { line: 5, character: 22 },
+            end: { line: 5, character: 53 },
+          },
+          producer: 'login',
+        },
+      ],
+      waits: [],
+    });
+  });
+
   it('keeps $aadToken unsupported', () => {
     expect(problem({}, 'GET https://api.example.test/{{$aadToken}}')).toContain(
       'not supported yet',
