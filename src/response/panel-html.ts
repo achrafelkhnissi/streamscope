@@ -42,6 +42,7 @@ button:focus-visible, .list:focus-visible { outline: 1px solid var(--vscode-focu
 .tab:hover { background: none; color: var(--vscode-panelTitle-activeForeground); }
 .tab[aria-selected="true"] { color: var(--vscode-panelTitle-activeForeground); border-bottom-color: var(--vscode-panelTitle-activeBorder); }
 .captures { display: flex; flex-wrap: wrap; gap: 6px; margin: 0; padding: 5px 12px; list-style: none; max-height: 30vh; overflow-y: auto; border-bottom: 1px solid var(--vscode-panel-border); }
+.captures::before { content: "Captured:" / ""; color: var(--vscode-descriptionForeground); font-size: 11px; }
 .captures li { padding: 0 6px; border: 1px solid var(--vscode-panel-border); border-radius: 3px; font-family: var(--vscode-editor-font-family); font-size: 11px; color: var(--vscode-foreground); overflow-wrap: anywhere; }
 .captures li[data-state="pending"], .captures li[data-state="failed"] { color: var(--vscode-descriptionForeground); }
 .panel { display: none; flex: 1; min-height: 0; overflow: auto; }

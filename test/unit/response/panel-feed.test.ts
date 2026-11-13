@@ -72,6 +72,7 @@ function harness(
     readRaw?: () => Promise<string | undefined>;
     readReply?: () => Promise<string | undefined>;
     registry?: CaptureRegistry;
+    timed?: (work: () => void) => void;
   } = {},
 ): Harness {
   const contentType = options.contentType ?? 'application/x-ndjson';
@@ -109,6 +110,11 @@ function harness(
       streamView: options.streamView ?? 'events',
       post: (message) => posted.push(message),
       captures: registry,
+      timed:
+        options.timed ??
+        ((work) => {
+          work();
+        }),
     },
   );
   const updates = (): Update[] =>
@@ -936,6 +942,42 @@ describe('PanelFeed captured values', () => {
     const history = harness({ registry, readOnly: true });
     history.feed.start();
     expect(history.reset().captures).toEqual([]);
+  });
+
+  it('cuts names at 200 characters too', () => {
+    const page = harness();
+    const name = `n${'a'.repeat(299)}`;
+    begin(page.registry, [{ name, secret: false }]);
+    page.feed.start();
+
+    expect(page.reset().captures[0]?.name).toBe(`${name.slice(0, 199)}…`);
+  });
+
+  it('shows an empty value as "" in the strip, as the inlay hint does', () => {
+    const page = harness();
+    begin(page.registry, threadId);
+    page.registry.update(shownRun, 'threadId', resolved(''));
+    page.feed.start();
+
+    expect(page.reset().captures).toEqual([{ name: 'threadId', state: 'resolved', text: '""' }]);
+  });
+
+  it("refreshes for a capture change through the panel's timed path", () => {
+    vi.useFakeTimers();
+    const timed = vi.fn((work: () => void) => {
+      work();
+    });
+    const page = harness({ timed });
+    begin(page.registry, threadId);
+    page.feed.start();
+
+    page.registry.update(shownRun, 'threadId', resolved('thread-1'));
+    vi.advanceTimersByTime(captureRefreshMs);
+
+    expect(timed).toHaveBeenCalledTimes(1);
+    expect(page.last().captures).toEqual([
+      { name: 'threadId', state: 'resolved', text: 'thread-1' },
+    ]);
   });
 
   it('removes its registry listener and pending refresh when the panel is hidden or disposed', () => {

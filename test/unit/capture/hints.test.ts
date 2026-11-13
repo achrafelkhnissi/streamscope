@@ -81,6 +81,13 @@ describe('captureHint', () => {
     );
   });
 
+  it('an empty value reads "" in the label and the tooltip', () => {
+    const hint = captureHint(entry(resolved('')));
+
+    expect(hint?.label).toBe('= ""');
+    expect(hint?.tooltip.split('\n')[0]).toBe('= ""');
+  });
+
   it('line breaks in a value show as spaces in the label', () => {
     expect(captureHint(entry(resolved('first line\r\nsecond\nthird')))?.label).toBe(
       '= first line second third',

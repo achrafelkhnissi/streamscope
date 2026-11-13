@@ -2347,6 +2347,9 @@ describe('waiting for captured values', () => {
         streamView: 'events',
         post: (message) => posted.push(message),
         captures: registry,
+        timed: (work) => {
+          work();
+        },
       });
       feed.start();
       const file = parseHttpFile(lines.join('\n'));

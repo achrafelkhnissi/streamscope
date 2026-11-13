@@ -278,6 +278,9 @@ export class ResponsePanels implements vscode.Disposable {
       readOnly,
       streamView: this.streamView(),
       captures: this.options.captures,
+      timed: (work) => {
+        this.timed(work);
+      },
       post: (message) => {
         const entry = this.entries.get(key);
         if (entry?.run === run && entry.ready) {
@@ -355,13 +358,19 @@ export class ResponsePanels implements vscode.Disposable {
   }
 
   private refresh(entry: Entry): void {
+    this.timed(() => {
+      entry.feed.refresh();
+    });
+  }
+
+  private timed(work: () => void): void {
     const timer = this.options.benchmark?.timer;
     if (timer === undefined) {
-      entry.feed.refresh();
+      work();
       return;
     }
     const started = performance.now();
-    entry.feed.refresh();
+    work();
     timer.record(performance.now() - started);
   }
 

@@ -52,6 +52,10 @@ describe('captureDisplayText', () => {
       ),
     ).toBe(`${'b'.repeat(190)}${maskedValue}ccc…`);
   });
+
+  it('shows an empty value as ""', () => {
+    expect(shown('')).toBe('""');
+  });
 });
 
 describe('sensitive values of a response', () => {

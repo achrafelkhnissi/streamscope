@@ -358,12 +358,13 @@ describe('the response panel', () => {
     assert.equal(panelTabs().length, 1);
   });
 
-  it('the strip shows threadId pending, then resolved, during a stream', async () => {
+  it('the strip shows threadId pending, then resolved, during a stream', async function () {
+    this.timeout(30_000);
     const server = await streamServer();
     const editor = await open('strip.http', [
       '# @name startRun',
       '# @capture threadId = first(type == "RUN_STARTED").threadId',
-      `GET ${server.url}/stream?delayMs=1500&rate=20&seconds=30&size=128`,
+      `GET ${server.url}/stream?delayMs=5000&rate=20&seconds=30&size=128`,
     ]);
     editor.selection = new vscode.Selection(2, 0, 2, 0);
 
@@ -378,6 +379,7 @@ describe('the response panel', () => {
     const resolved = await waitForState(
       (seen) => seen.captures[0]?.state === 'resolved',
       'the strip did not show threadId resolved',
+      15_000,
     );
 
     assert.deepEqual(resolved.captures, [
@@ -385,6 +387,34 @@ describe('the response panel', () => {
     ]);
     assert.equal(resolved.status, 'receiving');
     await vscode.commands.executeCommand('streamscope.stopRequest');
+  });
+
+  it('a re-run into an open panel leaves exactly one registry listener', async () => {
+    const baseline = await captureListeners();
+    const server = await streamServer();
+    await open('rerun.http', [`GET ${server.url}/stream?rate=20&seconds=30&size=128`]);
+
+    start();
+    const first = await waitForState(
+      (seen) => seen.visible && seen.status === 'receiving',
+      'the panel did not open',
+    );
+    await until(
+      async () => (await captureListeners()) === baseline + 1,
+      'the panel did not listen for captured values',
+    );
+    start();
+    await waitForState(
+      (seen) => seen.run !== first.run && seen.visible && seen.status === 'receiving',
+      'the panel did not move to the new run',
+    );
+    await until(
+      async () => (await captureListeners()) === baseline + 1,
+      'the panel did not listen for the new run',
+    );
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    assert.equal(await captureListeners(), baseline + 1);
   });
 
   it('closing the panel removes its registry listener', async () => {

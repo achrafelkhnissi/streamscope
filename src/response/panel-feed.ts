@@ -108,6 +108,7 @@ export interface PanelFeedOptions {
   streamView: PanelView;
   post(message: ToPanel): void;
   captures: PanelCaptureSource;
+  timed(work: () => void): void;
 }
 
 export type FeedRun = Pick<RunHandle, 'id' | 'snapshot' | 'readRaw' | 'readReply'>;
@@ -137,7 +138,8 @@ function labelledStream(run: RunSnapshot): boolean {
 }
 
 function panelCapture(entry: CaptureEntry): PanelCapture {
-  const { name, result } = entry;
+  const { result } = entry;
+  const name = maskedPreview(entry.name, captureTextLength);
   switch (result.state) {
     case 'pending':
       return { name, state: 'pending', text: '' };
@@ -239,7 +241,7 @@ export class PanelFeed {
     this.stopCaptures();
     this.stopListening = this.options.captures.onDidChange((request) => {
       if (request === this.key) {
-        this.captureChanged();
+        this.scheduleCaptureRefresh();
       }
     });
     this.live = true;
@@ -411,12 +413,14 @@ export class PanelFeed {
     });
   }
 
-  private captureChanged(): void {
+  private scheduleCaptureRefresh(): void {
     this.capturesChanged = true;
     this.captureTimer ??= setTimeout(() => {
       this.captureTimer = undefined;
       if (this.capturesChanged) {
-        this.refresh();
+        this.options.timed(() => {
+          this.refresh();
+        });
       }
     }, captureRefreshMs);
   }

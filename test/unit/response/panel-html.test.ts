@@ -279,6 +279,12 @@ describe('panelHtml', () => {
     );
   });
 
+  it('shows a visible Captured: label before the chips that screen readers skip', () => {
+    expect(rule('.captures::before')).toBe(
+      ' content: "Captured:" / ""; color: var(--vscode-descriptionForeground); font-size: 11px; ',
+    );
+  });
+
   it('says there are no checks for this request', () => {
     expect(html()).toContain('<p id="checks">No checks for this request.</p>');
   });
