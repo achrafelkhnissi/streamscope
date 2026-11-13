@@ -48,12 +48,14 @@ function isHighSurrogate(code: number): boolean {
 }
 
 export function maskedPreview(text: string, length = maxDisplayLength): string {
+  const whole = text.length <= length + previewLookahead;
   const masked = maskUrl(text.slice(0, length + previewLookahead));
-  if (masked.length <= length && text.length <= length + previewLookahead) {
+  if (whole && masked.length <= length) {
     return masked;
   }
-  const kept = isHighSurrogate(masked.charCodeAt(length - 2)) ? length - 2 : length - 1;
-  return `${masked.slice(0, kept)}…`;
+  const end = whole ? length - 1 : Math.min(length - 1, masked.length - previewLookahead);
+  const kept = isHighSurrogate(masked.charCodeAt(end - 1)) ? end - 1 : end;
+  return `${masked.slice(0, Math.max(0, kept))}…`;
 }
 
 const credentialWords = ['token', 'bearer', 'apikey', 'secret', 'password'];

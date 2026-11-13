@@ -113,15 +113,55 @@ describe('masking', () => {
     );
   });
 
+  it('maskedPreview hides a credential past the cut after many masked URLs shorten the text', () => {
+    const urls = Array.from(
+      { length: 40 },
+      (_, index) => `//u:${'q'.repeat(30)}@h${String(index)}`,
+    ).join(' ');
+    const filler = 'b'.repeat(5_100 - urls.length - 1);
+    const credential = 'https://admin:synthetic-pass@api.example.test/a';
+    const text = `${urls} ${filler}${credential}${'c'.repeat(8_000)}`;
+    expect(text.indexOf('@api.example.test')).toBe(5_128);
+
+    const preview = maskedPreview(text);
+
+    expect(preview).not.toMatch(/admin|synth|qqq/);
+    expect(preview.endsWith('…')).toBe(true);
+    expect(preview.length).toBeLessThanOrEqual(4_096);
+  });
+
+  it('maskedPreview never shows user info from a list of URLs at any offset', () => {
+    const list = JSON.stringify(
+      Array.from({ length: 120 }, (_, index) => {
+        const id = String(index).padStart(3, '0');
+        return `postgres://svc_${id}:Synthetic${id}Pass@db-${id}.example.test/app`;
+      }),
+    );
+    const leaks: number[] = [];
+
+    for (let offset = 0; offset < 90; offset += 1) {
+      const preview = maskedPreview(`{"pad":"${'x'.repeat(offset)}","urls":${list}}`);
+      expect(preview.length).toBeLessThanOrEqual(4_096);
+      if (/svc_|Synth|Pass@/.test(preview)) {
+        leaks.push(offset);
+      }
+    }
+
+    expect(leaks).toEqual([]);
+  });
+
   it('maskedPreview fits a length with … and masks user info just past the cut', () => {
     const userInfo = 'https://admin:synthetic-pass@api.example.test/a';
-    const preview = maskedPreview(`${'b'.repeat(4_080)} ${userInfo} ${'c'.repeat(1_048_576)}`);
+    const preview = maskedPreview(`${'b'.repeat(4_080)} ${userInfo} ${'c'.repeat(500)}`);
+    const longer = maskedPreview(`${'b'.repeat(4_080)} ${userInfo} ${'c'.repeat(1_048_576)}`);
 
     expect(maskedPreview('short https://admin:synthetic-pass@api.example.test/a')).toBe(
       'short https://••••••@api.example.test/a',
     );
     expect(preview).toBe(`${'b'.repeat(4_080)} https://••••••…`);
     expect(preview.length).toBe(4_096);
+    expect(longer).not.toMatch(/admin|synth/);
+    expect(longer.length).toBeLessThanOrEqual(4_096);
     expect(maskedPreview('d'.repeat(4_096))).toBe('d'.repeat(4_096));
     expect(maskedPreview('d'.repeat(4_097))).toBe(`${'d'.repeat(4_095)}…`);
     expect(maskedPreview(`${'e'.repeat(8)}😀x`, 10)).toBe(`${'e'.repeat(8)}…`);

@@ -88,7 +88,13 @@ describe('affectedDocuments', () => {
   it('an eviction refreshes hints and diagnostics', () => {
     const registry = new CaptureRegistry(1);
     registry.begin({ id: 1, key: startKey, label: 'startRun', startedAt: 0 }, [threadId]);
-    const results = watch(registry, new Map([[consumerUri, consumer]]));
+    const results = watch(
+      registry,
+      new Map([
+        [agentUri, agent],
+        [consumerUri, consumer],
+      ]),
+    );
 
     registry.begin({ id: 2, key: closedKey, label: 'seed', startedAt: 1 }, [
       { name: 'seeded', secret: false },
@@ -96,7 +102,7 @@ describe('affectedDocuments', () => {
     vi.advanceTimersByTime(200);
 
     expect(registry.get(startKey, 'threadId')).toBeUndefined();
-    expect(results).toEqual([{ hints: [], diagnostics: [consumerUri] }]);
+    expect(results).toEqual([{ hints: [agentUri], diagnostics: [consumerUri] }]);
   });
 
   it('a re-run that drops a capture refreshes hints and diagnostics', () => {
