@@ -13,6 +13,18 @@ export default defineConfig(
     },
   },
   {
+    files: ['src/**'],
+    rules: {
+      'no-restricted-syntax': [
+        'error',
+        {
+          selector: "MetaProperty[meta.name='import']",
+          message: 'import.meta does not exist in the CommonJS and IIFE bundles.',
+        },
+      ],
+    },
+  },
+  {
     files: ['**/*.mjs'],
     extends: [tseslint.configs.disableTypeChecked],
   },

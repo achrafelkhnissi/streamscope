@@ -8,6 +8,7 @@ import {
   type CSTNode,
 } from '@swaggerexpert/jsonpath';
 import type { Value } from './ast';
+import { iRegexpProblem } from './iregexp';
 import { compilePattern, type CompiledPattern, type CompileResult } from './regex';
 
 export interface JsonPathProblem {
@@ -27,8 +28,12 @@ interface CompiledPatterns {
 const maxPatternLength = 500;
 const maxCachedPatterns = 256;
 const maxDepth = 1000;
+const maxQueryLength = 4096;
 const maxParentheses = 8;
-const nestingMessage = `the query nests too deeply (more than ${String(maxParentheses)} levels of parentheses)`;
+const maxBrackets = 64;
+const lengthMessage = 'the query is longer than 4,096 characters';
+const parenthesesMessage = `the query nests too deeply (more than ${String(maxParentheses)} levels of parentheses)`;
+const bracketsMessage = `the query nests too deeply (more than ${String(maxBrackets)} levels of brackets)`;
 const patternFlags = 'u';
 
 const compiledPatterns = new Map<string, CompiledPatterns>();
@@ -39,7 +44,8 @@ function toLinearSyntax(pattern: string): string {
   for (let index = 0; index < pattern.length; index += 1) {
     const char = pattern.charAt(index);
     if (char === '\\') {
-      result += pattern.slice(index, index + 2);
+      result +=
+        pattern.charAt(index + 1) === '-' && !inClass ? '-' : pattern.slice(index, index + 2);
       index += 1;
     } else if (char === '[' && !inClass) {
       inClass = true;
@@ -57,6 +63,10 @@ function toLinearSyntax(pattern: string): string {
 }
 
 function compileSource(pattern: string, whole: boolean): CompileResult {
+  const problem = iRegexpProblem(pattern);
+  if (problem !== undefined) {
+    return { ok: false, message: problem, offset: 0, length: pattern.length };
+  }
   const mapped = toLinearSyntax(pattern);
   return compilePattern(whole ? `^(?:${mapped})$` : mapped, patternFlags);
 }
@@ -129,12 +139,19 @@ function decodeStringLiteral(literal: string): string | undefined {
   return name?.type === 'NameSelector' ? name.value : undefined;
 }
 
-function functionCalls(node: CSTNode, found: CSTNode[] = []): CSTNode[] {
-  if (node.type === 'function-expr') {
-    found.push(node);
-  }
-  for (const child of node.children) {
-    functionCalls(child, found);
+function functionCalls(root: CSTNode): CSTNode[] {
+  const found: CSTNode[] = [];
+  const pending = [root];
+  for (let node = pending.pop(); node !== undefined; node = pending.pop()) {
+    if (node.type === 'function-expr') {
+      found.push(node);
+    }
+    for (let index = node.children.length - 1; index >= 0; index -= 1) {
+      const child = node.children[index];
+      if (child !== undefined) {
+        pending.push(child);
+      }
+    }
   }
   return found;
 }
@@ -170,8 +187,12 @@ function checkPatterns(query: string): JsonPathProblem | undefined {
   return undefined;
 }
 
-function overdeepParenthesis(query: string): number | undefined {
-  let depth = 0;
+function limitProblem(query: string): JsonPathProblem | undefined {
+  if (query.length > maxQueryLength) {
+    return { message: lengthMessage, offset: maxQueryLength };
+  }
+  let parentheses = 0;
+  let brackets = 0;
   let quote = '';
   for (let index = 0; index < query.length; index += 1) {
     const char = query.charAt(index);
@@ -184,12 +205,19 @@ function overdeepParenthesis(query: string): number | undefined {
     } else if (char === "'" || char === '"') {
       quote = char;
     } else if (char === '(') {
-      depth += 1;
-      if (depth > maxParentheses) {
-        return index;
+      parentheses += 1;
+      if (parentheses > maxParentheses) {
+        return { message: parenthesesMessage, offset: index };
       }
-    } else if (char === ')' && depth > 0) {
-      depth -= 1;
+    } else if (char === ')' && parentheses > 0) {
+      parentheses -= 1;
+    } else if (char === '[') {
+      brackets += 1;
+      if (brackets > maxBrackets) {
+        return { message: bracketsMessage, offset: index };
+      }
+    } else if (char === ']' && brackets > 0) {
+      brackets -= 1;
     }
   }
   return undefined;
@@ -205,22 +233,22 @@ function syntaxProblem(query: string, codePoints: number): JsonPathProblem {
 }
 
 export function checkJsonPath(query: string): JsonPathProblem | undefined {
-  const nesting = overdeepParenthesis(query);
-  if (nesting !== undefined) {
-    return { message: nestingMessage, offset: nesting };
+  const limit = limitProblem(query);
+  if (limit !== undefined) {
+    return limit;
   }
   try {
     const { result } = parse(query);
-    if (!result.success) {
-      return syntaxProblem(query, result.maxMatched);
-    }
+    return result.success ? checkPatterns(query) : syntaxProblem(query, result.maxMatched);
   } catch (error) {
     if (error instanceof JSONPathParseError) {
       return { message: error.cause?.message ?? error.message, offset: 0 };
     }
+    if (error instanceof RangeError) {
+      return { message: `the query is too complex to check (${error.message})`, offset: 0 };
+    }
     throw error;
   }
-  return checkPatterns(query);
 }
 
 function isContainer(value: Value): value is Container {
@@ -253,14 +281,15 @@ function exceedsDepth(root: Value, limit: number): boolean {
 }
 
 export function queryJsonPath(value: Value, query: string): JsonPathResult {
+  const limit = limitProblem(query);
+  if (limit !== undefined) {
+    return { ok: false, reason: limit.message };
+  }
   if (exceedsDepth(value, maxDepth)) {
     return {
       ok: false,
       reason: 'the value is nested too deeply for jsonpath() (more than 1,000 levels)',
     };
-  }
-  if (overdeepParenthesis(query) !== undefined) {
-    return { ok: false, reason: nestingMessage };
   }
   try {
     const nodes = evaluate<Value>(value, query, { functions: patternFunctions, trace: false });

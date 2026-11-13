@@ -1,4 +1,4 @@
-import { JSONPathEvaluateError, evaluate } from '@swaggerexpert/jsonpath';
+import { JSONPathEvaluateError, evaluate, parse } from '@swaggerexpert/jsonpath';
 import { describe, expect, it, vi } from 'vitest';
 import type { Value } from '../../../src/expressions/ast';
 import { checkJsonPath, queryJsonPath } from '../../../src/expressions/jsonpath';
@@ -6,7 +6,7 @@ import { compilePattern } from '../../../src/expressions/regex';
 
 vi.mock('@swaggerexpert/jsonpath', async (importOriginal) => {
   const original = await importOriginal<typeof import('@swaggerexpert/jsonpath')>();
-  return { ...original, evaluate: vi.fn(original.evaluate) };
+  return { ...original, evaluate: vi.fn(original.evaluate), parse: vi.fn(original.parse) };
 });
 
 vi.mock('../../../src/expressions/regex', async (importOriginal) => {
@@ -215,6 +215,26 @@ describe('queryJsonPath', () => {
   });
 });
 
+describe('bigint in filters', () => {
+  it('skips a bigint in an ordering comparison and equals the same bigint', () => {
+    const big = 9007199254740993n;
+    const document = {
+      target: big,
+      l: [{ id: big }, { id: 6 }, { id: 9007199254740995n }, { id: 3 }],
+    };
+
+    expect(nodesOf(document, '$.l[?@.id > 5]')).toEqual([{ id: 6 }]);
+    expect(nodesOf(document, '$.l[?@.id < 5]')).toEqual([{ id: 3 }]);
+    expect(nodesOf(document, '$.l[?@.id == $.target]')).toEqual([{ id: big }]);
+    expect(nodesOf(document, '$.l[?@.id != $.target]')).toEqual([
+      { id: 6 },
+      { id: 9007199254740995n },
+      { id: 3 },
+    ]);
+    expect(nodesOf(document, '$.l[?@.id]')).toHaveLength(4);
+  });
+});
+
 describe('checkJsonPath', () => {
   it('accepts valid queries', () => {
     for (const query of [
@@ -271,7 +291,7 @@ describe('checkJsonPath', () => {
     const problem = checkJsonPath(query);
 
     expect(problem?.offset).toBe(query.indexOf("'("));
-    expect(problem?.message).toContain('Backreferences');
+    expect(problem?.message).toBe('The escape `\\1` is not part of I-Regexp (RFC 9485).');
     expect(checkJsonPath("$[?search(@.a, 'x') || search(@.b, '(?<=a)b')]")?.offset).toBe(
       "$[?search(@.a, 'x') || search(@.b, ".length,
     );
@@ -374,5 +394,211 @@ describe('parenthesis nesting', () => {
     const query = `$[?@.a == '(' && ${nestedCalls(9).slice(3, -1)}]`;
 
     expect(checkJsonPath(query)?.message).toBe(tooDeep);
+  });
+});
+
+function patternQuery(pattern: string, name = 'match'): string {
+  return `$[?${name}(@.a, ${JSON.stringify(pattern)})]`;
+}
+
+const groupSyntax =
+  'Group syntax such as `(?:…)` and `(?<name>…)` is not part of I-Regexp (RFC 9485).';
+const lazySyntax = 'Lazy quantifiers such as `*?` are not part of I-Regexp (RFC 9485).';
+
+function escapeMessage(escape: string): string {
+  return `The escape \`${escape}\` is not part of I-Regexp (RFC 9485).`;
+}
+
+describe('patterns outside I-Regexp', () => {
+  it.each([
+    [String.raw`\d`, '5', escapeMessage(String.raw`\d`)],
+    [String.raw`\D`, 'a', escapeMessage(String.raw`\D`)],
+    [String.raw`\w`, 'a', escapeMessage(String.raw`\w`)],
+    [String.raw`\s`, ' ', escapeMessage(String.raw`\s`)],
+    [String.raw`\bb`, 'b', escapeMessage(String.raw`\b`)],
+    [String.raw`\Bb`, 'ab', escapeMessage(String.raw`\B`)],
+    [String.raw`a\x41`, 'aA', escapeMessage(String.raw`\x`)],
+    ['(?<n>a)', 'a', groupSyntax],
+    ['(?:a)', 'a', groupSyntax],
+    ['a*?', 'aa', lazySyntax],
+    ['a+?b', 'ab', lazySyntax],
+    ['a{1,2}?', 'a', lazySyntax],
+    [String.raw`[\d]`, '5', escapeMessage(String.raw`\d`)],
+  ])(
+    'gives false for %s and reports it at the offset of the pattern',
+    (pattern, subject, message) => {
+      for (const name of ['match', 'search']) {
+        const query = patternQuery(pattern, name);
+
+        expect(matching(pattern, [subject], name), `${name} ${pattern}`).toEqual([]);
+        expect(checkJsonPath(query)).toEqual({ message, offset: query.indexOf('"') });
+      }
+    },
+  );
+
+  it('gives false for a pattern outside I-Regexp that the document supplies', () => {
+    const document = { regex: String.raw`\d+`, values: ['12'] };
+
+    expect(nodesOf(document, '$.values[?match(@, $.regex)]')).toEqual([]);
+    expect(nodesOf(document, '$.values[?search(@, $.regex)]')).toEqual([]);
+  });
+
+  it.each([
+    [String.raw`\p{Lu}`, 'Ж'],
+    [String.raw`\P{Nd}`, 'a'],
+    ['[a-z-]+', 'a-b'],
+    ['[-a]', '-'],
+    [String.raw`\(a\)`, '(a)'],
+    [String.raw`a\{2\}`, 'a{2}'],
+    ['a{2}', 'aa'],
+    ['a{2,}', 'aaa'],
+    ['a{1,2}', 'aa'],
+    [String.raw`a\nb`, 'a\nb'],
+    [String.raw`a\tb`, 'a\tb'],
+    [String.raw`a\-b`, 'a-b'],
+    [String.raw`a[\-]b`, 'a-b'],
+    [String.raw`[\]]`, ']'],
+    ['(a|b)*c', 'abac'],
+    ['^ab.*', 'abc'],
+    ['.*bc$', 'abc'],
+  ])('still matches the I-Regexp pattern %s', (pattern, subject) => {
+    expect(checkJsonPath(patternQuery(pattern)), pattern).toBeUndefined();
+    expect(matching(pattern, [subject]), pattern).toEqual([subject]);
+  });
+});
+
+function withFrames<T>(frames: number, action: () => T): T {
+  return frames === 0 ? action() : withFrames(frames - 1, action);
+}
+
+function nestedFilters(levels: number): string {
+  return `$${'[?@'.repeat(levels)}[?match(@, "a")${']'.repeat(levels + 1)}`;
+}
+
+describe('query limits', () => {
+  const tooLong = 'the query is longer than 4,096 characters';
+  const tooManyBrackets = 'the query nests too deeply (more than 64 levels of brackets)';
+
+  function nthOccurrence(query: string, char: string, count: number): number {
+    let index = -1;
+    for (let seen = 0; seen < count; seen += 1) {
+      index = query.indexOf(char, index + 1);
+    }
+    return index;
+  }
+
+  it('rejects 4,097 characters and 1 MB of query quickly', () => {
+    for (const length of [4097, 1_000_000]) {
+      const query = `$${'.a'.repeat(Math.ceil((length - 1) / 2))}`.slice(0, length);
+      const start = performance.now();
+
+      const problem = checkJsonPath(query);
+      const result = queryJsonPath({ a: 1 }, query);
+
+      expect(performance.now() - start, `${String(length)} characters`).toBeLessThan(100);
+      expect(problem).toEqual({ message: tooLong, offset: 4096 });
+      expect(result).toEqual({ ok: false, reason: tooLong });
+    }
+  });
+
+  it('accepts a query of exactly 4,096 characters', () => {
+    const query = `$.${'a'.repeat(4094)}`;
+
+    expect(query).toHaveLength(4096);
+    expect(checkJsonPath(query)).toBeUndefined();
+    expect(queryJsonPath({ a: 1 }, query)).toEqual({ ok: true, nodes: [] });
+  });
+
+  it('rejects 65 levels of brackets quickly', () => {
+    for (const levels of [65, 100, 1000]) {
+      const query = `$${'[?@'.repeat(levels)}.a${']'.repeat(levels)}`;
+      const start = performance.now();
+
+      const problem = checkJsonPath(query);
+      const result = queryJsonPath({ a: 1 }, query);
+
+      expect(performance.now() - start, `${String(levels)} levels`).toBeLessThan(100);
+      expect(problem).toEqual({ message: tooManyBrackets, offset: nthOccurrence(query, '[', 65) });
+      expect(result).toEqual({ ok: false, reason: tooManyBrackets });
+    }
+  });
+
+  it('accepts 64 levels of brackets', () => {
+    const query = `$${'[?@'.repeat(64)}.a${']'.repeat(64)}`;
+
+    expect(checkJsonPath(query)).toBeUndefined();
+    expect(queryJsonPath({ a: 1 }, query)).toEqual({ ok: true, nodes: [] });
+  });
+
+  it('brackets inside string literals do not count', () => {
+    const opening = '['.repeat(100);
+
+    for (const query of [
+      `$['${opening}']`,
+      `$[?@.a == "${opening}"]`,
+      `$[?@.a == '${']'.repeat(100)}']`,
+      `$[?@.a == 'it\\'s ${opening}']`,
+    ]) {
+      expect(checkJsonPath(query), query).toBeUndefined();
+      expect(queryJsonPath({ a: 1 }, query).ok, query).toBe(true);
+    }
+  });
+
+  it('counts the depth of the open brackets, not their number', () => {
+    const query = `$${Array.from({ length: 200 }, () => '[0]').join('')}`;
+
+    expect(checkJsonPath(query)).toBeUndefined();
+  });
+
+  it('checks the query before it measures the value', () => {
+    const deep = nested(50_000);
+
+    expect(queryJsonPath(deep, `$${'.a'.repeat(3000)}`)).toEqual({ ok: false, reason: tooLong });
+    expect(queryJsonPath(deep, `$[?${nestedCalls(9).slice(3, -1)}]`)).toEqual({
+      ok: false,
+      reason: tooDeep,
+    });
+    expect(queryJsonPath(deep, `$${'[?@'.repeat(65)}`)).toEqual({
+      ok: false,
+      reason: tooManyBrackets,
+    });
+    expect(queryJsonPath(deep, '$..id')).toEqual({
+      ok: false,
+      reason: 'the value is nested too deeply for jsonpath() (more than 1,000 levels)',
+    });
+  });
+
+  it('returns a reason when the stack runs out inside the library', () => {
+    vi.mocked(parse).mockImplementationOnce(() => {
+      throw new RangeError('Maximum call stack size exceeded');
+    });
+
+    expect(checkJsonPath('$.a')).toEqual({
+      message: 'the query is too complex to check (Maximum call stack size exceeded)',
+      offset: 0,
+    });
+  });
+
+  it('never throws, even with the stack nearly used up', () => {
+    for (let levels = 40; levels <= 100; levels += 1) {
+      const query = nestedFilters(levels);
+      const check = (): ReturnType<typeof checkJsonPath> =>
+        withFrames(5000, () => checkJsonPath(query));
+      const run = (): ReturnType<typeof queryJsonPath> =>
+        withFrames(5000, () => queryJsonPath({ a: 'a' }, query));
+
+      expect(check, `check ${String(levels)}`).not.toThrow();
+      expect(run, `query ${String(levels)}`).not.toThrow();
+      const problem = check();
+      expect(problem === undefined || problem.message.length > 0).toBe(true);
+      if (levels > 64) {
+        expect(problem).toEqual({
+          message: tooManyBrackets,
+          offset: nthOccurrence(query, '[', 65),
+        });
+      }
+      const outcome = run();
+      expect(outcome.ok || outcome.reason.length > 0).toBe(true);
+    }
   });
 });
