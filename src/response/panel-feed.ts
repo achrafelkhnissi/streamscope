@@ -1,5 +1,8 @@
+import { isSecret } from '../capture/hints';
+import type { CaptureEntry, CaptureRegistry } from '../capture/registry';
 import type { StreamEvent } from '../events/model';
 import type { EventStore } from '../events/store';
+import { maskedPreview, maskedValue, maskValues } from '../masking/masking';
 import type { RunHandle, RunSnapshot } from '../runs/run';
 import { classifyContentType } from '../streaming/detect';
 import { renderHeadersDocument } from './headers-document';
@@ -7,6 +10,7 @@ import { capTail, detailNote, eventText, isEventStream, panelStatus } from './pa
 import {
   panelLimits,
   type PanelBody,
+  type PanelCapture,
   type PanelRow,
   type PanelStatus,
   type PanelView,
@@ -18,7 +22,10 @@ import { capRows, capText, panelRow } from './panel-rows';
 export const rowCacheSize = 1000;
 export const readBackBytes = panelLimits.inlineEventBytes;
 export const readsInFlight = 16;
+export const captureRefreshMs = 50;
 
+const maxPanelCaptures = 64;
+const captureTextLength = 200;
 const partBytes = panelLimits.messageBytes / 2;
 const unavailableEvent = 'This event is no longer available.';
 
@@ -94,10 +101,13 @@ export class RowCache {
   }
 }
 
+export type PanelCaptureSource = Pick<CaptureRegistry, 'forRequest' | 'onDidChange'>;
+
 export interface PanelFeedOptions {
   readOnly: boolean;
   streamView: PanelView;
   post(message: ToPanel): void;
+  captures: PanelCaptureSource;
 }
 
 export type FeedRun = Pick<RunHandle, 'id' | 'snapshot' | 'readRaw' | 'readReply'>;
@@ -126,6 +136,41 @@ function labelledStream(run: RunSnapshot): boolean {
   return isEventStream(run) || known === 'sse' || known === 'ndjson';
 }
 
+function panelCapture(entry: CaptureEntry, sensitiveValues: readonly string[]): PanelCapture {
+  const { name, result } = entry;
+  switch (result.state) {
+    case 'pending':
+      return { name, state: 'pending', text: '' };
+    case 'resolved':
+      return {
+        name,
+        state: 'resolved',
+        text: isSecret(entry) ? maskedValue : maskedPreview(result.text, captureTextLength),
+      };
+    case 'failed':
+      return {
+        name,
+        state: 'failed',
+        text: maskedPreview(maskValues(result.reason, sensitiveValues), captureTextLength),
+      };
+  }
+}
+
+function sameCaptures(left: readonly PanelCapture[], right: readonly PanelCapture[]): boolean {
+  return (
+    left.length === right.length &&
+    left.every((capture, index) => {
+      const other = right[index];
+      return (
+        other !== undefined &&
+        capture.name === other.name &&
+        capture.state === other.state &&
+        capture.text === other.text
+      );
+    })
+  );
+}
+
 export class PanelFeed {
   private live = false;
   private generation = 0;
@@ -149,12 +194,18 @@ export class PanelFeed {
   private readonly rows = new RowCache(rowCacheSize);
   private stored = freshStored();
   private lost: Record<StoredKind, boolean> = { raw: false, reply: false };
+  private readonly key: string;
+  private sentCaptures: PanelCapture[] = [];
+  private capturesChanged = false;
+  private captureTimer: ReturnType<typeof setTimeout> | undefined;
+  private stopListening: () => void = () => undefined;
 
   constructor(
     readonly run: FeedRun,
     private readonly options: PanelFeedOptions,
   ) {
     const snapshot = run.snapshot();
+    this.key = snapshot.key;
     this.requested = labelledStream(snapshot) ? options.streamView : 'body';
     this.shown = this.requested;
     this.bodyState = isEventStream(snapshot) ? { kind: 'stream' } : { kind: 'none' };
@@ -188,7 +239,17 @@ export class PanelFeed {
     return labelledStream(this.run.snapshot());
   }
 
+  get captures(): readonly PanelCapture[] {
+    return this.sentCaptures;
+  }
+
   start(): void {
+    this.stopCaptures();
+    this.stopListening = this.options.captures.onDidChange((request) => {
+      if (request === this.key) {
+        this.captureChanged();
+      }
+    });
     this.live = true;
     this.generation += 1;
     this.acknowledged = 0;
@@ -206,6 +267,8 @@ export class PanelFeed {
     this.headers = renderHeadersDocument(snapshot);
     this.syncBody(snapshot);
     this.bodyChanged = false;
+    this.capturesChanged = false;
+    this.sentCaptures = this.shownCaptures();
     this.options.post({
       type: 'reset',
       run: this.run.id,
@@ -214,6 +277,7 @@ export class PanelFeed {
       status,
       headers: this.headers,
       body: this.bodyState,
+      captures: this.sentCaptures,
     });
     this.refresh();
     if (this.expanding !== undefined) {
@@ -225,6 +289,7 @@ export class PanelFeed {
   pause(): void {
     this.live = false;
     this.generation += 1;
+    this.stopCaptures();
   }
 
   refresh(announce = false): void {
@@ -258,6 +323,7 @@ export class PanelFeed {
       raw: next === 'raw' ? this.rawDelta(snapshot) : undefined,
       body,
       headers,
+      captures: this.changedCaptures(),
     });
     if (switched || announce) {
       this.options.post({ type: 'select', view: next });
@@ -351,6 +417,45 @@ export class PanelFeed {
       note: note === undefined ? undefined : capText(note, panelLimits.inlineEventBytes).text,
       truncated: shown.truncated || capped.cut,
     });
+  }
+
+  private captureChanged(): void {
+    this.capturesChanged = true;
+    this.captureTimer ??= setTimeout(() => {
+      this.captureTimer = undefined;
+      if (this.capturesChanged) {
+        this.refresh();
+      }
+    }, captureRefreshMs);
+  }
+
+  private stopCaptures(): void {
+    this.stopListening();
+    this.stopListening = () => undefined;
+    clearTimeout(this.captureTimer);
+    this.captureTimer = undefined;
+  }
+
+  private shownCaptures(): PanelCapture[] {
+    const entries = this.options.captures.forRequest(this.key);
+    if (entries[0]?.runId !== this.run.id) {
+      return [];
+    }
+    const { sensitiveValues } = this.run.snapshot();
+    return entries.slice(0, maxPanelCaptures).map((entry) => panelCapture(entry, sensitiveValues));
+  }
+
+  private changedCaptures(): PanelCapture[] | undefined {
+    if (!this.capturesChanged) {
+      return undefined;
+    }
+    this.capturesChanged = false;
+    const captures = this.shownCaptures();
+    if (sameCaptures(captures, this.sentCaptures)) {
+      return undefined;
+    }
+    this.sentCaptures = captures;
+    return captures;
   }
 
   private statusOf(snapshot: RunSnapshot): PanelStatus {

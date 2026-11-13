@@ -4,6 +4,7 @@ import {
   panelLimits,
   panelViews,
   parsePanelMessage,
+  type PanelCapture,
   type PanelEventKind,
   type PanelRunState,
   type PanelView,
@@ -32,6 +33,18 @@ describe('panel protocol', () => {
       note: string | undefined;
       truncated: boolean;
     }>();
+  });
+
+  it('`captures` is part of `ToPanel` and pinned by type', () => {
+    expectTypeOf<PanelCapture>().toEqualTypeOf<{
+      name: string;
+      state: 'pending' | 'resolved' | 'failed';
+      text: string;
+    }>();
+    expectTypeOf<Extract<ToPanel, { type: 'reset' }>['captures']>().toEqualTypeOf<PanelCapture[]>();
+    expectTypeOf<Extract<ToPanel, { type: 'update' }>['captures']>().toEqualTypeOf<
+      PanelCapture[] | undefined
+    >();
   });
 
   it('names every view the page can show', () => {

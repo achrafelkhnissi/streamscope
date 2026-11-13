@@ -41,6 +41,9 @@ button:focus-visible, .list:focus-visible { outline: 1px solid var(--vscode-focu
 .tab { background: none; color: var(--vscode-panelTitle-inactiveForeground); border: none; border-bottom: 1px solid transparent; border-radius: 0; padding: 6px 10px; }
 .tab:hover { background: none; color: var(--vscode-panelTitle-activeForeground); }
 .tab[aria-selected="true"] { color: var(--vscode-panelTitle-activeForeground); border-bottom-color: var(--vscode-panelTitle-activeBorder); }
+.captures { display: flex; flex-wrap: wrap; gap: 6px; margin: 0; padding: 5px 12px; list-style: none; max-height: 30vh; overflow-y: auto; border-bottom: 1px solid var(--vscode-panel-border); }
+.captures li { padding: 0 6px; border: 1px solid var(--vscode-panel-border); border-radius: 3px; font-family: var(--vscode-editor-font-family); font-size: 11px; color: var(--vscode-foreground); overflow-wrap: anywhere; }
+.captures li[data-state="pending"], .captures li[data-state="failed"] { color: var(--vscode-descriptionForeground); }
 .panel { display: none; flex: 1; min-height: 0; overflow: auto; }
 .panel.on { display: block; }
 #panel-events.on { display: flex; }
@@ -112,6 +115,7 @@ export function panelHtml(options: PanelHtmlOptions): string {
 <header class="bar"><span class="pill" id="state"></span><span id="status"></span><button type="button" id="open" hidden>Open in Editor</button><button type="button" id="save" disabled>Save Response</button><button type="button" id="stop" disabled>Stop</button></header>
 <p id="history-note" hidden></p>
 <div class="tabs" role="tablist" aria-label="Response views">${panelViews.map(tabButton).join('')}</div>
+<ul class="captures" id="captures" aria-label="Captured values" hidden></ul>
 ${panelViews.map(panel).join('\n')}
 <div class="visually-hidden" id="announce" role="status" aria-live="polite"></div>
 <script nonce="${nonce}" src="${escapeHtml(options.scriptUri)}"></script>

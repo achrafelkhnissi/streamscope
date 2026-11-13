@@ -86,6 +86,10 @@ export class CaptureRegistry {
     return this.waits;
   }
 
+  get listenerCount(): number {
+    return this.listeners.size;
+  }
+
   begin(
     run: { id: number; key: string; label: string; startedAt: number },
     definitions: readonly { name: string; secret: boolean }[],

@@ -2,9 +2,14 @@ import { randomBytes } from 'node:crypto';
 import * as vscode from 'vscode';
 import type { TaskTimer } from '../../benchmark/task-timer';
 import { panelStatus } from '../../response/panel-content';
-import { PanelFeed } from '../../response/panel-feed';
+import { PanelFeed, type PanelCaptureSource } from '../../response/panel-feed';
 import { panelHtml } from '../../response/panel-html';
-import { parsePanelMessage, type PanelBody, type PanelView } from '../../response/panel-protocol';
+import {
+  parsePanelMessage,
+  type PanelBody,
+  type PanelCapture,
+  type PanelView,
+} from '../../response/panel-protocol';
 import { panelTitle } from '../../response/run-status';
 import type { RunHandle, RunStatus } from '../../runs/run';
 import { formatLabel } from '../../streaming/detect';
@@ -30,6 +35,7 @@ export interface ResponseState {
   title: string | undefined;
   bodyText: string | undefined;
   statusText: string;
+  captures: readonly PanelCapture[];
 }
 
 export interface PanelBenchmark {
@@ -41,6 +47,7 @@ export interface ResponsePanelsOptions {
   extensionUri: vscode.Uri;
   state: vscode.Memento;
   presenter: ResponsePresenter;
+  captures: PanelCaptureSource;
   benchmark?: PanelBenchmark;
   save(run: RunHandle, documentUri: vscode.Uri): Promise<void>;
 }
@@ -208,6 +215,7 @@ export class ResponsePanels implements vscode.Disposable {
       title: entry.panel?.title,
       bodyText: bodyText(entry.feed.body),
       statusText: panelStatus(snapshot).text,
+      captures: entry.feed.captures,
     };
   }
 
@@ -269,6 +277,7 @@ export class ResponsePanels implements vscode.Disposable {
     return new PanelFeed(run, {
       readOnly,
       streamView: this.streamView(),
+      captures: this.options.captures,
       post: (message) => {
         const entry = this.entries.get(key);
         if (entry?.run === run && entry.ready) {

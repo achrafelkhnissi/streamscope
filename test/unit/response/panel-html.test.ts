@@ -266,6 +266,19 @@ describe('panelHtml', () => {
     expect(page).toContain('</header>\n<p id="history-note" hidden></p>\n<div class="tabs"');
   });
 
+  it('the strip is a list labelled Captured values, hidden when empty', () => {
+    const page = html();
+    const strip = '<ul class="captures" id="captures" aria-label="Captured values" hidden></ul>';
+
+    expect(page.split(strip)).toHaveLength(2);
+    expect(page.indexOf(strip)).toBeGreaterThan(page.indexOf('role="tablist"'));
+    expect(page.indexOf(strip)).toBeLessThan(page.indexOf('role="tabpanel"'));
+    expect(rule('.captures li')).toContain('color: var(--vscode-foreground);');
+    expect(rule('.captures li[data-state="pending"], .captures li[data-state="failed"]')).toBe(
+      ' color: var(--vscode-descriptionForeground); ',
+    );
+  });
+
   it('says there are no checks for this request', () => {
     expect(html()).toContain('<p id="checks">No checks for this request.</p>');
   });

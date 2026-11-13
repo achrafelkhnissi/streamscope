@@ -51,6 +51,12 @@ export interface TextDelta {
   text: string;
 }
 
+export interface PanelCapture {
+  name: string;
+  state: 'pending' | 'resolved' | 'failed';
+  text: string;
+}
+
 export type PanelBody =
   | { kind: 'none' }
   | { kind: 'arriving' }
@@ -68,6 +74,7 @@ export type ToPanel =
       status: PanelStatus;
       headers: string;
       body: PanelBody;
+      captures: PanelCapture[];
     }
   | {
       type: 'update';
@@ -79,6 +86,7 @@ export type ToPanel =
       raw: TextDelta | undefined;
       body: PanelBody | undefined;
       headers: string | undefined;
+      captures: PanelCapture[] | undefined;
     }
   | { type: 'rows'; run: number; rows: PanelRow[] }
   | {

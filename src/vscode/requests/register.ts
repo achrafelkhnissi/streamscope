@@ -317,6 +317,7 @@ export function registerRequestFeatures(
     extensionUri: context.extensionUri,
     state: context.globalState,
     presenter,
+    captures,
     benchmark,
     save: (run, documentUri) => saveRun(run, documentUri, undefined),
   });
@@ -677,6 +678,10 @@ export function registerRequestFeatures(
         typeof id === 'number' ? statuses.get(id) : undefined,
       ),
       vscode.commands.registerCommand('streamscope.test.blockedActions', () => lastBlocked),
+      vscode.commands.registerCommand(
+        'streamscope.test.captureListeners',
+        () => captures.listenerCount,
+      ),
       vscode.commands.registerCommand('streamscope.test.closeResponseTabs', closeResponseTabs),
       vscode.commands.registerCommand(
         'streamscope.test.openEvent',

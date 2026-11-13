@@ -3,6 +3,7 @@ import type { PanelStatus } from '../../../src/response/panel-protocol';
 import { maxReplyLength } from '../../../src/streaming/limits';
 import {
   bodyNote,
+  captureText,
   historyNote,
   rawNote,
   replyNote,
@@ -159,5 +160,24 @@ describe('replyNote', () => {
 
   it('names the limit the reply assembler stops at', () => {
     expect(maxReplyLength).toBe(1_048_576);
+  });
+});
+
+describe('captureText', () => {
+  it('reads a capture as name · value, name · waiting or name · ✗ reason', () => {
+    expect(captureText({ name: 'threadId', state: 'resolved', text: 'thread-1' })).toBe(
+      'threadId · thread-1',
+    );
+    expect(captureText({ name: 'threadId', state: 'pending', text: '' })).toBe(
+      'threadId · waiting',
+    );
+    expect(
+      captureText({
+        name: 'threadId',
+        state: 'failed',
+        text: 'startRun was cancelled before threadId resolved',
+      }),
+    ).toBe('threadId · ✗ startRun was cancelled before threadId resolved');
+    expect(captureText({ name: 'empty', state: 'resolved', text: '' })).toBe('empty · ');
   });
 });

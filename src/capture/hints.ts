@@ -14,7 +14,7 @@ export function hintText(text: string): string {
   return maskedPreview(text, maxHintLength).replace(lineBreaks, ' ');
 }
 
-function hidden(entry: CaptureEntry): boolean {
+export function isSecret(entry: CaptureEntry): boolean {
   return (
     entry.secret ||
     (entry.result.state === 'resolved' && entry.result.secret) ||
@@ -28,7 +28,7 @@ function hintLabel(entry: CaptureEntry): string {
     case 'pending':
       return '…';
     case 'resolved':
-      return `= ${hidden(entry) ? maskedValue : hintText(result.text)}`;
+      return `= ${isSecret(entry) ? maskedValue : hintText(result.text)}`;
     case 'failed':
       return `✗ ${hintText(result.reason)}`;
   }
@@ -41,7 +41,7 @@ function hintTooltip(entry: CaptureEntry): string {
     case 'pending':
       return `… has not arrived yet\n${origin}`;
     case 'resolved':
-      return `= ${hidden(entry) ? maskedValue : maskedPreview(result.text)}\n${captureProvenance({
+      return `= ${isSecret(entry) ? maskedValue : maskedPreview(result.text)}\n${captureProvenance({
         label,
         name,
         secret,

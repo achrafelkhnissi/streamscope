@@ -1,4 +1,9 @@
-import type { PanelBody, PanelRunState, PanelStatus } from '../response/panel-protocol';
+import type {
+  PanelBody,
+  PanelCapture,
+  PanelRunState,
+  PanelStatus,
+} from '../response/panel-protocol';
 
 export const stateLabels: Record<PanelRunState, string> = {
   waiting: 'Waiting',
@@ -81,5 +86,16 @@ export function bodyNote(body: PanelBody): string {
       return `Showing the first ${plural(lineCount(body.text), 'line')} of a ${sizeText(body.totalBytes)} body.`;
     default:
       return '';
+  }
+}
+
+export function captureText(capture: PanelCapture): string {
+  switch (capture.state) {
+    case 'pending':
+      return `${capture.name} · waiting`;
+    case 'resolved':
+      return `${capture.name} · ${capture.text}`;
+    case 'failed':
+      return `${capture.name} · ✗ ${capture.text}`;
   }
 }

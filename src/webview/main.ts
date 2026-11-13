@@ -3,6 +3,7 @@ import {
   panelViews,
   type FromPanel,
   type PanelBody,
+  type PanelCapture,
   type PanelRow,
   type PanelRunState,
   type PanelStatus,
@@ -20,6 +21,7 @@ import {
 } from './panel-state';
 import {
   bodyNote,
+  captureText,
   historyNote,
   rawNote,
   replyNote,
@@ -86,6 +88,7 @@ const statePill = element('state', HTMLSpanElement);
 const statusText = element('status', HTMLSpanElement);
 const openButton = element('open', HTMLButtonElement);
 const historyText = element('history-note', HTMLParagraphElement);
+const captureList = element('captures', HTMLUListElement);
 const stopButton = element('stop', HTMLButtonElement);
 const saveButton = element('save', HTMLButtonElement);
 const announcer = element('announce', HTMLDivElement);
@@ -278,6 +281,18 @@ function showBody(next: PanelBody): void {
   noteText.hidden = note === '';
   bodyText.textContent = next.kind === 'text' || next.kind === 'preview' ? next.text : '';
   updateOpenButton();
+}
+
+function captureItem(capture: PanelCapture): HTMLLIElement {
+  const item = document.createElement('li');
+  item.dataset.state = capture.state;
+  item.textContent = captureText(capture);
+  return item;
+}
+
+function showCaptures(captures: readonly PanelCapture[]): void {
+  captureList.replaceChildren(...captures.map(captureItem));
+  captureList.hidden = captures.length === 0;
 }
 
 function appendReply(delta: TextDelta): void {
@@ -637,6 +652,7 @@ function reset(message: Extract<ToPanel, { type: 'reset' }>): void {
   replyNode.data = '';
   showHeaders(message.headers);
   showBody(message.body);
+  showCaptures(message.captures);
   stopButton.hidden = message.readOnly;
   showStatus(message.status);
   showView(effectiveView(message.view, message.status), false);
@@ -665,6 +681,9 @@ function update(message: Extract<ToPanel, { type: 'update' }>): void {
   }
   if (message.body !== undefined) {
     showBody(message.body);
+  }
+  if (message.captures !== undefined) {
+    showCaptures(message.captures);
   }
 }
 
