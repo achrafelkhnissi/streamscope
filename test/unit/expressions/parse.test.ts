@@ -948,6 +948,13 @@ describe('parseExpression', () => {
       });
     });
 
+    it('reports an empty group name over the angle brackets', () => {
+      expect(failure('text matches /(?<>x)/')).toStrictEqual({
+        message: 'Invalid group name.',
+        span: { start: 16, end: 18 },
+      });
+    });
+
     it('reports a pattern over 500 characters over the 501st', () => {
       expect(failure(`text matches /${'a'.repeat(501)}/`)).toStrictEqual({
         message: 'A regular expression is at most 500 characters.',

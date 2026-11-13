@@ -2,7 +2,9 @@ const maxPatternLength = 500;
 const maxInstructions = 2000;
 const maxCount = maxInstructions;
 const maxWork = 1_000_000;
-const maxCachedCharacters = 4096;
+const maxCachedPerAtom = 256;
+const maxCachedPerPattern = 16_384;
+const heavyWeight = 8;
 const maxCodePoint = 0x10ffff;
 const allowedFlags = 'imsu';
 const braceQuantifier = /\{(\d+)(?:(,)(\d*))?\}/y;
@@ -61,7 +63,7 @@ const messages = {
 
 export interface RegexMatch {
   match: string;
-  groups: readonly (string | undefined)[];
+  group: string | undefined;
 }
 
 export interface CompiledPattern {
@@ -104,7 +106,7 @@ interface RepeatNode {
 
 type Node =
   | { kind: 'empty' }
-  | { kind: 'atom'; test: CharTest }
+  | { kind: 'atom'; test: CharTest; heavy: boolean }
   | { kind: 'assert'; assertion: number }
   | { kind: 'concat'; items: Node[] }
   | { kind: 'alt'; items: Node[] }
@@ -117,7 +119,12 @@ interface Program {
   ys: Int32Array;
   tests: readonly (CharTest | undefined)[];
   size: number;
-  groups: number;
+  weight: number;
+  hasGroup: boolean;
+}
+
+interface CachePool {
+  entries: number;
 }
 
 class PatternError extends Error {
@@ -283,7 +290,25 @@ function rangeTest(pairs: Pair[], negated: boolean): CharTest {
 const anyCharacter: CharTest = () => true;
 const notLineTerminator: CharTest = (code) => !isLineTerminator(code);
 
-function engineTest(expression: RegExp): CharTest {
+function remember(
+  cache: Map<number, boolean>,
+  pool: CachePool,
+  code: number,
+  result: boolean,
+): void {
+  if (cache.size >= maxCachedPerAtom || pool.entries >= maxCachedPerPattern) {
+    const oldest = cache.keys().next();
+    if (oldest.done === true) {
+      return;
+    }
+    cache.delete(oldest.value);
+    pool.entries -= 1;
+  }
+  cache.set(code, result);
+  pool.entries += 1;
+}
+
+function engineTest(expression: RegExp, pool: CachePool): CharTest {
   const ascii = new Uint8Array(128);
   const others = new Map<number, boolean>();
   return (code) => {
@@ -301,10 +326,7 @@ function engineTest(expression: RegExp): CharTest {
       return cached;
     }
     const result = expression.test(String.fromCodePoint(code));
-    if (others.size >= maxCachedCharacters) {
-      others.clear();
-    }
-    others.set(code, result);
+    remember(others, pool, code, result);
     return result;
   };
 }
@@ -331,6 +353,7 @@ class Parser {
   private position = 0;
   private groupCount = 0;
   private readonly names = new Set<string>();
+  private readonly pool: CachePool = { entries: 0 };
 
   constructor(
     private readonly pattern: string,
@@ -492,7 +515,11 @@ class Parser {
         return this.group();
       case '.':
         this.position += 1;
-        return { kind: 'atom', test: this.mode.dotAll ? anyCharacter : notLineTerminator };
+        return {
+          kind: 'atom',
+          test: this.mode.dotAll ? anyCharacter : notLineTerminator,
+          heavy: false,
+        };
       case '[':
         return this.characterClass();
       case '\\':
@@ -539,7 +566,7 @@ class Parser {
         : `\\u${code.toString(16).padStart(4, '0')}`;
       return this.engineAtom(source, start, this.position - start);
     }
-    return { kind: 'atom', test: (candidate) => candidate === code };
+    return { kind: 'atom', test: (candidate) => candidate === code, heavy: false };
   }
 
   private engineAtom(source: string, start: number, length: number): Node {
@@ -550,7 +577,7 @@ class Parser {
     } catch {
       throw new PatternError(messages.property, start, length);
     }
-    return { kind: 'atom', test: engineTest(expression) };
+    return { kind: 'atom', test: engineTest(expression, this.pool), heavy: true };
   }
 
   private group(): Node {
@@ -602,7 +629,9 @@ class Parser {
     }
     const name = this.pattern.slice(nameStart, close);
     if (!groupName.test(name)) {
-      throw new PatternError(messages.invalidName, nameStart, name.length);
+      throw name === ''
+        ? new PatternError(messages.invalidName, start + 2, 2)
+        : new PatternError(messages.invalidName, nameStart, name.length);
     }
     if (this.names.has(name)) {
       throw new PatternError(`Duplicate group name \`${name}\`.`, nameStart, name.length);
@@ -628,7 +657,7 @@ class Parser {
     if (escape.engine) {
       return this.engineAtom(this.pattern.slice(start, this.position), start, length);
     }
-    return { kind: 'atom', test: rangeTest(escape.pairs, false) };
+    return { kind: 'atom', test: rangeTest(escape.pairs, false), heavy: false };
   }
 
   private readEscape(inClass: boolean): Escape {
@@ -819,7 +848,7 @@ class Parser {
         this.position - start,
       );
     }
-    return { kind: 'atom', test: rangeTest(pairs, negated) };
+    return { kind: 'atom', test: rangeTest(pairs, negated), heavy: false };
   }
 
   private classAtom(): Escape {
@@ -844,6 +873,7 @@ class Emitter {
   private readonly xs: number[] = [];
   private readonly ys: number[] = [];
   private readonly tests: (CharTest | undefined)[] = [];
+  private extraWeight = 0;
   private blame: { offset: number; length: number };
 
   constructor(patternLength: number) {
@@ -865,7 +895,8 @@ class Emitter {
       ys: Int32Array.from(this.ys),
       tests: this.tests,
       size: this.ops.length,
-      groups,
+      weight: this.ops.length + this.extraWeight,
+      hasGroup: groups > 0,
     };
   }
 
@@ -886,6 +917,9 @@ class Emitter {
         return;
       case 'atom':
         this.push(opChar, 0, 0, node.test);
+        if (node.heavy) {
+          this.extraWeight += heavyWeight - 1;
+        }
         return;
       case 'assert':
         this.push(opAssert, node.assertion);
@@ -896,9 +930,13 @@ class Emitter {
         }
         return;
       case 'group':
-        this.push(opSave, 2 * node.index);
-        this.emit(node.body);
-        this.push(opSave, 2 * node.index + 1);
+        if (node.index === 1) {
+          this.push(opSave, 2);
+          this.emit(node.body);
+          this.push(opSave, 3);
+        } else {
+          this.emit(node.body);
+        }
         return;
       case 'alt':
         this.emitAlternatives(node.items);
@@ -970,8 +1008,8 @@ class Emitter {
   }
 
   private iteration(node: RepeatNode): void {
-    if (node.lastGroup >= node.firstGroup) {
-      this.push(opClear, 2 * node.firstGroup, 2 * node.lastGroup + 1);
+    if (node.firstGroup <= 1 && node.lastGroup >= 1) {
+      this.push(opClear, 2, 3);
     }
     this.emit(node.body);
   }
@@ -1049,7 +1087,7 @@ class Machine {
     this.lists = [new ThreadList(program.size), new ThreadList(program.size)];
     this.stackPcs = new Int32Array(program.size + 1);
     this.stackCaps = new Array<Int32Array | null>(program.size + 1).fill(null);
-    this.slots = 2 * (program.groups + 1);
+    this.slots = program.hasGroup ? 4 : 2;
   }
 
   search(subject: string, captures: boolean): Int32Array | undefined {
@@ -1195,26 +1233,25 @@ class Matcher implements CompiledPattern {
   }
 
   test(subject: string): boolean | 'too-long' {
-    if (subject.length * this.program.size > maxWork) {
+    if (subject.length * this.program.weight > maxWork) {
       return 'too-long';
     }
     return this.machine.search(subject, false) !== undefined;
   }
 
   firstMatch(subject: string): RegexMatch | undefined | 'too-long' {
-    if (subject.length * this.program.size > maxWork) {
+    if (subject.length * this.program.weight > maxWork) {
       return 'too-long';
     }
     const caps = this.machine.search(subject, true);
     if (caps === undefined) {
       return undefined;
     }
-    const groups: (string | undefined)[] = [];
-    for (let group = 1; group <= this.program.groups; group += 1) {
-      const start = at(caps, 2 * group);
-      const end = at(caps, 2 * group + 1);
-      groups.push(start >= 0 && end >= 0 ? subject.slice(start, end) : undefined);
-    }
-    return { match: subject.slice(at(caps, 0), at(caps, 1)), groups };
+    const start = this.program.hasGroup ? at(caps, 2) : -1;
+    const end = this.program.hasGroup ? at(caps, 3) : -1;
+    return {
+      match: subject.slice(at(caps, 0), at(caps, 1)),
+      group: start >= 0 && end >= 0 ? subject.slice(start, end) : undefined,
+    };
   }
 }

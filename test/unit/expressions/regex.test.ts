@@ -1,9 +1,9 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { checkFlags, compilePattern, type CompiledPattern } from '../../../src/expressions/regex';
 
 interface Found {
   match: string;
-  groups: (string | undefined)[];
+  group: string | undefined;
 }
 
 function compile(pattern: string, flags = ''): CompiledPattern {
@@ -27,13 +27,53 @@ function rejection(
 
 function expected(pattern: string, flags: string, subject: string): Found | undefined {
   const found = new RegExp(pattern, flags).exec(subject);
-  return found === null ? undefined : { match: found[0], groups: found.slice(1) };
+  return found === null ? undefined : { match: found[0], group: found[1] };
 }
 
 function timed<T>(run: () => T): { value: T; ms: number } {
   const start = performance.now();
   const value = run();
   return { value, ms: performance.now() - start };
+}
+
+function longestSubject(pattern: CompiledPattern): number {
+  let low = 1;
+  let high = 1_000_000;
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2);
+    if (pattern.test('a'.repeat(middle)) === 'too-long') {
+      high = middle - 1;
+    } else {
+      low = middle;
+    }
+  }
+  return low;
+}
+
+function largestCount(build: (count: number) => string): number {
+  let count = 1;
+  while (compilePattern(build(count + 1), '').ok) {
+    count += 1;
+  }
+  return count;
+}
+
+function distinct(count: number): string {
+  let text = '';
+  for (let index = 0; index < count; index += 1) {
+    text += String.fromCodePoint(0x4e00 + index);
+  }
+  return text;
+}
+
+function countRegExpTests(run: () => void): number {
+  const spy = vi.spyOn(RegExp.prototype, 'test');
+  try {
+    run();
+    return spy.mock.calls.length;
+  } finally {
+    spy.mockRestore();
+  }
 }
 
 const common = [
@@ -286,34 +326,56 @@ describe('compilePattern', () => {
     }
   });
 
-  it('keeps the match and every group of the famous specification example', () => {
+  it('keeps the match and group 1 of the famous specification example', () => {
     expect(compile('(z)((a+)?(b+)?(c))*').firstMatch('zaacbbbcac')).toStrictEqual({
       match: 'zaacbbbcac',
-      groups: ['z', 'ac', 'a', undefined, 'c'],
+      group: 'z',
     });
   });
 
-  it('returns the groups of a failed optional group as undefined', () => {
-    expect(compile('(a)|(b)').firstMatch('b')).toStrictEqual({
-      match: 'b',
-      groups: [undefined, 'b'],
+  it('returns group 1 as undefined when it did not take part', () => {
+    expect(compile('(a)|(b)').firstMatch('b')).toStrictEqual({ match: 'b', group: undefined });
+    expect(compile('(a)?b').firstMatch('b')).toStrictEqual({ match: 'b', group: undefined });
+    expect(compile('a(b)?').firstMatch('a')).toStrictEqual({ match: 'a', group: undefined });
+  });
+
+  it('returns group 1 as undefined when there is no group', () => {
+    expect(compile('ab').firstMatch('xab')).toStrictEqual({ match: 'ab', group: undefined });
+  });
+
+  it('returns the last iteration of group 1 inside a repetition, and undefined after a reset', () => {
+    expect(compile('(a|b)+').firstMatch('abba')).toStrictEqual({ match: 'abba', group: 'a' });
+    expect(compile('(?:(a)|b)*').firstMatch('ab')).toStrictEqual({ match: 'ab', group: undefined });
+    expect(compile('(?:(a)|b)*').firstMatch('ba')).toStrictEqual({ match: 'ba', group: 'a' });
+    expect(compile('((a)|b){1,3}').firstMatch('abab')).toStrictEqual({ match: 'aba', group: 'a' });
+    expect(compile('(a(b)?)+').firstMatch('aab')).toStrictEqual({ match: 'aab', group: 'ab' });
+  });
+
+  it('numbers group 1 as the first opening parenthesis, whatever the nesting', () => {
+    expect(compile('((a)(b))c').firstMatch('abc')).toStrictEqual({ match: 'abc', group: 'ab' });
+    expect(compile('(?:(a)|(b))+').firstMatch('ab')).toStrictEqual({
+      match: 'ab',
+      group: undefined,
     });
-    expect(compile('(a)?b').firstMatch('b')).toStrictEqual({ match: 'b', groups: [undefined] });
+    expect(compile('(?<first>x)(?<second>y)').firstMatch('xy')).toStrictEqual({
+      match: 'xy',
+      group: 'x',
+    });
   });
 
   it('reuses one compiled pattern for many subjects and both methods', () => {
     const pattern = compile(String.raw`(\d+)-(\d+)`);
 
     expect(pattern.test('1-2')).toBe(true);
-    expect(pattern.firstMatch('x 10-20 y')).toStrictEqual({ match: '10-20', groups: ['10', '20'] });
+    expect(pattern.firstMatch('x 10-20 y')).toStrictEqual({ match: '10-20', group: '10' });
     expect(pattern.test('1-')).toBe(false);
     expect(pattern.firstMatch('1-')).toBeUndefined();
-    expect(pattern.firstMatch('3-4')).toStrictEqual({ match: '3-4', groups: ['3', '4'] });
+    expect(pattern.firstMatch('3-4')).toStrictEqual({ match: '3-4', group: '3' });
   });
 
   it('never matches between the halves of a surrogate pair with u', () => {
     expect(compile('\\B', 'u').test('a😀a')).toBe(false);
-    expect(compile('\\B', '').firstMatch('a😀a')).toStrictEqual({ match: '', groups: [] });
+    expect(compile('\\B', '').firstMatch('a😀a')).toStrictEqual({ match: '', group: undefined });
   });
 
   it('matches against a lone surrogate and an astral character with and without u', () => {
@@ -350,7 +412,7 @@ describe('the former bypasses of the static check', () => {
     ['(?:a{0,2}) 25 times then x', '(?:a{0,2})'.repeat(25) + 'x', '', 'a'.repeat(50)],
     ['(?:\\w|\\d) 30 times then !', String.raw`(?:\w|\d)`.repeat(30) + '!', '', '1'.repeat(30)],
     ['(a|a) 28 times then x', '(a|a)'.repeat(28) + 'x', '', 'a'.repeat(28)],
-    ['ΐ+ΐ+$ with iu', 'ΐ+ΐ+$', 'iu', 'ΐ'.repeat(50000) + '!'],
+    ['ΐ+ΐ+$ with iu', 'ΐ+ΐ+$', 'iu', 'ΐ'.repeat(30000) + '!'],
     ['\\d+x on 100,000 digits', String.raw`\d+x`, '', '1'.repeat(100000)],
     ['(a+)+$ on a failing subject', '(a+)+$', '', 'a'.repeat(20000) + '!'],
     ['(a|aa)*b on a failing subject', '(a|aa)*b', '', 'a'.repeat(20000)],
@@ -426,28 +488,6 @@ describe('limits', () => {
     expect(pattern.firstMatch('b'.repeat(low))).toBeUndefined();
   });
 
-  function longestSubject(pattern: CompiledPattern): number {
-    let low = 1;
-    let high = 1_000_000;
-    while (low < high) {
-      const middle = Math.ceil((low + high) / 2);
-      if (pattern.test('a'.repeat(middle)) === 'too-long') {
-        high = middle - 1;
-      } else {
-        low = middle;
-      }
-    }
-    return low;
-  }
-
-  function largestCount(build: (count: number) => string): number {
-    let count = 1;
-    while (compilePattern(build(count + 1), '').ok) {
-      count += 1;
-    }
-    return count;
-  }
-
   it('finishes a program at the instruction limit on a subject at the work limit within 100 ms', () => {
     const count = largestCount((n) => `a{1,${String(n)}}b`);
     const pattern = compile(`a{1,${String(count)}}b`);
@@ -487,6 +527,84 @@ describe('limits', () => {
 
     expect(value).toBe(false);
     expect(ms).toBeLessThan(100);
+  });
+});
+
+describe('cost at the work limit', () => {
+  const captureFamilies: [label: string, pattern: string][] = [
+    ['248 nested groups then x', '('.repeat(248) + 'a' + ')'.repeat(248) + 'x'],
+    ['248 empty groups then x', '()'.repeat(248) + 'x'],
+    ['166 groups of a then x', '(a)'.repeat(166) + 'x'],
+    ['an outer group around 10 groups, repeated', '(' + String.raw`(\w)`.repeat(10) + ')+!'],
+    ['(a|a) 28 times then x', '(a|a)'.repeat(28) + 'x'],
+  ];
+
+  it.each(captureFamilies)('runs firstMatch for %s in under 100 ms', (_label, pattern) => {
+    const compiled = compile(pattern);
+    const subject = 'a'.repeat(longestSubject(compiled));
+
+    const { value, ms } = timed(() => compiled.firstMatch(subject));
+
+    expect(value).toBeUndefined();
+    expect(ms).toBeLessThan(100);
+  });
+
+  const foldedFamilies: [label: string, pattern: string, flags: string][] = [
+    ['\\W 249 times with iu', String.raw`\W`.repeat(249) + '!', 'iu'],
+    ['[^a] 124 times with i', '[^a]'.repeat(124) + '!', 'i'],
+    ['\\p{L} 99 times with u', String.raw`\p{L}`.repeat(99) + '!', 'u'],
+    ['[^\\p{Lu}] 55 times with iu', String.raw`[^\p{Lu}]`.repeat(55) + '!', 'iu'],
+  ];
+
+  it.each(foldedFamilies)(
+    'runs test for %s on distinct characters in under 100 ms',
+    (_label, pattern, flags) => {
+      const compiled = compile(pattern, flags);
+      const subject = distinct(longestSubject(compiled));
+
+      const { value, ms } = timed(() => compiled.test(subject));
+
+      expect(value).toBe(false);
+      expect(ms).toBeLessThan(100);
+    },
+  );
+
+  it('weighs an atom that needs case folding or a property as 8 instructions', () => {
+    expect(longestSubject(compile('[^a]'))).toBe(142_857);
+    expect(longestSubject(compile('[^a]', 'i'))).toBe(71_428);
+    expect(longestSubject(compile(String.raw`\p{L}`, 'u'))).toBe(71_428);
+    expect(longestSubject(compile(String.raw`\w`, 'iu'))).toBe(71_428);
+    expect(longestSubject(compile(String.raw`\w`, 'i'))).toBe(142_857);
+  });
+});
+
+describe('the case-folding cache', () => {
+  it('keeps at most 256 results per atom and evicts the oldest', () => {
+    const pattern = compile(String.raw`\W+!`, 'iu');
+    const fits = distinct(256);
+    const overflows = distinct(257);
+
+    expect(countRegExpTests(() => pattern.test(fits))).toBe(256);
+    expect(countRegExpTests(() => pattern.test(fits))).toBe(0);
+    expect(countRegExpTests(() => pattern.test(overflows))).toBe(1);
+    expect(countRegExpTests(() => pattern.test(overflows))).toBe(257);
+  });
+
+  it('keeps at most 16,384 results per pattern', () => {
+    const pattern = compile(String.raw`\W?`.repeat(65) + '!', 'iu');
+    const subject = distinct(256);
+
+    const first = countRegExpTests(() => pattern.test(subject));
+    const second = countRegExpTests(() => pattern.test(subject));
+
+    expect(first).toBe(65 * 256);
+    expect(second).toBeGreaterThanOrEqual(65 * 256 - 16_384);
+  });
+
+  it('shares one cache between the copies of a counted repetition', () => {
+    const pattern = compile(String.raw`(?:\W?){65}!`, 'iu');
+
+    expect(countRegExpTests(() => pattern.test(distinct(256)))).toBe(256);
   });
 });
 
@@ -611,7 +729,7 @@ describe('rejected syntax', () => {
       ['a\\', '', 'A backslash at the end of the regular expression has nothing to escape.', 1, 1],
       ['(?<a>x)(?<a>y)', '', 'Duplicate group name `a`.', 10, 1],
       ['(?<1a>x)', '', 'Invalid group name.', 3, 2],
-      ['(?<>x)', '', 'Invalid group name.', 3, 0],
+      ['(?<>x)', '', 'Invalid group name.', 2, 2],
       ['(?<a', '', 'Unterminated group name.', 0, 3],
       ['(?<a-b>x)', '', 'Invalid group name.', 3, 3],
     ];
