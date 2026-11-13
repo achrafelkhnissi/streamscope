@@ -12,6 +12,7 @@ const unknownSource =
 const indexRange =
   'An index must be a whole number from -9,007,199,254,740,991 to 9,007,199,254,740,991.';
 const expectedLiteral = 'Expected a string, number, true, false, null, regular expression or list.';
+const expectedListItem = 'Expected a string, number, true, false, null or list.';
 function parse(text: string, context: ExpressionContext = 'capture'): Expr {
   const result = parseExpression(text, context);
   if (!result.ok) {
@@ -729,18 +730,26 @@ describe('parseExpression', () => {
       expect(shape('((status))')).toStrictEqual(source('status'));
     });
 
-    it('rejects an empty list and a list of non-literals', () => {
+    it('rejects an empty list and a list of non-literals without offering a regular expression', () => {
       expect(failure('status in []')).toStrictEqual({
-        message: expectedLiteral,
+        message: expectedListItem,
         span: { start: 11, end: 12 },
       });
       expect(failure('status in [1,]')).toStrictEqual({
-        message: expectedLiteral,
+        message: expectedListItem,
         span: { start: 13, end: 14 },
       });
       expect(failure('status in [a]')).toStrictEqual({
-        message: expectedLiteral,
+        message: expectedListItem,
         span: { start: 11, end: 12 },
+      });
+      expect(failure('status in [foo]')).toStrictEqual({
+        message: expectedListItem,
+        span: { start: 11, end: 14 },
+      });
+      expect(failure('status in [1, [foo]]')).toStrictEqual({
+        message: expectedListItem,
+        span: { start: 15, end: 18 },
       });
       expect(failure('status in [1 2]')).toStrictEqual({
         message: 'Expected "]".',

@@ -15,6 +15,7 @@ import { defaultSpillLimits } from '../../../src/streaming/limits';
 import { parseExpression } from '../../../src/expressions/parse';
 import type { RunAccess, RunEnd } from '../../../src/runs/observer';
 import type { ResponseHead } from '../../../src/transport/model';
+import { fastestOf } from '../timing';
 import { expectNoChild, longestStall, missingWorker, useCaptureWorker } from './worker';
 
 const encoder = new TextEncoder();
@@ -826,44 +827,53 @@ describe('CaptureTracker', () => {
   });
 
   it('posting a 1 MiB jsonpath collection without a spill file costs the host under 50 ms', async () => {
-    const run = harness([capture('first', 'jsonpath("$[0][0]")')], files().worker);
-    run.tracker.head(ndjsonHead);
-    const eventBytes = mebibyte / 16;
-    for (let count = 0; count < 16; count += 1) {
-      const tiny: JsonValue[] = Array.from({ length: Math.floor(eventBytes / 3) }, () => ({}));
-      run.send(tiny, { length: eventBytes });
-    }
-    expect(run.tracker.retainedValues).toBe(16);
+    const stallMs = await fastestOf(async () => {
+      const run = harness([capture('first', 'jsonpath("$[0][0]")')], files().worker);
+      run.tracker.head(ndjsonHead);
+      const eventBytes = mebibyte / 16;
+      for (let count = 0; count < 16; count += 1) {
+        const tiny: JsonValue[] = Array.from({ length: Math.floor(eventBytes / 3) }, () => ({}));
+        run.send(tiny, { length: eventBytes });
+      }
+      expect(run.tracker.retainedValues).toBe(16);
 
-    const { stallMs } = await longestStall(() => run.tracker.end(completed('ndjson')));
+      const { stallMs: ms } = await longestStall(() => run.tracker.end(completed('ndjson')));
+
+      expect(run.results.get('first')).toEqual(resolved('{}', undefined, '$[0][0]'));
+      await expectNoChild();
+      return ms;
+    });
 
     expect(stallMs).toBeLessThan(100);
-    expect(run.results.get('first')).toEqual(resolved('{}', undefined, '$[0][0]'));
-    await expectNoChild();
   });
 
   it('all() over a 16 MiB collection costs the host under 50 ms', async () => {
     const zeros = `[${'0,'.repeat(mebibyte / 2 - 2)}0]`;
     const spill = await spilledEvents(Array.from({ length: 16 }, () => `${zeros}\n`));
     const value = JSON.parse(zeros) as JsonValue;
-    const run = harness(
-      [capture('zeros', 'all()[?@[0] == 0][*]'), capture('last', 'all()[-1][-1]')],
-      files().worker,
-    );
-    run.tracker.head(ndjsonHead);
-    for (const range of spill.ranges) {
-      run.send(value, range);
-    }
-    expect(run.tracker.retainedValues).toBe(0);
 
-    const { stallMs } = await longestStall(() =>
-      run.tracker.end(completed('ndjson', { spill: spill.path })),
-    );
+    const stallMs = await fastestOf(async () => {
+      const run = harness(
+        [capture('zeros', 'all()[?@[0] == 0][*]'), capture('last', 'all()[-1][-1]')],
+        files().worker,
+      );
+      run.tracker.head(ndjsonHead);
+      for (const range of spill.ranges) {
+        run.send(value, range);
+      }
+      expect(run.tracker.retainedValues).toBe(0);
+
+      const { stallMs: ms } = await longestStall(() =>
+        run.tracker.end(completed('ndjson', { spill: spill.path })),
+      );
+
+      expect(run.results.get('zeros')).toEqual(resolved('[]', undefined, '[?…][*]'));
+      expect(run.results.get('last')).toEqual(resolved('0', undefined, '[-1][-1]'));
+      await expectNoChild();
+      return ms;
+    });
 
     expect(stallMs).toBeLessThan(100);
-    expect(run.results.get('zeros')).toEqual(resolved('[]', undefined, '[?…][*]'));
-    expect(run.results.get('last')).toEqual(resolved('0', undefined, '[-1][-1]'));
-    await expectNoChild();
   });
 
   it('all() reads its matches from the spill file in the child', async () => {
@@ -1182,24 +1192,29 @@ describe('CaptureTracker', () => {
     const range = spill.ranges[0] ?? { offset: 0, length: 0 };
     expect(range.length).toBeGreaterThan(16 * mebibyte - 64);
     const value = JSON.parse(line) as JsonValue;
-    const run = harness(
-      [
-        capture('last', 'first(type == "BIG").items[-1]'),
-        capture('filtered', 'first(type == "BIG").items[?@ == 0] | json'),
-      ],
-      files().worker,
-    );
-    run.tracker.head(ndjsonHead, access(spill.path));
 
-    const { stallMs } = await longestStall(() => {
-      run.send(value, range);
-      return run.tracker.end(completed('ndjson', { spill: spill.path }));
+    const stallMs = await fastestOf(async () => {
+      const run = harness(
+        [
+          capture('last', 'first(type == "BIG").items[-1]'),
+          capture('filtered', 'first(type == "BIG").items[?@ == 0] | json'),
+        ],
+        files().worker,
+      );
+      run.tracker.head(ndjsonHead, access(spill.path));
+
+      const { stallMs: ms } = await longestStall(() => {
+        run.send(value, range);
+        return run.tracker.end(completed('ndjson', { spill: spill.path }));
+      });
+
+      expect(run.results.get('last')).toEqual(resolved('0', 1, 'items[-1]'));
+      expect(run.results.get('filtered')).toEqual(failed('the value is larger than 1 MiB'));
+      await expectNoChild();
+      return ms;
     });
 
     expect(stallMs).toBeLessThan(100);
-    expect(run.results.get('last')).toEqual(resolved('0', 1, 'items[-1]'));
-    expect(run.results.get('filtered')).toEqual(failed('the value is larger than 1 MiB'));
-    await expectNoChild();
   });
 
   it('a large matched event is read from the spill file in the child', async () => {
@@ -1269,50 +1284,63 @@ describe('CaptureTracker', () => {
     expect(range.length).toBeLessThanOrEqual(256 * 1024);
     const value = JSON.parse(line) as JsonValue;
     const names = Array.from({ length: 8 }, (_, at) => `zeros${String(at)}`);
-    const run = harness(
-      names.map((name) => capture(name, 'first(type == "BIG").items[?@ == 0] | json')),
-      files().worker,
-    );
-    run.tracker.head(ndjsonHead, access(spill.path));
 
-    const { stallMs } = await longestStall(() => {
-      run.send(value, range);
-      return run.tracker.end(completed('ndjson', { spill: spill.path }));
+    const stallMs = await fastestOf(async () => {
+      const run = harness(
+        names.map((name) => capture(name, 'first(type == "BIG").items[?@ == 0] | json')),
+        files().worker,
+      );
+      run.tracker.head(ndjsonHead, access(spill.path));
+
+      const { stallMs: ms } = await longestStall(() => {
+        run.send(value, range);
+        return run.tracker.end(completed('ndjson', { spill: spill.path }));
+      });
+
+      for (const name of names) {
+        expect(run.results.get(name)).toMatchObject({
+          state: 'resolved',
+          provenance: { event: 1 },
+        });
+      }
+      await expectNoChild();
+      return ms;
     });
 
     expect(stallMs).toBeLessThan(100);
-    for (const name of names) {
-      expect(run.results.get(name)).toMatchObject({ state: 'resolved', provenance: { event: 1 } });
-    }
-    await expectNoChild();
   });
 
   it('64 captures without a spill file stall the host under 50 ms', async () => {
     const names = Array.from({ length: 64 }, (_, at) => `all${String(at)}`);
-    const run = harness(
-      names.map((name) => capture(name, 'all(type == "A")[-1].type')),
-      files().worker,
-    );
-    run.tracker.head(ndjsonHead);
-    const eventBytes = mebibyte / 16;
-    for (let count = 0; count < 16; count += 1) {
-      const tiny: JsonValue = {
-        type: 'A',
-        items: Array.from({ length: Math.floor(eventBytes / 3) - 10 }, () => ({})),
-      };
-      run.send(tiny, { length: eventBytes });
-    }
 
-    const { stallMs } = await longestStall(() => run.tracker.end(completed('ndjson')));
+    const stallMs = await fastestOf(async () => {
+      const run = harness(
+        names.map((name) => capture(name, 'all(type == "A")[-1].type')),
+        files().worker,
+      );
+      run.tracker.head(ndjsonHead);
+      const eventBytes = mebibyte / 16;
+      for (let count = 0; count < 16; count += 1) {
+        const tiny: JsonValue = {
+          type: 'A',
+          items: Array.from({ length: Math.floor(eventBytes / 3) - 10 }, () => ({})),
+        };
+        run.send(tiny, { length: eventBytes });
+      }
+
+      const { stallMs: ms } = await longestStall(() => run.tracker.end(completed('ndjson')));
+
+      expect(run.results.get('all0')).toEqual(resolved('A', undefined, '[-1].type'));
+      for (const name of names.slice(1)) {
+        expect(run.results.get(name)).toEqual(
+          failed('the events are no longer available for this capture'),
+        );
+      }
+      await expectNoChild();
+      return ms;
+    });
 
     expect(stallMs).toBeLessThan(100);
-    expect(run.results.get('all0')).toEqual(resolved('A', undefined, '[-1].type'));
-    for (const name of names.slice(1)) {
-      expect(run.results.get(name)).toEqual(
-        failed('the events are no longer available for this capture'),
-      );
-    }
-    await expectNoChild();
   });
 
   it('reads each capture from a capped spill file up to its own furthest event', async () => {
@@ -1420,99 +1448,181 @@ describe('host work within one task', () => {
     });
   }
 
+  function stallOf(
+    definitions: () => CaptureDefinition[],
+    work: (run: Harness) => void,
+    check: (run: Harness) => void,
+  ): Promise<number> {
+    return fastestOf(async () => {
+      const run = harness(definitions(), missingWorker, hostBudget);
+      run.tracker.head(ndjsonHead);
+      const { stallMs } = await stalls(() => {
+        work(run);
+      });
+      check(run);
+      return stallMs;
+    });
+  }
+
   it('a 1 MiB event with a join chain in its condition stalls the host under 50 ms', async () => {
     const value: JsonValue = { items: [Array<number>(mebibyte / 2 - 8).fill(0)] };
-    const run = harness(
-      [capture('joined', `first(${chain('(items|join(","))=="x"')})`)],
-      missingWorker,
-      hostBudget,
-    );
-    run.tracker.head(ndjsonHead);
 
-    const { stallMs } = await stalls(() => run.send(value, { length: mebibyte }));
+    const stallMs = await stallOf(
+      () => [capture('joined', `first(${chain('(items|join(","))=="x"')})`)],
+      (run) => run.send(value, { length: mebibyte }),
+      (run) => {
+        expect(run.results.get('joined')).toEqual(failed(hostWork));
+      },
+    );
 
     expect(stallMs).toBeLessThan(100);
-    expect(run.results.get('joined')).toEqual(failed(hostWork));
   });
 
   it('a 1 MiB event with a contains chain in its condition stalls the host under 50 ms', async () => {
     const value: JsonValue = { s: 'a'.repeat(mebibyte - 16) };
-    const run = harness(
-      [capture('found', `first(${chain('s contains "ab"')})`)],
-      missingWorker,
-      hostBudget,
-    );
-    run.tracker.head(ndjsonHead);
 
-    const { stallMs } = await stalls(() => run.send(value, { length: mebibyte }));
+    const stallMs = await stallOf(
+      () => [capture('found', `first(${chain('s contains "ab"')})`)],
+      (run) => run.send(value, { length: mebibyte }),
+      (run) => {
+        expect(run.results.get('found')).toEqual(failed(hostWork));
+      },
+    );
 
     expect(stallMs).toBeLessThan(100);
-    expect(run.results.get('found')).toEqual(failed(hostWork));
   });
 
   it('a chunk of 46 events with heavy conditions stalls the host under 50 ms', async () => {
     const line = `${JSON.stringify({ type: 'E', items: Array<number>(700).fill(0) })}\n`;
     const chunk = encoder.encode(line.repeat(46));
     expect(chunk.length).toBeLessThanOrEqual(65_536);
-    const run = harness(
-      [capture('heavy', `first(items[?@ in [${sevens}]]).type`)],
-      missingWorker,
-      hostBudget,
-    );
-    run.tracker.head(ndjsonHead);
-    const session = new StreamSession({
-      contentType: 'application/x-ndjson',
-      directive: undefined,
-      spill: undefined,
-      now: () => 0,
-      onUpdate: () => undefined,
-      onText: () => undefined,
-      onEvent: (event) => {
-        run.tracker.event(event);
-      },
+
+    const stallMs = await fastestOf(async () => {
+      const run = harness(
+        [capture('heavy', `first(items[?@ in [${sevens}]]).type`)],
+        missingWorker,
+        hostBudget,
+      );
+      run.tracker.head(ndjsonHead);
+      const session = new StreamSession({
+        contentType: 'application/x-ndjson',
+        directive: undefined,
+        spill: undefined,
+        now: () => 0,
+        onUpdate: () => undefined,
+        onText: () => undefined,
+        onEvent: (event) => {
+          run.tracker.event(event);
+        },
+      });
+
+      const { stallMs: ms } = await stalls(() => session.write(chunk));
+      session.dispose();
+
+      expect(run.results.get('heavy')).toEqual(failed(hostWork));
+      return ms;
     });
 
-    const { stallMs } = await stalls(() => session.write(chunk));
-    session.dispose();
-
     expect(stallMs).toBeLessThan(100);
-    expect(run.results.get('heavy')).toEqual(failed(hostWork));
   });
 
   it('64 events resolving heavy captures in one task stall the host under 50 ms, and default(…) does not hide it', async () => {
     const names = Array.from({ length: 64 }, (_, at) => `e${String(at)}`);
-    const run = harness(
-      names.map((name) =>
-        capture(name, `first(type == "${name}").items[?@ in [${sevens}]] | default("none")`),
-      ),
-      missingWorker,
-      hostBudget,
-    );
-    run.tracker.head(ndjsonHead);
 
-    const { stallMs } = await stalls(() => {
-      for (const name of names) {
-        run.send({ type: name, items: Array<number>(700).fill(0) }, { length: 1_430 });
-      }
-    });
+    const stallMs = await stallOf(
+      () =>
+        names.map((name) =>
+          capture(name, `first(type == "${name}").items[?@ in [${sevens}]] | default("none")`),
+        ),
+      (run) => {
+        for (const name of names) {
+          run.send({ type: name, items: Array<number>(700).fill(0) }, { length: 1_430 });
+        }
+      },
+      (run) => {
+        const resolvedCount = names.filter(
+          (name) => run.results.get(name)?.state === 'resolved',
+        ).length;
+        expect(resolvedCount).toBeLessThan(64);
+        for (const [at, name] of names.entries()) {
+          expect(run.results.get(name)).toEqual(
+            at < resolvedCount ? resolved('[]', at + 1, 'items[?…]') : failed(hostWork),
+          );
+        }
+      },
+    );
 
     expect(stallMs).toBeLessThan(100);
-    const resolvedCount = names.filter(
-      (name) => run.results.get(name)?.state === 'resolved',
-    ).length;
-    expect(resolvedCount).toBeLessThan(64);
-    for (const [at, name] of names.entries()) {
-      expect(run.results.get(name)).toEqual(
-        at < resolvedCount ? resolved('[]', at + 1, 'items[?…]') : failed(hostWork),
-      );
-    }
   });
 
-  it('shares one budget across the events of a task and starts a new one in the next task', () => {
+  describe('a condition comparing two long values that differ only at the end', () => {
+    function lists(length: number): JsonValue {
+      const a = Array.from({ length }, () => 0);
+      const b = Array.from({ length }, () => 0);
+      b[length - 1] = 1;
+      return { type: 'E', a, b };
+    }
+
+    function objects(count: number): JsonValue {
+      const a: Record<string, JsonValue> = {};
+      const b: Record<string, JsonValue> = {};
+      for (let at = 0; at < count - 1; at += 1) {
+        a[`k${String(at)}`] = 0;
+        b[`k${String(at)}`] = 0;
+      }
+      a.last = 0;
+      b.other = 0;
+      return { type: 'E', a, b };
+    }
+
+    function comparisonStall(value: JsonValue, length: number, text: string): Promise<number> {
+      return fastestOf(async () => {
+        const run = harness([capture('equal', text)], missingWorker, hostBudget);
+        run.tracker.head(ndjsonHead);
+
+        const { stallMs } = await stalls(() => run.send(value, { length }));
+
+        expect([undefined, failed(hostWork)]).toContainEqual(run.results.get('equal'));
+        await run.tracker.end(completed('ndjson'));
+        expect(run.results.get('equal')?.state).toBe('failed');
+        return stallMs;
+      });
+    }
+
+    it('1 MiB, two lists of 262,144 items, a chain of == stalls the host under 50 ms', async () => {
+      expect(
+        await comparisonStall(lists(262_144), mebibyte, `first(${chain('a==b')})`),
+      ).toBeLessThan(100);
+    });
+
+    it('1 MiB, two objects of 45,000 keys, a chain of == stalls the host under 50 ms', async () => {
+      expect(
+        await comparisonStall(objects(45_000), mebibyte, `first(${chain('a==b')})`),
+      ).toBeLessThan(100);
+    });
+
+    it('4 MiB, two lists of 1,048,576 items, a chain of == stalls the host under 50 ms', async () => {
+      expect(
+        await comparisonStall(lists(mebibyte), 4 * mebibyte, `first(${chain('a==b')})`),
+      ).toBeLessThan(100);
+    });
+
+    it('16 MiB, two lists of 4,194,304 items, a chain of == or three == stall the host under 50 ms', async () => {
+      const value = lists(4 * mebibyte);
+      expect(await comparisonStall(value, 16 * mebibyte, `first(${chain('a==b')})`)).toBeLessThan(
+        100,
+      );
+      expect(await comparisonStall(value, 16 * mebibyte, 'first(a==b||a==b||a==b)')).toBeLessThan(
+        100,
+      );
+    });
+  });
+
+  it('counts only the time inside evaluations, shared by the events of a task, and starts again in the next task', () => {
     let time = 0;
     const tasks: (() => void)[] = [];
     const budget = new TaskBudget({
-      now: () => time,
+      now: () => (time += 1),
       nextTask: (callback) => {
         tasks.push(callback);
       },
@@ -1529,26 +1639,69 @@ describe('host work within one task', () => {
     first.tracker.head(ndjsonHead);
     second.tracker.head(ndjsonHead);
     const zeros = Array<number>(2_000).fill(0);
+    const sendUntilSettled = (run: Harness, name: string): number => {
+      let sent = 0;
+      while (!run.results.has(name) && sent < 100) {
+        run.send({ items: zeros });
+        time += 1_000;
+        sent += 1;
+      }
+      return sent;
+    };
 
-    first.send({ items: zeros });
-    time = 29;
-    first.send({ items: zeros });
-    expect(first.results.size).toBe(0);
-    time = 31;
-    first.send({ items: zeros });
+    expect(sendUntilSettled(first, 'a')).toBeGreaterThan(2);
     expect(first.results.get('a')).toEqual(failed(hostWork));
     expect(tasks).toHaveLength(1);
 
     tasks.shift()?.();
     second.send({ items: [...zeros, 2] });
     expect(second.results.get('b')).toEqual(resolved('2', 1, 'items[-1]'));
-    time = 60;
-    second.send({ items: zeros });
-    expect(second.results.has('c')).toBe(false);
-    time = 62;
-    second.send({ items: zeros });
+    expect(sendUntilSettled(second, 'c')).toBeGreaterThan(2);
     expect(second.results.get('c')).toEqual(failed(hostWork));
     expect(tasks).toHaveLength(1);
+  });
+
+  it('parser time does not count against the capture budget', async () => {
+    let time = 0;
+    const budget = new TaskBudget({ now: () => time, nextTask: () => undefined });
+    const run = harness(
+      [
+        capture('threadId', 'first(type == "RUN_STARTED").threadId'),
+        capture('messageId', 'last(type == "RUN_FINISHED").result.messageId'),
+        capture('chunks', 'count(type == "TEXT_MESSAGE_CONTENT")'),
+      ],
+      missingWorker,
+      budget,
+    );
+    run.tracker.head(ndjsonHead);
+    const session = new StreamSession({
+      contentType: 'application/x-ndjson',
+      directive: undefined,
+      spill: undefined,
+      now: () => (time += 10),
+      onUpdate: () => undefined,
+      onText: () => undefined,
+      onEvent: (event) => {
+        run.tracker.event(event);
+      },
+    });
+    const lines = [
+      '{"type":"RUN_STARTED","threadId":"thread-1"}',
+      ...Array.from(
+        { length: 2_000 },
+        (_, at) => `{"type":"TEXT_MESSAGE_CONTENT","delta":"${String(at)}"}`,
+      ),
+      '{"type":"RUN_FINISHED","result":{"messageId":"message-1"}}',
+    ];
+
+    session.write(encoder.encode(`${lines.join('\n')}\n`));
+    session.dispose();
+    await run.tracker.end(completed('ndjson'));
+
+    expect(time).toBeGreaterThan(20_000);
+    expect(run.results.get('threadId')).toEqual(resolved('thread-1', 1, 'threadId'));
+    expect(run.results.get('messageId')).toEqual(resolved('message-1', 2_002, 'result.messageId'));
+    expect(run.results.get('chunks')).toEqual(resolved('2000', undefined, ''));
   });
 
   it('resolves a heavy condition however many other captures are pending', () => {

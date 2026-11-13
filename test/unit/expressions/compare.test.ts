@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Value } from '../../../src/expressions/ast';
 import { compareValues, equalValues } from '../../../src/expressions/compare';
+import { WorkBudget } from '../../../src/expressions/work';
 
 function nested(depth: number, leaf: Value): Value {
   let value = leaf;
@@ -114,5 +115,86 @@ describe('compareValues and equalValues', () => {
     expect(equalValues(nestedLists(10_000, 'x'), nestedLists(10_000, 'x'))).toBe(true);
     expect(compareValues(nestedLists(10_000, 'x'), nestedLists(10_000, 'x'))).toBe(0);
     expect(compareValues(nestedLists(10_000, 'x'), nestedLists(10_000, 'y'))).toBeUndefined();
+  });
+});
+
+describe('the work of one comparison', () => {
+  function zeros(length: number, last: number): Value {
+    const list = Array.from({ length }, () => 0);
+    list[length - 1] = last;
+    return list;
+  }
+
+  function keyed(count: number, lastKey: string, lastValue: number): Value {
+    const entries: [string, number][] = Array.from({ length: count - 1 }, (_, at) => [
+      `k${String(at)}`,
+      0,
+    ]);
+    entries.push([lastKey, lastValue]);
+    return Object.fromEntries(entries);
+  }
+
+  const compares = [
+    ['equalValues', equalValues],
+    ['compareValues', compareValues],
+  ] as const;
+
+  it.each(compares)(
+    '%s charges two lists that differ only in their last item by their length',
+    (_name, compare) => {
+      const budget = new WorkBudget();
+
+      compare(zeros(100_000, 0), zeros(100_000, 1), budget);
+
+      expect(budget.spent).toBeGreaterThanOrEqual(100_000);
+    },
+  );
+
+  it.each(compares)(
+    '%s charges two objects that differ only at their last key by their key count, every time',
+    (_name, compare) => {
+      for (const [left, right] of [
+        [keyed(2_000, 'last', 0), keyed(2_000, 'other', 0)],
+        [keyed(2_000, 'last', 0), keyed(2_000, 'last', 1)],
+      ]) {
+        const budget = new WorkBudget();
+        compare(left as Value, right as Value, budget);
+        const once = budget.spent;
+
+        compare(left as Value, right as Value, budget);
+
+        expect(once).toBeGreaterThanOrEqual(2_000);
+        expect(budget.spent - once).toBeGreaterThanOrEqual(2_000);
+      }
+    },
+  );
+
+  it.each(compares)(
+    '%s reaches a clock check inside one comparison of two long lists or objects, keys remembered',
+    (_name, compare) => {
+      for (const [left, right] of [
+        [zeros(100_000, 0), zeros(100_000, 1)],
+        [keyed(5_000, 'last', 0), keyed(5_000, 'other', 0)],
+        [keyed(5_000, 'last', 0), keyed(5_000, 'last', 1)],
+      ]) {
+        let expired = false;
+        const budget = new WorkBudget({ expired: () => expired });
+        compare(left as Value, right as Value, budget);
+        expired = true;
+
+        expect(() => compare(left as Value, right as Value, budget)).toThrow();
+        expect(budget.exhausted).toBe(true);
+      }
+    },
+  );
+
+  it('still finds equal and unequal values the same way', () => {
+    expect(equalValues(zeros(5_000, 1), zeros(5_000, 1), new WorkBudget())).toBe(true);
+    expect(equalValues(zeros(5_000, 1), zeros(5_000, 2), new WorkBudget())).toBe(false);
+    expect(equalValues(keyed(3_000, 'a', 1), keyed(3_000, 'a', 1), new WorkBudget())).toBe(true);
+    expect(equalValues(keyed(3_000, 'a', 1), keyed(3_000, 'b', 1), new WorkBudget())).toBe(false);
+    expect(equalValues([{ a: [1, 2] }, 3], [{ a: [1, 2] }, 3], new WorkBudget())).toBe(true);
+    expect(equalValues([{ a: [1, 2] }, 3], [{ a: [1, 3] }, 3], new WorkBudget())).toBe(false);
+    expect(compareValues(zeros(5_000, 1), zeros(5_000, 1), new WorkBudget())).toBe(0);
   });
 });

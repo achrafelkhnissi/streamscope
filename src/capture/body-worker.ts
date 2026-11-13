@@ -84,17 +84,16 @@ function reply(name: string, result: Inserted): void {
 }
 
 process.once('message', ({ subject, jobs }: WorkerRequest) => {
-  const evaluateJob = jobEvaluator(
-    loaded(subject),
-    rangeReader(subject),
-    () => new WorkBudget({ units: childWorkUnits }),
-  );
+  const evaluateJob = jobEvaluator(loaded(subject), rangeReader(subject));
   for (const job of jobs) {
     const parsed = parseExpression(job.text, 'capture');
     reply(
       job.name,
       parsed.ok
-        ? evaluateJob({ ...job, expression: parsed.expr })
+        ? evaluateJob(
+            { ...job, expression: parsed.expr },
+            new WorkBudget({ units: childWorkUnits }),
+          )
         : { present: false, reason: parsed.error.message },
     );
   }

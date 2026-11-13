@@ -30,6 +30,7 @@ const maxDepth = 64;
 const maxPosition = 2_147_483_647;
 const plainSources: ReadonlySet<string> = new Set(['status', 'headers', 'cookies', 'body', 'text']);
 const expectedLiteral = 'Expected a string, number, true, false, null, regular expression or list.';
+const expectedListItem = 'Expected a string, number, true, false, null or list.';
 const expectedStep = 'Expected an index, a string, `*` or `?`.';
 const expectedFilter = 'Expected default, join, json or match.';
 const wholeNumberIndex =
@@ -428,7 +429,7 @@ class Parser {
     if (this.current.kind === 'regex') {
       return this.fail('A regular expression cannot be a list item.');
     }
-    return this.plainLiteral() ?? this.fail(expectedLiteral);
+    return this.plainLiteral() ?? this.fail(expectedListItem);
   }
 
   private checkRegex(token: RegexToken): void {

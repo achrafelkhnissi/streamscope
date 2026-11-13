@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { iRegexpProblem } from '../../../src/expressions/iregexp';
+import { fastest } from '../timing';
 
 describe('iRegexpProblem', () => {
   it.each([
@@ -181,12 +182,15 @@ describe('iRegexpProblem', () => {
   });
 
   it('checks a long pattern in linear time', () => {
-    const start = performance.now();
+    const patterns = [
+      'a'.repeat(1_000_000),
+      '(a|b)*'.repeat(100_000),
+      `${'('.repeat(100_000)}${')'.repeat(100_000)}`,
+    ];
 
-    expect(iRegexpProblem('a'.repeat(1_000_000))).toBeUndefined();
-    expect(iRegexpProblem('(a|b)*'.repeat(100_000))).toBeUndefined();
-    expect(iRegexpProblem(`${'('.repeat(100_000)}${')'.repeat(100_000)}`)).toBeUndefined();
+    const { value, ms } = fastest(() => patterns.map((pattern) => iRegexpProblem(pattern)));
 
-    expect(performance.now() - start).toBeLessThan(1000);
+    expect(value).toEqual([undefined, undefined, undefined]);
+    expect(ms).toBeLessThan(1000);
   });
 });

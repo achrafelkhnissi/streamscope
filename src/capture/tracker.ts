@@ -376,7 +376,9 @@ export class CaptureTracker {
     this.access = access;
     for (const tracked of this.tracked) {
       if (!tracked.settled && tracked.timing === 'head') {
-        this.settle(tracked, this.evaluateNow(tracked, headPhase, this.budget.current()));
+        const result = this.evaluateNow(tracked, headPhase, this.budget.enter());
+        this.budget.leave();
+        this.settle(tracked, result);
       }
     }
   }
@@ -396,16 +398,17 @@ export class CaptureTracker {
       return;
     }
     const item: ConditionItem = { value: event.value, sse: event.sse, malformed: false };
-    const budget = this.budget.current();
+    const budget = this.budget.enter();
     let inlineBytes = 0;
     const away: Tracked[] = [];
+    let settled: [Tracked, Inserted][] | undefined;
     for (const tracked of this.watching) {
       if (tracked.settled) {
         continue;
       }
       const overflow = this.observe(tracked, event, item, budget);
       if (overflow !== undefined) {
-        this.fail(tracked, overflow);
+        (settled ??= []).push([tracked, { present: false, reason: overflow }]);
         changed = true;
       } else if (matchedNow(tracked)) {
         changed = true;
@@ -414,8 +417,12 @@ export class CaptureTracker {
           continue;
         }
         inlineBytes += event.length;
-        this.settle(tracked, this.evaluateNow(tracked, eventPhase, budget));
+        (settled ??= []).push([tracked, this.evaluateNow(tracked, eventPhase, budget)]);
       }
+    }
+    this.budget.leave();
+    for (const [tracked, result] of settled ?? []) {
+      this.settle(tracked, result);
     }
     if (away.length > 0) {
       this.evaluateLater(away, matchOf(event));

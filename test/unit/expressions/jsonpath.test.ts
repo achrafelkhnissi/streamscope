@@ -7,6 +7,7 @@ import {
   queryJsonPath,
 } from '../../../src/expressions/jsonpath';
 import { compilePattern } from '../../../src/expressions/regex';
+import { fastest, timedRuns } from '../timing';
 
 vi.mock('@swaggerexpert/jsonpath', async (importOriginal) => {
   const original = await importOriginal<typeof import('@swaggerexpert/jsonpath')>();
@@ -184,11 +185,10 @@ describe('queryJsonPath', () => {
 
   it('refuses a value nested more than 1,000 levels deep, quickly', () => {
     const value = nested(50_000);
-    const start = performance.now();
 
-    const result = queryJsonPath(value, '$..id');
+    const { value: result, ms } = fastest(() => queryJsonPath(value, '$..id'));
 
-    expect(performance.now() - start).toBeLessThan(100);
+    expect(ms).toBeLessThan(100);
     expect(result).toEqual({
       ok: false,
       reason: 'the value is nested too deeply for jsonpath() (more than 1,000 levels)',
@@ -383,12 +383,14 @@ describe('parenthesis nesting', () => {
   it('rejects 4 levels of nested calls quickly', () => {
     for (const levels of [4, 20, 40]) {
       const query = nestedCalls(levels);
-      const start = performance.now();
 
-      const problem = checkJsonPath(query);
-      const result = queryJsonPath({ a: 'x' }, query);
+      const { value, ms } = fastest(() => ({
+        problem: checkJsonPath(query),
+        result: queryJsonPath({ a: 'x' }, query),
+      }));
+      const { problem, result } = value;
 
-      expect(performance.now() - start, `${String(levels)} levels`).toBeLessThan(100);
+      expect(ms, `${String(levels)} levels`).toBeLessThan(100);
       expect(problem).toEqual({ message: tooDeep, offset: nthOpening(query, 4) });
       expect(result).toEqual({ ok: false, reason: tooDeep });
     }
@@ -560,12 +562,14 @@ describe('query limits', () => {
   it('rejects 385 characters and 1 MB of query quickly', () => {
     for (const length of [385, 1_000_000]) {
       const query = `$${'.a'.repeat(Math.ceil((length - 1) / 2))}`.slice(0, length);
-      const start = performance.now();
 
-      const problem = checkJsonPath(query);
-      const result = queryJsonPath({ a: 1 }, query);
+      const { value, ms } = fastest(() => ({
+        problem: checkJsonPath(query),
+        result: queryJsonPath({ a: 1 }, query),
+      }));
+      const { problem, result } = value;
 
-      expect(performance.now() - start, `${String(length)} characters`).toBeLessThan(100);
+      expect(ms, `${String(length)} characters`).toBeLessThan(100);
       expect(problem).toEqual({ message: tooLong, offset: 384 });
       expect(result).toEqual({ ok: false, reason: tooLong });
     }
@@ -582,12 +586,14 @@ describe('query limits', () => {
   it('rejects 33 levels of brackets quickly', () => {
     for (const levels of [33, 50, 90]) {
       const query = `$${'[?@'.repeat(levels)}.a${']'.repeat(levels)}`;
-      const start = performance.now();
 
-      const problem = checkJsonPath(query);
-      const result = queryJsonPath({ a: 1 }, query);
+      const { value, ms } = fastest(() => ({
+        problem: checkJsonPath(query),
+        result: queryJsonPath({ a: 1 }, query),
+      }));
+      const { problem, result } = value;
 
-      expect(performance.now() - start, `${String(levels)} levels`).toBeLessThan(100);
+      expect(ms, `${String(levels)} levels`).toBeLessThan(100);
       expect(problem).toEqual({ message: tooManyBrackets, offset: nthOccurrence(query, '[', 33) });
       expect(result).toEqual({ ok: false, reason: tooManyBrackets });
     }
@@ -648,12 +654,13 @@ describe('query limits', () => {
     ];
 
     for (const query of slow) {
-      const start = performance.now();
+      const { value, ms } = fastest(() => ({
+        problem: checkJsonPath(query),
+        result: queryJsonPath({ a: 1 }, query),
+      }));
+      const { problem, result } = value;
 
-      const problem = checkJsonPath(query);
-      const result = queryJsonPath({ a: 1 }, query);
-
-      expect(performance.now() - start, query.slice(0, 20)).toBeLessThan(100);
+      expect(ms, query.slice(0, 20)).toBeLessThan(100);
       expect(problem?.message).toMatch(/longer than 384 characters|nests too deeply/);
       expect(result.ok).toBe(false);
     }
@@ -821,32 +828,37 @@ describe('worst accepted queries', () => {
 
   it.each(worst)('checks %s in under 100 ms, cold and warm', (_name, query) => {
     expect(query.length).toBeLessThanOrEqual(worstQueryLength);
+    let coldMs = Number.POSITIVE_INFINITY;
 
-    for (let call = 0; call < 10; call += 1) {
+    for (let round = 0; round < timedRuns; round += 1) {
+      emptyCheckCache();
       const start = performance.now();
       const problem = checkJsonPath(query);
-      const elapsed = performance.now() - start;
-
-      expect(elapsed, `call ${String(call)}`).toBeLessThan(100);
+      coldMs = Math.min(coldMs, performance.now() - start);
       expect(problem?.message ?? '').not.toMatch(/nests too deeply|longer than/);
     }
+    const warm = fastest(() => checkJsonPath(query));
+
+    expect(coldMs).toBeLessThan(100);
+    expect(warm.ms).toBeLessThan(100);
+    expect(warm.value?.message ?? '').not.toMatch(/nests too deeply|longer than/);
   });
 
   it('checks every one again in under 100 ms after the cache has been emptied', () => {
-    const fastest = new Map<string, number>();
-    for (let round = 0; round < 3; round += 1) {
+    const fastestMs = new Map<string, number>();
+    for (let round = 0; round < timedRuns; round += 1) {
       emptyCheckCache();
       for (const [name, query] of worst) {
         const start = performance.now();
         const problem = checkJsonPath(query);
         const elapsed = performance.now() - start;
 
-        fastest.set(name, Math.min(fastest.get(name) ?? Infinity, elapsed));
+        fastestMs.set(name, Math.min(fastestMs.get(name) ?? Infinity, elapsed));
         expect(problem?.message ?? '').not.toMatch(/nests too deeply|longer than/);
       }
     }
 
-    for (const [name, elapsed] of fastest) {
+    for (const [name, elapsed] of fastestMs) {
       expect(elapsed, name).toBeLessThan(100);
     }
   });

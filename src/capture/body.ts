@@ -284,15 +284,14 @@ function queryOutcome(target: Value, query: string): Outcome {
 export function jobEvaluator(
   subject: BodySubject,
   read: ReadCollected,
-  budgetFor: () => WorkBudget,
-  decoded?: DecodedBody,
-): (job: BodyJob) => Inserted {
-  let target: { value: Value | undefined } | undefined;
+  body?: { value: Value },
+): (job: BodyJob, budget: WorkBudget) => Inserted {
+  let target: { value: Value | undefined } | undefined = body;
   const subjectValue = (): Value | undefined => {
     if (target === undefined) {
       switch (subject.kind) {
         case 'body':
-          target = { value: bodyValue(decoded ?? decodeBody(subject.bytes, subject.contentType)) };
+          target = { value: bodyValue(decodeBody(subject.bytes, subject.contentType)) };
           break;
         case 'file':
           target = { value: undefined };
@@ -347,9 +346,8 @@ export function jobEvaluator(
       ? { present: false, reason: eventUnavailableReason }
       : { present: true, value, path: '', event: collected.index };
   };
-  return (job) => {
-    const budget = budgetFor();
-    return inserted(
+  return (job, budget) =>
+    inserted(
       evaluateWith(
         job.expression,
         (node) => job.known.get(sourceKey(node)) ?? computed(node, job),
@@ -358,7 +356,6 @@ export function jobEvaluator(
       ),
       budget,
     );
-  };
 }
 
 function unansweredResult(job: BodyJob, cancelled: boolean): Inserted {
@@ -482,12 +479,18 @@ export async function evaluateJobs<Job extends BodyJob>(
   const answering = away.length === 0 ? undefined : runInChild(subject, away, workerFile, options);
   const results = new Map<string, Inserted>();
   const tasks = options.taskBudget ?? hostBudget;
-  const evaluateJob = jobEvaluator(subject, valuesOnly, () => tasks.current(), decoded);
+  const body =
+    decoded !== undefined && inline.some((job) => readsBody(job.expression))
+      ? { value: bodyValue(decoded) }
+      : undefined;
+  const evaluateJob = jobEvaluator(subject, valuesOnly, body);
   for (const [position, job] of inline.entries()) {
-    if (position > 0) {
+    if (position > 0 || body !== undefined) {
       await nextTask();
     }
-    results.set(job.name, evaluateJob(job));
+    const result = evaluateJob(job, tasks.enter());
+    tasks.leave();
+    results.set(job.name, result);
   }
   const { answers, cancelled } = (await answering) ?? { answers: new Map(), cancelled: false };
   return jobs.map((job) => [

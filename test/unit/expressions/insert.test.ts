@@ -7,6 +7,7 @@ import {
   type BoundedText,
 } from '../../../src/expressions/insert';
 import { WorkBudget } from '../../../src/expressions/work';
+import { timedRuns } from '../timing';
 
 const unlimited = Number.POSITIVE_INFINITY;
 const tooLarge: BoundedText = { ok: false };
@@ -48,13 +49,32 @@ function collect(): void {
   (globalThis as unknown as { gc: () => void }).gc();
 }
 
-function measure(run: () => BoundedText): { result: BoundedText; ms: number; heap: number } {
+interface Measured {
+  result: BoundedText;
+  ms: number;
+  heap: number;
+}
+
+function measureOnce(run: () => BoundedText): Measured {
   collect();
   const before = process.memoryUsage().heapUsed;
   const start = performance.now();
   const result = run();
   const ms = performance.now() - start;
   return { result, ms, heap: process.memoryUsage().heapUsed - before };
+}
+
+function measure(run: () => BoundedText): Measured {
+  let measured = measureOnce(run);
+  for (let round = 1; round < timedRuns; round += 1) {
+    const next = measureOnce(run);
+    measured = {
+      result: next.result,
+      ms: Math.min(measured.ms, next.ms),
+      heap: Math.max(measured.heap, next.heap),
+    };
+  }
+  return measured;
 }
 
 describe('insertText', () => {

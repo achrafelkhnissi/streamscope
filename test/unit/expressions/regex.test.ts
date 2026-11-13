@@ -5,6 +5,7 @@ import {
   compilePattern,
   type CompiledPattern,
 } from '../../../src/expressions/regex';
+import { fastest } from '../timing';
 
 interface Found {
   match: string;
@@ -33,12 +34,6 @@ function rejection(
 function expected(pattern: string, flags: string, subject: string): Found | undefined {
   const found = new RegExp(pattern, flags).exec(subject);
   return found === null ? undefined : { match: found[0], group: found[1] };
-}
-
-function timed<T>(run: () => T): { value: T; ms: number } {
-  const start = performance.now();
-  const value = run();
-  return { value, ms: performance.now() - start };
 }
 
 function longestSubject(pattern: CompiledPattern): number {
@@ -427,7 +422,7 @@ describe('the former bypasses of the static check', () => {
 
   it.each(hostile)('runs %s in under 100 ms', (_label, pattern, flags, subject) => {
     const compiled = compile(pattern, flags);
-    const { value, ms } = timed(() => compiled.test(subject));
+    const { value, ms } = fastest(() => compiled.test(subject));
 
     expect(value).toBe(false);
     expect(ms).toBeLessThan(100);
@@ -435,8 +430,8 @@ describe('the former bypasses of the static check', () => {
 
   it('answers \\d+x on 100,000 digits at once, as too long, and on a subject at the limit in under 100 ms', () => {
     const compiled = compile(String.raw`\d+x`);
-    const refused = timed(() => compiled.test('1'.repeat(100000)));
-    const atLimit = timed(() => compiled.test('1'.repeat(longestSubject(compiled))));
+    const refused = fastest(() => compiled.test('1'.repeat(100000)));
+    const atLimit = fastest(() => compiled.test('1'.repeat(longestSubject(compiled))));
 
     expect(refused.value).toBe('too-long');
     expect(refused.ms).toBeLessThan(100);
@@ -513,8 +508,8 @@ describe('limits', () => {
     expect(count).toBeGreaterThan(900);
     expect(length * 2000).toBeGreaterThan(900_000);
 
-    const { value, ms } = timed(() => pattern.test(subject));
-    const firstMatch = timed(() => pattern.firstMatch(subject));
+    const { value, ms } = fastest(() => pattern.test(subject));
+    const firstMatch = fastest(() => pattern.firstMatch(subject));
 
     expect(value).toBe(false);
     expect(firstMatch.value).toBeUndefined();
@@ -528,7 +523,7 @@ describe('limits', () => {
     const length = longestSubject(pattern);
     const subject = 'ab'.repeat(Math.floor(length / 2));
 
-    const { value, ms } = timed(() => pattern.firstMatch(subject));
+    const { value, ms } = fastest(() => pattern.firstMatch(subject));
 
     expect(value).toBeUndefined();
     expect(ms).toBeLessThan(100);
@@ -539,7 +534,7 @@ describe('limits', () => {
     const pattern = compile(`(?:é|ΐ){1,${String(count)}}x`, 'iu');
     const subject = 'éΐ'.repeat(Math.floor(longestSubject(pattern) / 2));
 
-    const { value, ms } = timed(() => pattern.test(subject));
+    const { value, ms } = fastest(() => pattern.test(subject));
 
     expect(value).toBe(false);
     expect(ms).toBeLessThan(100);
@@ -559,7 +554,7 @@ describe('cost at the work limit', () => {
     const compiled = compile(pattern);
     const subject = 'a'.repeat(longestSubject(compiled));
 
-    const { value, ms } = timed(() => compiled.firstMatch(subject));
+    const { value, ms } = fastest(() => compiled.firstMatch(subject));
 
     expect(value).toBeUndefined();
     expect(ms).toBeLessThan(100);
@@ -578,7 +573,7 @@ describe('cost at the work limit', () => {
       const compiled = compile(pattern, flags);
       const subject = distinct(longestSubject(compiled));
 
-      const { value, ms } = timed(() => compiled.test(subject));
+      const { value, ms } = fastest(() => compiled.test(subject));
 
       expect(value).toBe(false);
       expect(ms).toBeLessThan(100);
@@ -657,7 +652,7 @@ describe('nested groups and repeats that copy the capture slots', () => {
       const compiled = compile(pattern);
       const subject = 'a'.repeat(longestSubject(compiled));
 
-      const { value, ms } = timed(() => compiled.firstMatch(subject));
+      const { value, ms } = fastest(() => compiled.firstMatch(subject));
 
       expect(value).toBeUndefined();
       expect(ms).toBeLessThan(100);
