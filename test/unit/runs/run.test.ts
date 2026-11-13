@@ -32,6 +32,7 @@ import { createSelfSignedCertificate } from '../../support/certificate';
 import { startHttpServer, startHttpsServer, type LocalServer } from '../../support/servers';
 import { startStreamServer } from '../../support/stream-server';
 import { collect } from '../../support/memory';
+import { logRunEnd } from '../../../src/vscode/log';
 import { missingWorker } from '../capture/worker';
 import { waitFor } from '../transport/harness';
 import { dependencies, runInput, useSpillArea, withObserver } from './support';
@@ -2051,6 +2052,80 @@ describe('waiting for captured values', () => {
       expect(sent.status).toBe('completed');
       expect(statuses).not.toContain('waiting');
       expect(headerOf(api.requests[1] ?? { rawHeaders: [] }, 'x-session')).toBe('session-1');
+    });
+
+    it('a value read while a secret capture of its producer is pending stays masked', async () => {
+      const api = await track(
+        startHttpServer((_request, response) => {
+          response.writeHead(200, { 'Content-Type': 'application/json', 'X-Sid': 'synthetic-sid' });
+          response.end('{"sid":"synthetic-sid"}');
+        }),
+      );
+      const registry = new CaptureRegistry();
+      const sidLines = [
+        '# @name login',
+        '# @capture secret sid = body.sid',
+        `POST ${api.url}/login`,
+        '',
+        '###',
+        '# @name continue',
+        `GET ${api.url}/continue`,
+        'X-Sid: {{login.response.headers.X-Sid}}',
+      ];
+      const held: (() => void)[] = [];
+      const producerInput = capturing(registry, sidLines, 0);
+      const { captures } = producerInput;
+      const login = startRun(
+        {
+          ...producerInput,
+          captures: {
+            lookup: captures.lookup,
+            begin: (run) => {
+              captures.begin(run);
+            },
+            settle: (waits, runId, signal) => captures.settle(waits, runId, signal),
+            wait: (waits, runId, options) => captures.wait(waits, runId, options),
+            observer: (run) => {
+              const observer = captures.observer(run);
+              return (
+                observer && {
+                  ...observer,
+                  end: (end) => {
+                    held.push(() => {
+                      observer.end(end);
+                    });
+                  },
+                }
+              );
+            },
+          },
+        },
+        dependencies,
+      );
+      await login.done;
+
+      const sent = await startRun(
+        capturing(registry, sidLines, 1, (key) => (key === loginKey ? login : undefined)),
+        dependencies,
+      ).done;
+      const logged: string[] = [];
+      const record = (line: string): void => {
+        logged.push(line);
+      };
+      logRunEnd(
+        { info: record, warn: record, debug: record } as unknown as Parameters<typeof logRunEnd>[0],
+        sent,
+      );
+
+      expect(registry.get(loginKey, 'sid')?.result).toEqual({ state: 'pending' });
+      expect(sent.sent?.headers).toContainEqual(['X-Sid', 'synthetic-sid']);
+      expect(logged.join('\n')).toContain('X-Sid: ••••••');
+      expect(logged.join('\n')).not.toContain('synthetic-sid');
+      expect(describeOutcome(sent)).not.toContain('synthetic-sid');
+      for (const release of held.splice(0)) {
+        release();
+      }
+      await waitFor(() => registry.get(loginKey, 'sid')?.result.state === 'resolved');
     });
 
     it('one to a request that never ran blocks at once, without waiting', async () => {

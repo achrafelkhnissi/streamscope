@@ -86,6 +86,7 @@ function head(headers: [string, string][]): ResponseHead {
 }
 
 interface FakeRun extends ProducerRun {
+  readonly reads: number[];
   arrive(next: ResponseHead): void;
   end(status: string, body?: string): void;
 }
@@ -102,8 +103,10 @@ function producerRun(id: number, label = 'startRun'): FakeRun {
   const done = new Promise<void>((resolve) => {
     markDone = resolve;
   });
+  const reads: number[] = [];
   return {
     id,
+    reads,
     done,
     headArrived,
     snapshot: () => ({
@@ -116,7 +119,10 @@ function producerRun(id: number, label = 'startRun'): FakeRun {
       wallStartedAt: 1_700_000_000_000,
       elapsedMs: 250,
     }),
-    readBody: (maxBytes) => Promise.resolve(body.subarray(0, maxBytes)),
+    readBody: (maxBytes) => {
+      reads.push(maxBytes);
+      return Promise.resolve(body.subarray(0, maxBytes));
+    },
     bodyFile: () => Promise.resolve(undefined),
     arrive: (next) => {
       current = next;
@@ -419,6 +425,40 @@ describe('CaptureService', () => {
     });
   });
 
+  it('a wait that timed out does not read the body when the producer finishes later', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const producer = producerRun(24);
+    const captures = service(new CaptureRegistry(), 1, () => producer);
+    captures.begin({ id: 25, key: continueKey, label: 'continue', startedAt: 25 });
+
+    const waiting = captures.wait([responseWait('response.body.*')], 25, {
+      timeoutMs: 30_000,
+      signal: signal(),
+    });
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(await waiting).toMatchObject({ ok: false });
+    producer.end('completed', '{"token":"synthetic-token"}');
+    await vi.advanceTimersByTimeAsync(0);
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(producer.reads).toEqual([]);
+    expect(captures.lookup.response('startRun', 'response.body.*')).toBeUndefined();
+  });
+
+  it('{{continue.threadId}} inside continue reports its own failed capture', () => {
+    const registry = new CaptureRegistry();
+    const earlier = service(registry, 1);
+    earlier.begin({ id: 26, key: continueKey, label: 'continue', startedAt: 26 });
+    registry.update(26, 'threadId', { state: 'failed', reason: 'the body has no threadId' });
+    const captures = service(registry, 1);
+    captures.begin({ id: 27, key: continueKey, label: 'continue', startedAt: 27 });
+
+    expect(captures.lookup.request('continue', 'threadId')).toEqual({
+      kind: 'failed',
+      message: 'continue › threadId failed: the body has no threadId.',
+    });
+  });
+
   it('a response reference that never arrives times out like a capture', async () => {
     vi.useFakeTimers();
     const producer = producerRun(22);
@@ -566,6 +606,24 @@ describe('response references and secrets', () => {
     expect(captures.lookup.response('startRun', 'response.headers.X-Plain')).toMatchObject({
       text: 'plain-1',
       secret: false,
+    });
+  });
+
+  it("a value is sensitive while a secret capture of the producer's run is still pending", async () => {
+    const registry = new CaptureRegistry();
+    service(registry, 0).begin({ id: 58, key: startKey, label: 'startRun', startedAt: 58 });
+    const producer = producerRun(58);
+    producer.arrive(head([['X-Sid', 'synthetic-sid']]));
+    producer.end('completed');
+    const captures = service(registry, 1, () => producer);
+    captures.begin({ id: 59, key: continueKey, label: 'continue', startedAt: 59 });
+
+    await captures.settle([responseWait('response.headers.X-Sid')], 59, signal());
+
+    expect(registry.get(startKey, 'sessionToken')?.result).toEqual({ state: 'pending' });
+    expect(captures.lookup.response('startRun', 'response.headers.X-Sid')).toMatchObject({
+      text: 'synthetic-sid',
+      secret: true,
     });
   });
 

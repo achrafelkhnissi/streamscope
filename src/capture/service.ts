@@ -370,13 +370,17 @@ export class CaptureService implements RunCaptures {
     producer: ProducerRun,
     signal: AbortSignal,
   ): Promise<CaptureLookupResult | undefined> {
+    const stopped = (): boolean => signal.aborted;
+    if (stopped()) {
+      return undefined;
+    }
     const { requestName: label, reference } = wait;
     const result = await evaluateResponseReference(
       referencedRun(producer, this.options.workerFile),
       reference,
       signal,
     );
-    if (signal.aborted) {
+    if (stopped()) {
       return undefined;
     }
     if (!result.ok) {
@@ -403,7 +407,9 @@ export class CaptureService implements RunCaptures {
       .forRequest(namedRequestKey(documentUri, wait.requestName))
       .some(
         ({ secret, runId, result }) =>
-          secret && runId === producerId && result.state === 'resolved' && result.text === text,
+          secret &&
+          runId === producerId &&
+          (result.state === 'pending' || (result.state === 'resolved' && result.text === text)),
       );
   }
 
