@@ -71,6 +71,7 @@ type HeadNode = Extract<SourceNode, { kind: 'source' }> & { name: keyof HeadValu
 
 interface Match {
   index: number;
+  time: number;
   value: Value | undefined;
   offset: number;
   length: number;
@@ -238,6 +239,7 @@ export function headValues(head: ResponseHead): HeadValues {
 function matchOf(event: StreamEvent): Match {
   return {
     index: event.index,
+    time: event.time,
     value: event.length > maxSentValueBytes ? undefined : event.value,
     offset: event.offset,
     length: event.length,
@@ -352,7 +354,7 @@ export class CaptureTracker {
   private readonly drainListeners = new Set<() => void>();
 
   constructor(
-    private readonly run: { id: number; label: string },
+    private readonly run: { id: number; label: string; wallStartedAt: number },
     definitions: readonly CaptureDefinition[],
     private readonly onResult: (name: string, result: CaptureResult) => void,
     private readonly workerFile: string,
@@ -1012,8 +1014,20 @@ export class CaptureTracker {
       state: 'resolved',
       text: result.text,
       secret: tracked.definition.secret,
-      provenance: { runId: this.run.id, event: result.event, path: result.path, time: Date.now() },
+      provenance: {
+        runId: this.run.id,
+        event: result.event,
+        path: result.path,
+        time: this.settledAt(tracked, result.event),
+      },
     });
+  }
+
+  private settledAt(tracked: Tracked, event: number | undefined): number {
+    const match = tracked.watches
+      .map(matchedWatch)
+      .find((candidate) => candidate !== undefined && candidate.index === event);
+    return match === undefined ? Date.now() : this.run.wallStartedAt + match.time;
   }
 
   private fail(tracked: Tracked, reason: string): void {

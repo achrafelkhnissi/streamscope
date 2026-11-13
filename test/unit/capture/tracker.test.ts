@@ -51,11 +51,12 @@ function harness(
   definitions: CaptureDefinition[],
   workerFile = missingWorker,
   budget: TaskBudget = frozenBudget(),
+  wallStartedAt = 0,
 ): Harness {
   const results = new Map<string, CaptureResult>();
   const calls: string[] = [];
   const tracker = new CaptureTracker(
-    { id: 7, label: 'startRun' },
+    { id: 7, label: 'startRun', wallStartedAt },
     definitions,
     (name, result) => {
       calls.push(name);
@@ -2023,6 +2024,40 @@ describe('evaluation paced by slices and backpressure', () => {
 
     expect(run.tracker.queued).toBe(0);
     expect(listener.drains).toBe(1);
+  });
+
+  it('stamps provenance with the time of the event that settled a capture, not when it was evaluated', async () => {
+    const { budget, tasks } = stepped(4);
+    const wallStartedAt = 5_000_000;
+    const run = harness(
+      [
+        capture('code', 'status'),
+        capture('seventh', 'first(n == 6).n'),
+        capture('latest', 'last(type == "x").n'),
+        capture('counted', 'count(type == "x")'),
+      ],
+      missingWorker,
+      budget,
+      wallStartedAt,
+    );
+    const headAt = Date.now();
+    run.tracker.head(ndjsonHead);
+    for (let n = 0; n < 10; n += 1) {
+      run.send({ type: 'x', n });
+    }
+    runTasks(tasks);
+    const endAt = Date.now();
+    await run.tracker.end(completed('ndjson'));
+
+    const timeOf = (name: string): number => {
+      const result = run.results.get(name);
+      return result?.state === 'resolved' ? result.provenance.time : Number.NaN;
+    };
+    expect(timeOf('seventh')).toBe(wallStartedAt + 70);
+    expect(timeOf('latest')).toBe(wallStartedAt + 100);
+    expect(timeOf('code')).toBeGreaterThanOrEqual(headAt);
+    expect(timeOf('code')).toBeLessThanOrEqual(endAt);
+    expect(timeOf('counted')).toBeGreaterThanOrEqual(endAt);
   });
 
   it('a run whose captures all settle stops queueing and drains', () => {
