@@ -20,7 +20,7 @@ const realClock: TaskClock = {
 export class TaskBudget {
   private budget: WorkBudget | undefined;
   private countedMs = 0;
-  private evaluatedMs = 0;
+  private excessMs = 0;
   private freeMs = 0;
   private checked = false;
   private since: number | undefined;
@@ -41,12 +41,12 @@ export class TaskBudget {
 
   private start(): WorkBudget {
     this.countedMs = 0;
-    this.evaluatedMs = 0;
+    this.excessMs = 0;
     const budget = new WorkBudget({
       expired: () => {
         this.lap(true);
         this.checked = true;
-        return this.countedMs > taskBudgetMs || this.evaluatedMs > taskEvaluationCapMs;
+        return this.countedMs > taskBudgetMs || this.excessMs > taskEvaluationCapMs;
       },
       reason: hostWorkReason,
     });
@@ -63,9 +63,10 @@ export class TaskBudget {
     }
     const now = this.clock.now();
     const elapsed = now - this.since;
-    this.evaluatedMs += elapsed;
+    const excess = Math.max(0, elapsed - this.freeMs);
+    this.excessMs += excess;
     if (counts) {
-      this.countedMs += Math.max(0, elapsed - this.freeMs);
+      this.countedMs += excess;
     }
     this.freeMs = Math.max(0, this.freeMs - elapsed);
     this.since = now;

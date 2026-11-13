@@ -51,45 +51,103 @@ describe('TaskBudget', () => {
   it('a pause inside an evaluation that reaches no clock check counts only toward the 200 ms cap', () => {
     let time = 0;
     const budget = new TaskBudget({ now: () => time, nextTask: () => undefined });
+    const pause = (): void => {
+      budget.enter();
+      time += 51;
+      budget.leave();
+    };
+    const probe = (): WorkBudget => {
+      const work = budget.enter();
+      time += 0.001;
+      return work;
+    };
 
-    budget.enter();
-    time += 50;
-    budget.leave();
-    const next = budget.enter();
-    time += 0.001;
+    pause();
+    const next = probe();
     expect(checked(next)).toBe(true);
     budget.leave();
 
-    for (let pause = 0; pause < 3; pause += 1) {
-      budget.enter();
-      time += 50;
-      budget.leave();
-    }
-    const last = budget.enter();
-    time += 0.001;
+    pause();
+    pause();
+    const before = probe();
+    expect(checked(before)).toBe(true);
+    budget.leave();
+
+    pause();
+    const last = probe();
     expect(checked(last)).toBe(false);
     expect(last.reason).toBe(hostWork);
   });
 
-  it('a task stops at 200 ms of capture evaluation even when every evaluation stays under 5 µs plus a little', () => {
+  it('evaluations within their allowance count toward neither limit, with or without a clock check', () => {
+    let time = 0;
+    const budget = new TaskBudget({ now: () => time, nextTask: () => undefined });
+
+    for (let evaluation = 0; evaluation < 100_000; evaluation += 1) {
+      const work = budget.enter();
+      time += 0.0049;
+      if (evaluation % 2 === 0) {
+        expect(checked(work)).toBe(true);
+      }
+      budget.leave();
+      time += 1;
+    }
+
+    expect(100_000 * 0.0049).toBeGreaterThan(taskEvaluationCapMs);
+    const work = budget.enter();
+    time += 0.001;
+    expect(checked(work)).toBe(true);
+    budget.leave();
+  });
+
+  it('a task stops once the excess of evaluations that reach no clock check passes 200 ms', () => {
     let time = 0;
     const budget = new TaskBudget({ now: () => time, nextTask: () => undefined });
 
     let evaluations = 0;
     let stopped = false;
-    while (!stopped && evaluations < 100_000) {
-      const work = budget.enter();
-      time += 0.0055;
-      stopped = !checked(work);
+    while (!stopped && evaluations < 1_000_000) {
+      budget.enter();
+      time += 0.0056;
       budget.leave();
       time += 1;
       evaluations += 1;
+      const probe = budget.enter();
+      stopped = !checked(probe);
+      budget.leave();
     }
 
     expect(stopped).toBe(true);
-    expect(evaluations * 0.0055).toBeGreaterThan(200);
-    expect(evaluations * 0.0055).toBeLessThan(200.1);
-    expect(evaluations * 0.0005).toBeLessThan(taskBudgetMs);
+    expect(evaluations * 0.0006).toBeGreaterThan(200);
+    expect(evaluations * 0.0006).toBeLessThan(200.1);
+  });
+
+  it('pools 5 µs per pending capture over one event() call', () => {
+    let time = 0;
+    const checkedBudget = new TaskBudget({ now: () => time, nextTask: () => undefined });
+    const heavy = checkedBudget.enter(64);
+    time += 30.3;
+    expect(checked(heavy)).toBe(true);
+    time += 0.03;
+    expect(checked(heavy)).toBe(false);
+    checkedBudget.leave();
+
+    const uncheckedBudget = new TaskBudget({ now: () => time, nextTask: () => undefined });
+    for (let call = 0; call < 1_000; call += 1) {
+      uncheckedBudget.enter(64);
+      time += 0.3;
+      uncheckedBudget.leave();
+      time += 1;
+    }
+    const probe = uncheckedBudget.enter();
+    expect(checked(probe)).toBe(true);
+    uncheckedBudget.leave();
+
+    const single = new TaskBudget({ now: () => time, nextTask: () => undefined });
+    const alone = single.enter(1);
+    time += 30.3;
+    expect(checked(alone)).toBe(false);
+    single.leave();
   });
 
   it('gives every evaluation in one task the same budget, and a new one in the next task', () => {

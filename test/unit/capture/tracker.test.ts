@@ -1704,6 +1704,25 @@ describe('host work within one task', () => {
     expect(run.results.get('chunks')).toEqual(resolved('2000', undefined, ''));
   });
 
+  it('64 count captures over 100,000 events in one task resolve', async () => {
+    const names = Array.from({ length: 64 }, (_, at) => `count${String(at)}`);
+    const run = harness(
+      names.map((name) => capture(name, 'count(type == "x")')),
+      missingWorker,
+      hostBudget,
+    );
+    run.tracker.head(ndjsonHead);
+
+    for (let index = 0; index < 100_000; index += 1) {
+      run.send({ type: 'x', n: index }, { length: 38 });
+    }
+    await run.tracker.end(completed('ndjson'));
+
+    for (const name of names) {
+      expect(run.results.get(name)).toEqual(resolved('100000', undefined, ''));
+    }
+  });
+
   it('resolves a heavy condition however many other captures are pending', () => {
     const others = Array.from({ length: 63 }, (_, at) =>
       capture(`other${String(at)}`, `first(type == "never${String(at)}").id`),
