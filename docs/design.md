@@ -531,7 +531,7 @@ Nothing is written to the workspace except files the user asks to save.
 
 ### Workspace Trust
 
-`capabilities.untrustedWorkspaces: { supported: "limited", restrictedConfigurations: ["streamscope.request.caFile", "streamscope.stream.maxEventSize", "streamscope.stream.memoryEvents"] }` and `capabilities.virtualWorkspaces: { supported: "limited" }`. In a restricted workspace:
+`capabilities.untrustedWorkspaces: { supported: "limited", restrictedConfigurations: ["streamscope.request.caFile", "streamscope.stream.maxEventSize", "streamscope.stream.memoryEvents", "streamscope.stream.typeFields"] }` and `capabilities.virtualWorkspaces: { supported: "limited" }`. In a restricted workspace:
 
 | Feature                                                              | Trusted | Restricted                                                          |
 | -------------------------------------------------------------------- | ------- | ------------------------------------------------------------------- |
@@ -553,7 +553,7 @@ Response content is not masked: Events, Reply, Body, Raw and saved responses sho
 
 ### Privacy
 
-No telemetry. No network traffic other than requests the user sends. No account.
+No telemetry. No network traffic other than requests the user sends. No account. Every response body, not only streams, is written to an owner-only spill file under the extension's global storage while the session runs, and removed when its run leaves history or the session ends.
 
 ## 16. Error handling
 

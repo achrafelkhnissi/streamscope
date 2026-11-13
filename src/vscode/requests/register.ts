@@ -10,6 +10,7 @@ import type { BodyFileContext } from '../../runs/body-files';
 import { panelViews, type PanelView } from '../../response/panel-protocol';
 import { RunHistory } from '../../runs/history';
 import { isActive, RunRegistry } from '../../runs/registry';
+import { sessionShutdown } from '../../runs/shutdown';
 import {
   requestKey,
   requestKeyDocument,
@@ -150,7 +151,7 @@ export function registerRequestFeatures(
   cache: ParseCache,
   environments: EnvironmentStore,
   secrets: SecretStore,
-): void {
+): () => Promise<void> {
   const confirmRestrictedSend = confirmOnce(async () => {
     const choice = await vscode.window.showWarningMessage(
       'Send requests from this restricted workspace?',
@@ -163,6 +164,7 @@ export function registerRequestFeatures(
     );
     return choice === 'Send';
   });
+  const testMode = context.extensionMode === vscode.ExtensionMode.Test;
   const spill = openSpillArea(context);
   const files = new ResponseFileSystem();
   const presenter = new ResponsePresenter(
@@ -412,7 +414,7 @@ export function registerRequestFeatures(
 
   const saveResponse = async (first?: unknown, second?: unknown): Promise<void> => {
     const source = editorUri(first)?.scheme === responseScheme ? editorUri(first) : undefined;
-    const destination = editorUri(source ? second : first);
+    const destination = testMode ? editorUri(source ? second : first) : undefined;
     const key = source ? presenter.documentFor(source)?.key : await responseKey();
     const run = key === undefined ? undefined : presenter.run(key);
     const documentUri = key === undefined ? undefined : presenter.documentUri(key);
@@ -481,7 +483,7 @@ export function registerRequestFeatures(
 
   const showHistory = async (runId?: unknown): Promise<HistoryItem[]> => {
     const items = historyItems(history.list().map((run) => run.snapshot()));
-    if (typeof runId === 'number') {
+    if (testMode && typeof runId === 'number') {
       const run = history.find(runId);
       if (run !== undefined) {
         reopenRun(run);
@@ -539,16 +541,6 @@ export function registerRequestFeatures(
     {
       dispose: () => {
         registry.dispose();
-      },
-    },
-    {
-      dispose: () => {
-        void history.dispose();
-      },
-    },
-    {
-      dispose: () => {
-        void spill.then((area) => area?.dispose());
       },
     },
     vscode.workspace.registerFileSystemProvider(responseScheme, files, {
@@ -612,4 +604,6 @@ export function registerRequestFeatures(
       }),
     );
   }
+
+  return sessionShutdown(history, spill);
 }

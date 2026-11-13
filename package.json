@@ -41,6 +41,9 @@
     "workspace",
     "ui"
   ],
+  "activationEvents": [
+    "onFileSystem:streamscope-response"
+  ],
   "main": "./dist/extension.js",
   "files": [
     "dist/extension.js",
@@ -58,7 +61,8 @@
       "restrictedConfigurations": [
         "streamscope.request.caFile",
         "streamscope.stream.maxEventSize",
-        "streamscope.stream.memoryEvents"
+        "streamscope.stream.memoryEvents",
+        "streamscope.stream.typeFields"
       ]
     },
     "virtualWorkspaces": {

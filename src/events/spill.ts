@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { once } from 'node:events';
 import { createWriteStream, type WriteStream } from 'node:fs';
 import {
+  lstat,
   mkdir,
   open,
   readdir,
@@ -25,7 +26,8 @@ function isRunning(pid: number): boolean {
     process.kill(pid, 0);
     return true;
   } catch (error) {
-    return (error as NodeJS.ErrnoException).code !== 'ESRCH';
+    const code = (error as NodeJS.ErrnoException).code;
+    return code !== 'ESRCH' && code !== 'EPERM';
   }
 }
 
@@ -218,7 +220,7 @@ export class SpillFile {
       path.dirname(destination),
       `.streamscope-${randomBytes(8).toString('hex')}.tmp`,
     );
-    const target = await open(temporary, 'wx');
+    const target = await open(temporary, 'wx', 0o600);
     let replaced = false;
     try {
       for (let offset = 0; offset < end; offset += buffer.length) {
@@ -227,6 +229,11 @@ export class SpillFile {
           return 'unavailable';
         }
         await target.writeFile(chunk);
+      }
+      await target.sync();
+      const existing = await lstat(destination).catch(() => undefined);
+      if (existing?.isFile() === true) {
+        await target.chmod(existing.mode & 0o777);
       }
       await target.close();
       await rename(temporary, destination);

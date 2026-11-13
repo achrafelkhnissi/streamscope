@@ -1,12 +1,15 @@
 import { spawn } from 'node:child_process';
 import {
+  chmodSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { once } from 'node:events';
@@ -165,6 +168,23 @@ describe('SpillArea and SpillFile', () => {
     expect(area.directory).toBe(path.join(root, '424242'));
     expect(readdirSync(area.directory)).toEqual([]);
     await area.dispose();
+  });
+
+  it('removes the spill directory of a process it may not signal, since its own would be signalled', async () => {
+    mkdirSync(path.join(root, '4242'));
+    writeFileSync(path.join(root, '4242', 'stale.spill'), 'synthetic');
+    const kill = vi.spyOn(process, 'kill').mockImplementation(() => {
+      throw Object.assign(new Error('synthetic EPERM'), { code: 'EPERM' });
+    });
+
+    try {
+      const area = await SpillArea.open(root, defaultSpillLimits, 424242);
+      expect(existsSync(path.join(root, '4242'))).toBe(false);
+      expect(kill).toHaveBeenCalledWith(4242, 0);
+      await area.dispose();
+    } finally {
+      kill.mockRestore();
+    }
   });
 
   it('deletes files on delete and everything on dispose', async () => {
@@ -621,6 +641,81 @@ describe('SpillArea and SpillFile', () => {
 
       expect(Buffer.from(content).equals(readFileSync(destination))).toBe(true);
       expect(readdirSync(folder)).toEqual(['existing.bin']);
+      await area.dispose();
+    });
+
+    describe.skipIf(process.platform === 'win32')('the permissions of the copy', () => {
+      async function finished(content: string) {
+        const area = await SpillArea.open(root);
+        const file = await area.create();
+        file.append(encoder.encode(content));
+        await file.finish();
+        return { area, file };
+      }
+
+      it('creates a new destination readable only by its owner', async () => {
+        const { area, file } = await finished('synthetic');
+        const destination = path.join(root, 'new.ndjson');
+
+        expect(await file.copyTo(destination)).toBe('complete');
+
+        expect(statSync(destination).mode & 0o777).toBe(0o600);
+        await area.dispose();
+      });
+
+      it('keeps the mode of the regular file it replaces', async () => {
+        const { area, file } = await finished('synthetic');
+        for (const mode of [0o600, 0o640, 0o644]) {
+          const destination = path.join(root, `existing-${mode.toString(8)}.ndjson`);
+          writeFileSync(destination, 'earlier', { mode });
+          chmodSync(destination, mode);
+
+          expect(await file.copyTo(destination)).toBe('complete');
+
+          expect(statSync(destination).mode & 0o777).toBe(mode);
+          expect(readFileSync(destination, 'utf8')).toBe('synthetic');
+        }
+        await area.dispose();
+      });
+
+      it('replaces a symbolic link with an owner-only file and leaves its target alone', async () => {
+        const { area, file } = await finished('synthetic');
+        const linked = path.join(root, 'linked.txt');
+        writeFileSync(linked, 'earlier', { mode: 0o644 });
+        chmodSync(linked, 0o644);
+        const destination = path.join(root, 'link.ndjson');
+        symlinkSync(linked, destination);
+
+        expect(await file.copyTo(destination)).toBe('complete');
+
+        expect(lstatSync(destination).isFile()).toBe(true);
+        expect(statSync(destination).mode & 0o777).toBe(0o600);
+        expect(readFileSync(linked, 'utf8')).toBe('earlier');
+        await area.dispose();
+      });
+    });
+
+    it('flushes the copy to disk while it is still open', async () => {
+      const area = await SpillArea.open(root);
+      const file = await area.create();
+      file.append(pattern(2 * chunkBytes));
+      await file.finish();
+      const prototype = await handlePrototype();
+      const synced: number[] = [];
+      const sync: (this: FileHandle) => Promise<void> = Reflect.get(prototype, 'sync');
+      const spy = vi.spyOn(prototype, 'sync').mockImplementation(function (this: FileHandle) {
+        synced.push(this.fd);
+        return sync.call(this);
+      });
+
+      try {
+        expect(await file.copyTo(path.join(root, 'flushed.bin'))).toBe('complete');
+      } finally {
+        spy.mockRestore();
+      }
+
+      expect(synced).toHaveLength(1);
+      expect(synced[0]).toBeGreaterThan(0);
       await area.dispose();
     });
 

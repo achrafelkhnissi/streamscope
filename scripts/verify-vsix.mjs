@@ -1,5 +1,13 @@
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync } from 'node:fs';
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
@@ -25,8 +33,12 @@ if (vsixBytes > maxVsixBytes) {
 const sandbox = realpathSync(mkdtempSync(path.join(tmpdir(), 'vsix-verify-')));
 const userDataDir = path.join(sandbox, 'user-data');
 const extensionsDir = path.join(sandbox, 'extensions');
-mkdirSync(userDataDir);
+mkdirSync(path.join(userDataDir, 'User'), { recursive: true });
 mkdirSync(extensionsDir);
+writeFileSync(
+  path.join(userDataDir, 'User', 'settings.json'),
+  JSON.stringify({ 'files.simpleDialog.enable': true }),
+);
 
 try {
   const vscodeExecutablePath = await downloadAndUnzipVSCode('stable');
@@ -61,6 +73,7 @@ try {
     extensionTestsEnv: {
       EXPECTED_EXTENSION_ID: extensionId,
       EXPECTED_EXTENSIONS_DIR: extensionsDir,
+      SCRATCH_DIR: sandbox,
     },
   });
   console.log(`${extensionId} activated from the isolated profile`);

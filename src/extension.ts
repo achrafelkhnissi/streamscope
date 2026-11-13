@@ -9,6 +9,8 @@ import { createLanguageVariables, registerVariableFeatures } from './vscode/lang
 import { ParseCache } from './vscode/language/parse-cache';
 import { registerRequestFeatures } from './vscode/requests/register';
 
+let shutdown: (() => Promise<void>) | undefined;
+
 export function activate(context: vscode.ExtensionContext): void {
   const log = vscode.window.createOutputChannel('Streamscope', { log: true });
   const cache = new ParseCache();
@@ -26,7 +28,11 @@ export function activate(context: vscode.ExtensionContext): void {
   const variables = createLanguageVariables(context, environments, secrets);
   registerVariableFeatures(context, cache, variables, secrets);
   registerLanguageFeatures(context, cache, variables);
-  registerRequestFeatures(context, log, cache, environments, secrets);
+  shutdown = registerRequestFeatures(context, log, cache, environments, secrets);
   void offerToHideOtherSendLenses(context);
   log.info('Extension activated');
+}
+
+export async function deactivate(): Promise<void> {
+  await shutdown?.();
 }

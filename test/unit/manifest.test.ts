@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 
 interface Manifest {
   scripts: Record<string, string>;
+  activationEvents?: string[];
   capabilities: unknown;
   name: string;
   publisher: string;
@@ -61,6 +62,10 @@ describe('extension manifest', () => {
 
   it('runs in the workspace extension host', () => {
     expect(manifest.extensionKind).toEqual(['workspace', 'ui']);
+  });
+
+  it('activates for a restored response document so its tab can be closed', () => {
+    expect(manifest.activationEvents).toEqual(['onFileSystem:streamscope-response']);
   });
 
   it('pins @types/vscode to the minimum supported VS Code version', () => {
@@ -313,6 +318,7 @@ describe('extension manifest', () => {
           'streamscope.request.caFile',
           'streamscope.stream.maxEventSize',
           'streamscope.stream.memoryEvents',
+          'streamscope.stream.typeFields',
         ],
       },
       virtualWorkspaces: {
