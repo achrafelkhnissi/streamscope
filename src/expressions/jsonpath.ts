@@ -27,6 +27,8 @@ interface CompiledPatterns {
 const maxPatternLength = 500;
 const maxCachedPatterns = 256;
 const maxDepth = 1000;
+const maxParentheses = 8;
+const nestingMessage = `the query nests too deeply (more than ${String(maxParentheses)} levels of parentheses)`;
 const patternFlags = 'u';
 
 const compiledPatterns = new Map<string, CompiledPatterns>();
@@ -168,6 +170,31 @@ function checkPatterns(query: string): JsonPathProblem | undefined {
   return undefined;
 }
 
+function overdeepParenthesis(query: string): number | undefined {
+  let depth = 0;
+  let quote = '';
+  for (let index = 0; index < query.length; index += 1) {
+    const char = query.charAt(index);
+    if (quote !== '') {
+      if (char === '\\') {
+        index += 1;
+      } else if (char === quote) {
+        quote = '';
+      }
+    } else if (char === "'" || char === '"') {
+      quote = char;
+    } else if (char === '(') {
+      depth += 1;
+      if (depth > maxParentheses) {
+        return index;
+      }
+    } else if (char === ')' && depth > 0) {
+      depth -= 1;
+    }
+  }
+  return undefined;
+}
+
 function syntaxProblem(query: string, codePoints: number): JsonPathProblem {
   const offset = utf16Offset(query, codePoints);
   if (offset >= query.length) {
@@ -178,6 +205,10 @@ function syntaxProblem(query: string, codePoints: number): JsonPathProblem {
 }
 
 export function checkJsonPath(query: string): JsonPathProblem | undefined {
+  const nesting = overdeepParenthesis(query);
+  if (nesting !== undefined) {
+    return { message: nestingMessage, offset: nesting };
+  }
   try {
     const { result } = parse(query);
     if (!result.success) {
@@ -227,6 +258,9 @@ export function queryJsonPath(value: Value, query: string): JsonPathResult {
       ok: false,
       reason: 'the value is nested too deeply for jsonpath() (more than 1,000 levels)',
     };
+  }
+  if (overdeepParenthesis(query) !== undefined) {
+    return { ok: false, reason: nestingMessage };
   }
   try {
     const nodes = evaluate<Value>(value, query, { functions: patternFunctions, trace: false });

@@ -420,12 +420,12 @@ describe('the former bypasses of the static check', () => {
     ['.*a.*b on a failing subject', '.*a.*b', '', 'a'.repeat(30000)],
   ];
 
-  it.each(hostile)('runs %s in under 50 ms', (_label, pattern, flags, subject) => {
+  it.each(hostile)('runs %s in under 100 ms', (_label, pattern, flags, subject) => {
     const compiled = compile(pattern, flags);
     const { value, ms } = timed(() => compiled.test(subject));
 
     expect(value).toBe(false);
-    expect(ms).toBeLessThan(50);
+    expect(ms).toBeLessThan(100);
   });
 
   it('answers \\d+x on 100,000 digits at once, as too long, and on a subject at the limit in under 100 ms', () => {

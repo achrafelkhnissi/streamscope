@@ -300,3 +300,79 @@ describe('checkJsonPath', () => {
     expect(checkJsonPath(`$[?search(@.a, '${'a'.repeat(500)}')]`)).toBeUndefined();
   });
 });
+
+const tooDeep = 'the query nests too deeply (more than 8 levels of parentheses)';
+
+function nestedCalls(levels: number): string {
+  return `$[?${'length('.repeat(levels)}@.a${')'.repeat(levels)} == 1]`;
+}
+
+function nthOpening(query: string, count: number): number {
+  let index = -1;
+  for (let seen = 0; seen < count; seen += 1) {
+    index = query.indexOf('(', index + 1);
+  }
+  return index;
+}
+
+describe('parenthesis nesting', () => {
+  it('rejects 9 levels of nested calls quickly', () => {
+    for (const levels of [9, 20, 200]) {
+      const query = nestedCalls(levels);
+      const start = performance.now();
+
+      const problem = checkJsonPath(query);
+      const result = queryJsonPath({ a: 'x' }, query);
+
+      expect(performance.now() - start, `${String(levels)} levels`).toBeLessThan(100);
+      expect(problem).toEqual({ message: tooDeep, offset: nthOpening(query, 9) });
+      expect(result).toEqual({ ok: false, reason: tooDeep });
+    }
+  });
+
+  it('counts groups as well as calls', () => {
+    const query = `$[?${'('.repeat(10)}@.a${')'.repeat(10)}]`;
+
+    expect(checkJsonPath(query)).toEqual({ message: tooDeep, offset: nthOpening(query, 9) });
+    expect(queryJsonPath({ a: 1 }, query)).toEqual({ ok: false, reason: tooDeep });
+    expect(checkJsonPath(`$[?${'('.repeat(8)}@.a${')'.repeat(8)}]`)).toBeUndefined();
+  });
+
+  it('8 levels of nested calls are accepted', () => {
+    const query = nestedCalls(8);
+
+    expect(checkJsonPath(query)).toBeUndefined();
+    expect(queryJsonPath({ a: 'x' }, query)).toEqual({ ok: true, nodes: [] });
+  });
+
+  it('counts the depth of the open parentheses, not their number', () => {
+    const query = `$[?${Array.from({ length: 30 }, () => '(@.a)').join(' && ')}]`;
+
+    expect(checkJsonPath(query)).toBeUndefined();
+    expect(queryJsonPath([{ a: 1 }], query)).toEqual({ ok: true, nodes: [{ a: 1 }] });
+  });
+
+  it('parentheses inside string literals do not count', () => {
+    const opening = '('.repeat(20);
+    const queries = [
+      `$[?@.a == '${opening}']`,
+      `$[?@.a == "${opening}"]`,
+      `$[?@.a == '${')'.repeat(20)}']`,
+      `$[?@.a == 'it\\'s ${opening}']`,
+      `$[?@.a == "say \\"${opening}\\""]`,
+      String.raw`$[?@.a == '\\' && @.b == '((((((((((']`,
+      `$['${opening}']`,
+    ];
+
+    for (const query of queries) {
+      expect(checkJsonPath(query), query).toBeUndefined();
+      expect(queryJsonPath({ a: 1 }, query).ok, query).toBe(true);
+    }
+  });
+
+  it('counts parentheses after a string literal that closed', () => {
+    const query = `$[?@.a == '(' && ${nestedCalls(9).slice(3, -1)}]`;
+
+    expect(checkJsonPath(query)?.message).toBe(tooDeep);
+  });
+});
