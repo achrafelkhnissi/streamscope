@@ -300,6 +300,55 @@ describe('evaluateBodyExpressions', () => {
     });
   });
 
+  it('fails the in and regex filters over 256 KiB with the budget message, quickly', async () => {
+    const tooMuchWork = 'the expression needs too much work for this value';
+    const numbers = Array<string>(1_300).fill('7').join(',');
+    const zeros = encoder.encode(`[${'0,'.repeat(inlineBodyBytes / 2 - 2)}0]`);
+    const strings = encoder.encode(
+      `[${Array.from({ length: Math.floor(inlineBodyBytes / 43) }, () => `"${'a'.repeat(40)}"`).join(',')}]`,
+    );
+    const words = encoder.encode(
+      `[${Array.from({ length: Math.floor(inlineBodyBytes / 9) }, (_, at) => `"w${String(at % 400).padStart(5, '0')}"`).join(',')}]`,
+    );
+    const wordList = Array.from(
+      { length: 400 },
+      (_, at) => `"x${String(at).padStart(5, '0')}"`,
+    ).join(',');
+    expect(zeros.length).toBeLessThanOrEqual(inlineBodyBytes);
+    expect(strings.length).toBeLessThanOrEqual(inlineBodyBytes);
+    expect(words.length).toBeLessThanOrEqual(inlineBodyBytes);
+
+    for (const [body, text] of [
+      [zeros, `body[?@ in [${numbers}]]`],
+      [strings, 'body[?@ matches /([a-z]*){40}b/]'],
+      [words, `body[?@ in [${wordList}]]`],
+    ] as const) {
+      const { result, stallMs } = await longestStall(() =>
+        evaluateBodyExpressions(body, 'application/json', [capture('work', text)], missingWorker),
+      );
+
+      expect(result.get('work')).toEqual({ present: false, reason: tooMuchWork });
+      expect(stallMs).toBeLessThan(100);
+    }
+  });
+
+  it('leaves an ordinary filter over 256 KiB unaffected', async () => {
+    const zeros = encoder.encode(`[${'0,'.repeat(inlineBodyBytes / 2 - 2)}0]`);
+
+    const { result, stallMs } = await longestStall(() =>
+      evaluateBodyExpressions(
+        zeros,
+        'application/json',
+        [capture('zeros', 'body[?@ == 0] | json'), capture('count', 'body[*]')],
+        missingWorker,
+      ),
+    );
+
+    expect(result.get('zeros')?.present).toBe(true);
+    expect(result.get('count')?.present).toBe(true);
+    expect(stallMs).toBeLessThan(100);
+  });
+
   it('fails a value over 1 MiB in the child', async () => {
     const outcomes = await evaluateBodyExpressions(
       jsonBody(2 * mebibyte),

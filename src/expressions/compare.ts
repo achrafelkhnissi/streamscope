@@ -15,10 +15,21 @@ function compareNumeric(left: number | bigint, right: number | bigint): -1 | 0 |
   return Number.isNaN(left) || Number.isNaN(right) ? undefined : 0;
 }
 
-export function equalValues(left: Value, right: Value): boolean {
+function isPrimitive(value: Value): boolean {
+  return typeof value !== 'object' || value === null;
+}
+
+export function equalValues(left: Value, right: Value, visit?: () => void): boolean {
+  if (isPrimitive(left) || isPrimitive(right)) {
+    visit?.();
+    return (
+      left === right || (isNumeric(left) && isNumeric(right) && compareNumeric(left, right) === 0)
+    );
+  }
   const lefts: Value[] = [left];
   const rights: Value[] = [right];
   while (lefts.length > 0) {
+    visit?.();
     const a = lefts.pop() as Value;
     const b = rights.pop() as Value;
     if (a === b) {
@@ -54,7 +65,11 @@ export function equalValues(left: Value, right: Value): boolean {
   return true;
 }
 
-export function compareValues(left: Value, right: Value): -1 | 0 | 1 | undefined {
+export function compareValues(
+  left: Value,
+  right: Value,
+  visit?: () => void,
+): -1 | 0 | 1 | undefined {
   if (isNumeric(left)) {
     return isNumeric(right) ? compareNumeric(left, right) : undefined;
   }
@@ -67,5 +82,5 @@ export function compareValues(left: Value, right: Value): -1 | 0 | 1 | undefined
     }
     return left > right ? 1 : 0;
   }
-  return equalValues(left, right) ? 0 : undefined;
+  return equalValues(left, right, visit) ? 0 : undefined;
 }

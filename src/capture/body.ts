@@ -1,6 +1,12 @@
 import { fork, type ChildProcess } from 'node:child_process';
 import type { Expr, SourceNode, Value } from '../expressions/ast';
-import { evaluate, type Outcome } from '../expressions/evaluate';
+import {
+  evaluate,
+  tooMuchWorkReason,
+  workBudget,
+  type Outcome,
+  type WorkBudget,
+} from '../expressions/evaluate';
 import { insertText, maxInsertedLength, valueTooLargeReason } from '../expressions/insert';
 import { queryJsonPath } from '../expressions/jsonpath';
 import { sourcesOf } from '../expressions/parse';
@@ -119,6 +125,8 @@ export const inlineBodyBytes = 262_144;
 export const inlineDigitBodyBytes = 65_536;
 export const fileBodyBytes = 1_048_576;
 export const childTimeLimitMs = 5000;
+export const hostWorkUnits = 2_000_000;
+export const childWorkUnits = 100_000_000;
 export const maxCaptureChildren = 2;
 export const captureChildren = new ChildSlots(maxCaptureChildren);
 
@@ -160,19 +168,27 @@ export function evaluateWith(
   expression: Expr,
   read: (node: SourceNode) => Outcome,
   streamed: boolean,
+  budget: WorkBudget,
 ): Outcome {
   let last: { node: SourceNode; outcome: Outcome } | undefined;
   let hard: string | undefined;
-  const outcome = evaluate(expression, {
-    value(node) {
-      const served = read(node);
-      last = { node, outcome: served };
-      if (!served.present && hard === undefined && hardReasons.has(served.reason)) {
-        hard = served.reason;
-      }
-      return served;
+  const outcome = evaluate(
+    expression,
+    {
+      value(node) {
+        const served = read(node);
+        last = { node, outcome: served };
+        if (!served.present && hard === undefined && hardReasons.has(served.reason)) {
+          hard = served.reason;
+        }
+        return served;
+      },
     },
-  });
+    { budget },
+  );
+  if (budget.exhausted) {
+    return { present: false, reason: tooMuchWorkReason };
+  }
   if (hard !== undefined) {
     return { present: false, reason: hard };
   }
@@ -259,6 +275,7 @@ function queryOutcome(target: Value, query: string): Outcome {
 export function jobEvaluator(
   subject: BodySubject,
   read: ReadCollected,
+  workUnits: number,
   decoded?: DecodedBody,
 ): (job: BodyJob) => Outcome {
   let target: { value: Value | undefined } | undefined;
@@ -326,6 +343,7 @@ export function jobEvaluator(
       job.expression,
       (node) => job.known.get(sourceKey(node)) ?? computed(node, job),
       subject.kind === 'events',
+      workBudget(workUnits),
     );
 }
 
@@ -449,7 +467,7 @@ export async function evaluateJobs<Job extends BodyJob>(
   }
   const answering = away.length === 0 ? undefined : runInChild(subject, away, workerFile, options);
   const results = new Map<string, Inserted>();
-  const evaluateJob = jobEvaluator(subject, valuesOnly, decoded);
+  const evaluateJob = jobEvaluator(subject, valuesOnly, hostWorkUnits, decoded);
   for (const [position, job] of inline.entries()) {
     if (position > 0) {
       await nextTask();

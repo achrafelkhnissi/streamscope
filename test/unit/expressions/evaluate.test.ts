@@ -4,6 +4,7 @@ import {
   evaluate,
   holds,
   textTooLongReason,
+  workBudget,
   type ConditionItem,
   type Outcome,
   type Sources,
@@ -1318,5 +1319,75 @@ describe('evaluate values nested 10,000 levels deep', () => {
     expect(holdsFor(chain, { b: true })).toBe(false);
     const filters = `body${' | default(1)'.repeat(300)}`;
     expect(run(filters, bodyOf(1)).present).toBe(true);
+  });
+});
+
+describe('work budget', () => {
+  const tooMuchWork = 'the expression needs too much work for this value';
+  const numbers = (count: number): string => `[${Array<string>(count).fill('7').join(',')}]`;
+
+  it('stops an evaluation that needs more work than its budget', () => {
+    const value: Value = Array.from({ length: 5_000 }, (_, at) => at);
+    const budget = workBudget(100_000);
+
+    const outcome = evaluate(parse(`body[?@ in ${numbers(1_300)}]`), sourcesWith(bodyOf(value)), {
+      budget,
+    });
+
+    expect(outcome).toEqual({ present: false, reason: tooMuchWork });
+    expect(budget.exhausted).toBe(true);
+  });
+
+  it('is not hidden by default(…)', () => {
+    const value: Value = Array.from({ length: 5_000 }, (_, at) => at);
+
+    const outcome = evaluate(
+      parse(`body[?@ in ${numbers(1_300)}] | default("none")`),
+      sourcesWith(bodyOf(value)),
+      { budget: workBudget(100_000) },
+    );
+
+    expect(outcome).toEqual({ present: false, reason: tooMuchWork });
+  });
+
+  it('counts each path step per item, each comparison, each membership comparison and regex work', () => {
+    const spent = (text: string, value: Value): number => {
+      const budget = workBudget(1_000_000);
+      evaluate(parse(text), sourcesWith(bodyOf(value)), { budget });
+      return 1_000_000 - budget.remaining;
+    };
+    const items: Value = Array.from({ length: 100 }, (_, at) => at + 100);
+
+    expect(spent('body[*]', items)).toBeGreaterThanOrEqual(100);
+    expect(spent('body[?@ == 1]', items)).toBeGreaterThanOrEqual(200);
+    expect(spent(`body[?@ in ${numbers(50)}]`, items)).toBeGreaterThanOrEqual(100 * 50);
+    expect(spent('body[?@ matches /a+b/]', ['a'.repeat(1_000)])).toBeGreaterThanOrEqual(1_000);
+    expect(spent('body', items)).toBeLessThan(10);
+  });
+
+  it('makes a condition false and marks its budget exhausted', () => {
+    const budget = workBudget(1_000);
+
+    const result = holds(
+      parse(`items[?@ in ${numbers(100)}]`, 'condition'),
+      item({
+        items: Array.from({ length: 1_000 }, (_, at) => at),
+      }),
+      { budget },
+    );
+
+    expect(result).toBe(false);
+    expect(budget.exhausted).toBe(true);
+    expect(holdsFor('type == "A"', { type: 'A' })).toBe(true);
+  });
+
+  it('builds a constant list literal once per node', () => {
+    const expression = parse('[1, 2, [3, 4]]');
+
+    const first = evaluate(expression, sourcesWith({}));
+    const second = evaluate(expression, sourcesWith({}));
+
+    expect(first).toEqual({ present: true, value: [1, 2, [3, 4]], path: '' });
+    expect(first.present && second.present && first.value === second.value).toBe(true);
   });
 });

@@ -71,6 +71,7 @@ export interface RegexMatch {
 }
 
 export interface CompiledPattern {
+  work(subject: string): number;
   test(subject: string): boolean | 'too-long';
   firstMatch(subject: string): RegexMatch | undefined | 'too-long';
 }
@@ -1256,6 +1257,11 @@ class Matcher implements CompiledPattern {
     mode: Mode,
   ) {
     this.machine = new Machine(program, mode);
+  }
+
+  work(subject: string): number {
+    const work = subject.length * this.program.weight;
+    return work > maxWork ? 0 : work;
   }
 
   test(subject: string): boolean | 'too-long' {

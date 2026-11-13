@@ -3,6 +3,7 @@ import type { Value } from '../expressions/ast';
 import { parseExpression } from '../expressions/parse';
 import { parseEventBytes } from '../streaming/parser';
 import {
+  childWorkUnits,
   inserted,
   jobEvaluator,
   valuesOnly,
@@ -83,7 +84,7 @@ function reply(name: string, result: Inserted): void {
 }
 
 process.once('message', ({ subject, jobs }: WorkerRequest) => {
-  const evaluateJob = jobEvaluator(loaded(subject), rangeReader(subject));
+  const evaluateJob = jobEvaluator(loaded(subject), rangeReader(subject), childWorkUnits);
   for (const job of jobs) {
     const parsed = parseExpression(job.text, 'capture');
     reply(

@@ -27,6 +27,7 @@ export const evaluationCancelledReason = 'evaluating the capture was cancelled';
 export const replyUnavailableReason = 'the reply text is no longer available';
 export const eventsUnavailableReason = 'the events are no longer available for this capture';
 export const eventUnavailableReason = 'the event is no longer available for this capture';
+export const bodyNotSentReason = 'the body is no longer available for this capture';
 export const noReplyReason = 'the response has no recognised reply';
 export const replyCutOffReason = 'the reply is larger than 1 MiB';
 export const noHeadersReason = 'the response has no headers';
@@ -39,6 +40,7 @@ export const hardReasons: ReadonlySet<string> = new Set([
   bodyUnavailableReason,
   eventsUnavailableReason,
   eventUnavailableReason,
+  bodyNotSentReason,
   replyUnavailableReason,
   noReplyReason,
   replyCutOffReason,

@@ -18,6 +18,15 @@ export interface ConditionItem {
   malformed: boolean;
 }
 
+export interface WorkBudget {
+  remaining: number;
+  exhausted: boolean;
+}
+
+export interface EvaluateOptions {
+  budget?: WorkBudget;
+}
+
 type Present = Extract<Outcome, { present: true }>;
 type Absent = Extract<Outcome, { present: false }>;
 type ChainNode = Extract<Expr, { kind: 'access' | 'filter' }>;
@@ -29,6 +38,7 @@ interface Scope {
   readonly sources: Sources;
   readonly sse: ConditionItem['sse'];
   readonly explain: boolean;
+  readonly budget: WorkBudget | undefined;
   item: Value | undefined;
 }
 
@@ -41,6 +51,9 @@ interface Walk {
 }
 
 export const textTooLongReason = 'the text is too long for this regular expression';
+export const tooMuchWorkReason = 'the expression needs too much work for this value';
+
+class OutOfWork extends Error {}
 
 const identifier = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
 const silent: Absent = Object.freeze({ present: false, reason: '' });
@@ -48,6 +61,37 @@ const yes: Present = Object.freeze({ present: true, value: true, path: '' });
 const no: Present = Object.freeze({ present: true, value: false, path: '' });
 const unreadable: Sources = { value: () => silent };
 const patterns = new WeakMap<object, CompileResult>();
+const constantLists = new WeakMap<object, Value>();
+const jsonUnits = 16;
+const outOfWork = new OutOfWork(tooMuchWorkReason);
+
+export function workBudget(units: number): WorkBudget {
+  return { remaining: units, exhausted: false };
+}
+
+function spend(scope: Scope, units: number): void {
+  const { budget } = scope;
+  if (budget === undefined) {
+    return;
+  }
+  budget.remaining -= units;
+  if (budget.remaining < 0) {
+    budget.exhausted = true;
+    throw outOfWork;
+  }
+}
+
+function visitor(scope: Scope): (() => void) | undefined {
+  return scope.budget === undefined
+    ? undefined
+    : () => {
+        spend(scope, 1);
+      };
+}
+
+function isConstant(node: Expr): boolean {
+  return node.kind === 'literal' || (node.kind === 'list' && node.items.every(isConstant));
+}
 
 function present(value: Value, path = '', event?: number): Present {
   return event === undefined
@@ -163,27 +207,28 @@ function relate(
   operator: Exclude<CompareOperator, 'matches' | '==' | '!='>,
   left: Value,
   right: Value,
+  visit: (() => void) | undefined,
 ): boolean {
   switch (operator) {
     case '<':
-      return compareValues(left, right) === -1;
+      return compareValues(left, right, visit) === -1;
     case '>':
-      return compareValues(left, right) === 1;
+      return compareValues(left, right, visit) === 1;
     case '<=': {
-      const order = compareValues(left, right);
+      const order = compareValues(left, right, visit);
       return order === -1 || order === 0;
     }
     case '>=': {
-      const order = compareValues(left, right);
+      const order = compareValues(left, right, visit);
       return order === 1 || order === 0;
     }
     case 'in':
-      return isList(right) && right.some((element) => equalValues(left, element));
+      return isList(right) && right.some((element) => equalValues(left, element, visit));
     case 'contains':
       if (typeof left === 'string') {
         return typeof right === 'string' && left.includes(right);
       }
-      return isList(left) && left.some((element) => equalValues(element, right));
+      return isList(left) && left.some((element) => equalValues(element, right, visit));
     case 'startsWith':
       return typeof left === 'string' && typeof right === 'string' && left.startsWith(right);
   }
@@ -199,7 +244,11 @@ function matches(node: CompareNode, scope: Scope): boolean {
     return false;
   }
   const compiled = compiledPattern(right, right.pattern, right.flags);
-  return compiled.ok && compiled.pattern.test(left.value) === true;
+  if (!compiled.ok) {
+    return false;
+  }
+  spend(scope, compiled.pattern.work(left.value));
+  return compiled.pattern.test(left.value) === true;
 }
 
 function equality(node: CompareNode, scope: Scope): boolean {
@@ -211,10 +260,11 @@ function equality(node: CompareNode, scope: Scope): boolean {
   if (!left.present || !right.present) {
     return !left.present && !right.present;
   }
-  return equalValues(left.value, right.value);
+  return equalValues(left.value, right.value, visitor(scope));
 }
 
 function comparison(node: CompareNode, scope: Scope): boolean {
+  spend(scope, 1);
   switch (node.operator) {
     case 'matches':
       return matches(node, scope);
@@ -233,7 +283,7 @@ function comparison(node: CompareNode, scope: Scope): boolean {
           !left.present && !right.present && (node.operator === '<=' || node.operator === '>=')
         );
       }
-      return relate(node.operator, left.value, right.value);
+      return relate(node.operator, left.value, right.value, visitor(scope));
     }
   }
 }
@@ -251,6 +301,7 @@ function logical(node: LogicalNode, scope: Scope): boolean {
     spine.push(leftmost);
     leftmost = leftmost.left;
   }
+  spend(scope, spine.length);
   let result = truthy(leftmost, scope);
   for (let index = spine.length - 1; index >= 0; index -= 1) {
     const link = spine[index] as LogicalNode;
@@ -283,9 +334,16 @@ function truthy(node: Expr, scope: Scope): boolean {
 }
 
 function filterWhere(list: readonly Value[], condition: Expr, scope: Scope): Value[] {
-  const inner: Scope = { sources: scope.sources, sse: scope.sse, explain: false, item: undefined };
+  const inner: Scope = {
+    sources: scope.sources,
+    sse: scope.sse,
+    explain: false,
+    budget: scope.budget,
+    item: undefined,
+  };
   const kept: Value[] = [];
   for (const element of list) {
+    spend(scope, 1);
     inner.item = element;
     if (truthy(condition, inner)) {
       kept.push(element);
@@ -298,6 +356,7 @@ function mapStep(walk: Walk, step: Exclude<Step, IndexStep>, path: string, scope
   const items = walk.value as readonly Value[];
   const mapped: Value[] = [];
   for (let position = 0; position < items.length; position += 1) {
+    spend(scope, 1);
     const item = items[position] as Value;
     if (step.kind === 'name') {
       const next = readName(item, step.name);
@@ -310,6 +369,7 @@ function mapStep(walk: Walk, step: Exclude<Step, IndexStep>, path: string, scope
       if (children !== undefined) {
         const kept =
           step.kind === 'wildcard' ? children : filterWhere(children, step.condition, scope);
+        spend(scope, kept.length);
         for (const element of kept) {
           mapped.push(element);
         }
@@ -326,6 +386,7 @@ function mapStep(walk: Walk, step: Exclude<Step, IndexStep>, path: string, scope
 }
 
 function applyStep(walk: Walk, step: Step, scope: Scope): void {
+  spend(scope, 1);
   const path = scope.explain ? appendStep(walk.path, step) : '';
   if (walk.fanned && step.kind !== 'index') {
     mapStep(walk, step, path, scope);
@@ -341,6 +402,7 @@ function applyStep(walk: Walk, step: Step, scope: Scope): void {
       break;
     case 'wildcard':
       next = members(walk.value);
+      spend(scope, next?.length ?? 0);
       break;
     case 'where': {
       const children = members(walk.value);
@@ -402,6 +464,7 @@ function applyFilter(walk: Walk, filter: Filter, scope: Scope): void {
         lose(walk, scope, () => noValue(path, `join needs a list, not ${kindOf(value)}`));
         return;
       }
+      spend(scope, value.length);
       const joined = joinText(value, filter.separator);
       if (joined === undefined) {
         lose(walk, scope, () => valueTooLargeReason);
@@ -412,6 +475,7 @@ function applyFilter(walk: Walk, filter: Filter, scope: Scope): void {
     }
     case 'json': {
       const json = compactJson(value, maxInsertedLength);
+      spend(scope, jsonUnits + (json.ok ? Math.ceil(json.text.length / 4) : maxInsertedLength / 4));
       if (json.ok) {
         walk.value = json.text;
       } else {
@@ -431,6 +495,7 @@ function applyFilter(walk: Walk, filter: Filter, scope: Scope): void {
         );
         return;
       }
+      spend(scope, compiled.pattern.work(value));
       const found = compiled.pattern.firstMatch(value);
       if (found === 'too-long') {
         lose(walk, scope, () => textTooLongReason);
@@ -496,6 +561,10 @@ function evaluateNode(node: Expr, scope: Scope): Outcome {
     case 'literal':
       return present(node.value);
     case 'list': {
+      const built = constantLists.get(node);
+      if (built !== undefined) {
+        return present(built);
+      }
       const items: Value[] = [];
       for (const element of node.items) {
         const outcome = evaluateNode(element, scope);
@@ -504,11 +573,15 @@ function evaluateNode(node: Expr, scope: Scope): Outcome {
         }
         items.push(outcome.value);
       }
+      if (isConstant(node)) {
+        constantLists.set(node, items);
+      }
       return present(items);
     }
     case 'regex':
       return absent(noValue('', 'a regular expression is not a value'));
     case 'field': {
+      spend(scope, 1);
       const { item } = scope;
       if (item === undefined) {
         return absent(noValue(node.name, 'there is no item to read it from'));
@@ -540,18 +613,43 @@ function evaluateNode(node: Expr, scope: Scope): Outcome {
   }
 }
 
-export function evaluate(expr: Expr, sources: Sources): Outcome {
-  return evaluateNode(expr, { sources, sse: undefined, explain: true, item: undefined });
+export function evaluate(expr: Expr, sources: Sources, options: EvaluateOptions = {}): Outcome {
+  try {
+    return evaluateNode(expr, {
+      sources,
+      sse: undefined,
+      explain: true,
+      budget: options.budget,
+      item: undefined,
+    });
+  } catch (error) {
+    if (error === outOfWork) {
+      return absent(tooMuchWorkReason);
+    }
+    throw error;
+  }
 }
 
-export function holds(condition: Expr, item: ConditionItem): boolean {
+export function holds(
+  condition: Expr,
+  item: ConditionItem,
+  options: EvaluateOptions = {},
+): boolean {
   if (item.malformed) {
     return false;
   }
-  return truthy(condition, {
-    sources: unreadable,
-    sse: item.sse,
-    explain: false,
-    item: item.value,
-  });
+  try {
+    return truthy(condition, {
+      sources: unreadable,
+      sse: item.sse,
+      explain: false,
+      budget: options.budget,
+      item: item.value,
+    });
+  } catch (error) {
+    if (error === outOfWork) {
+      return false;
+    }
+    throw error;
+  }
 }
