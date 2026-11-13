@@ -1,10 +1,12 @@
 import {
-  CSTTranslator,
+  ASTTranslator,
+  CSTOptimizedTranslator,
   JSONPathEvaluateError,
   JSONPathParseError,
   evaluate,
   functions,
   parse,
+  type ASTTree,
   type CSTNode,
 } from '@swaggerexpert/jsonpath';
 import type { Value } from './ast';
@@ -28,10 +30,12 @@ interface CompiledPatterns {
 const maxPatternLength = 500;
 const maxCachedPatterns = 256;
 const maxDepth = 1000;
-const maxQueryLength = 2048;
-const maxParentheses = 4;
-const maxBrackets = 64;
-const lengthMessage = 'the query is longer than 2,048 characters';
+const maxQueryLength = 384;
+const maxParentheses = 3;
+const maxBrackets = 32;
+const knownFunctions = new Set(['length', 'count', 'match', 'search', 'value']);
+const lengthMessage = 'the query is longer than 384 characters';
+const complexMessage = 'the query is too complex to check';
 const parenthesesMessage = `the query nests too deeply (more than ${String(maxParentheses)} levels of parentheses)`;
 const bracketsMessage = `the query nests too deeply (more than ${String(maxBrackets)} levels of brackets)`;
 const patternFlags = 'u';
@@ -134,17 +138,37 @@ function utf16Offset(text: string, codePoints: number): number {
 }
 
 function decodeStringLiteral(literal: string): string | undefined {
+  if (!literal.includes('\\')) {
+    return literal.slice(1, -1);
+  }
   const selector = parse(`$[${literal}]`).tree?.segments[0]?.selector;
   const name = selector?.type === 'BracketedSelection' ? selector.selectors[0] : undefined;
   return name?.type === 'NameSelector' ? name.value : undefined;
 }
 
-function functionCalls(root: CSTNode): CSTNode[] {
-  const found: CSTNode[] = [];
+interface FunctionCall {
+  name: CSTNode;
+  pattern: CSTNode | undefined;
+}
+
+function optimizedTree(translator: ASTTranslator): CSTNode {
+  return CSTOptimizedTranslator.prototype.getTree.call(translator);
+}
+
+function functionCalls(root: CSTNode): FunctionCall[] {
+  const found: FunctionCall[] = [];
   const pending = [root];
   for (let node = pending.pop(); node !== undefined; node = pending.pop()) {
     if (node.type === 'function-expr') {
-      found.push(node);
+      const name = node.children.find((child) => child.type === 'function-name');
+      const literal = node.children
+        .filter((child) => child.type === 'function-argument')
+        .at(1)
+        ?.children.at(0)
+        ?.children.at(0);
+      if (name !== undefined) {
+        found.push({ name, pattern: literal?.type === 'string-literal' ? literal : undefined });
+      }
     }
     for (let index = node.children.length - 1; index >= 0; index -= 1) {
       const child = node.children[index];
@@ -156,32 +180,40 @@ function functionCalls(root: CSTNode): CSTNode[] {
   return found;
 }
 
-function checkPatterns(query: string): JsonPathProblem | undefined {
-  if (!query.includes('match(') && !query.includes('search(')) {
-    return undefined;
+class RecordingTranslator extends ASTTranslator {
+  calls: FunctionCall[] = [];
+
+  override getTree(): ASTTree {
+    this.calls = functionCalls(optimizedTree(this));
+    return super.getTree();
   }
-  const translator = new CSTTranslator();
-  parse(query, { translator });
-  for (const call of functionCalls(translator.getTree())) {
-    const name = call.children.find((child) => child.type === 'function-name')?.text;
-    if (name !== 'match' && name !== 'search') {
-      continue;
-    }
-    const literal = call.children
-      .filter((child) => child.type === 'function-argument')
-      .at(1)
-      ?.children.at(0)
-      ?.children.at(0);
-    if (literal?.type !== 'string-literal') {
-      continue;
-    }
-    const pattern = decodeStringLiteral(literal.text);
-    if (pattern === undefined) {
-      continue;
-    }
-    const result = compileSource(pattern, name === 'match');
-    if (!result.ok) {
-      return { message: result.message, offset: utf16Offset(query, literal.start) };
+}
+
+function unknownFunctionProblem(
+  query: string,
+  calls: readonly FunctionCall[],
+): JsonPathProblem | undefined {
+  const unknown = calls.find((call) => !knownFunctions.has(call.name.text));
+  return unknown === undefined
+    ? undefined
+    : {
+        message: `Unknown function \`${unknown.name.text}\`; the functions are length, count, match, search and value.`,
+        offset: utf16Offset(query, unknown.name.start),
+      };
+}
+
+function patternProblem(
+  query: string,
+  calls: readonly FunctionCall[],
+): JsonPathProblem | undefined {
+  for (const { name, pattern: literal } of calls) {
+    if (literal !== undefined && (name.text === 'match' || name.text === 'search')) {
+      const pattern = decodeStringLiteral(literal.text);
+      const result =
+        pattern === undefined ? undefined : compileSource(pattern, name.text === 'match');
+      if (result?.ok === false) {
+        return { message: result.message, offset: utf16Offset(query, literal.start) };
+      }
     }
   }
   return undefined;
@@ -232,23 +264,38 @@ function syntaxProblem(query: string, codePoints: number): JsonPathProblem {
   return { message: `Unexpected \`${char}\` in the JSONPath.`, offset };
 }
 
-export function checkJsonPath(query: string): JsonPathProblem | undefined {
-  const limit = limitProblem(query);
-  if (limit !== undefined) {
-    return limit;
-  }
+function isStackOverflow(error: unknown): boolean {
+  return error instanceof RangeError && /call stack/i.test(error.message);
+}
+
+function failureMessage(error: JSONPathParseError): string {
+  return isStackOverflow(error.cause) ? complexMessage : (error.cause?.message ?? error.message);
+}
+
+function structureProblem(query: string, withPatterns: boolean): JsonPathProblem | undefined {
   try {
-    const { result } = parse(query);
-    return result.success ? checkPatterns(query) : syntaxProblem(query, result.maxMatched);
+    const translator = new RecordingTranslator();
+    const { result } = parse(query, { translator });
+    if (!result.success) {
+      return syntaxProblem(query, result.maxMatched);
+    }
+    return (
+      unknownFunctionProblem(query, translator.calls) ??
+      (withPatterns ? patternProblem(query, translator.calls) : undefined)
+    );
   } catch (error) {
     if (error instanceof JSONPathParseError) {
-      return { message: error.cause?.message ?? error.message, offset: 0 };
+      return { message: failureMessage(error), offset: 0 };
     }
     if (error instanceof RangeError) {
-      return { message: `the query is too complex to check (${error.message})`, offset: 0 };
+      return { message: complexMessage, offset: 0 };
     }
     throw error;
   }
+}
+
+export function checkJsonPath(query: string): JsonPathProblem | undefined {
+  return limitProblem(query) ?? structureProblem(query, true);
 }
 
 function isContainer(value: Value): value is Container {
@@ -291,15 +338,16 @@ export function queryJsonPath(value: Value, query: string): JsonPathResult {
       reason: 'the value is nested too deeply for jsonpath() (more than 1,000 levels)',
     };
   }
+  const problem = structureProblem(query, false);
+  if (problem !== undefined) {
+    return { ok: false, reason: `invalid JSONPath: ${problem.message}` };
+  }
   try {
     const nodes = evaluate<Value>(value, query, { functions: patternFunctions, trace: false });
     return { ok: true, nodes };
   } catch (error) {
     if (error instanceof JSONPathParseError) {
-      return {
-        ok: false,
-        reason: `invalid JSONPath: ${checkJsonPath(query)?.message ?? error.message}`,
-      };
+      return { ok: false, reason: `invalid JSONPath: ${failureMessage(error)}` };
     }
     if (error instanceof JSONPathEvaluateError) {
       return { ok: false, reason: `jsonpath() failed: ${error.cause?.message ?? error.message}` };

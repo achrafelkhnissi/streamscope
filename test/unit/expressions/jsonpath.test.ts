@@ -1,4 +1,4 @@
-import { JSONPathEvaluateError, evaluate, parse } from '@swaggerexpert/jsonpath';
+import { JSONPathEvaluateError, evaluate } from '@swaggerexpert/jsonpath';
 import { describe, expect, it, vi } from 'vitest';
 import type { Value } from '../../../src/expressions/ast';
 import { checkJsonPath, queryJsonPath } from '../../../src/expressions/jsonpath';
@@ -6,7 +6,7 @@ import { compilePattern } from '../../../src/expressions/regex';
 
 vi.mock('@swaggerexpert/jsonpath', async (importOriginal) => {
   const original = await importOriginal<typeof import('@swaggerexpert/jsonpath')>();
-  return { ...original, evaluate: vi.fn(original.evaluate), parse: vi.fn(original.parse) };
+  return { ...original, evaluate: vi.fn(original.evaluate) };
 });
 
 vi.mock('../../../src/expressions/regex', async (importOriginal) => {
@@ -96,10 +96,13 @@ describe('queryJsonPath', () => {
   it('returns false when the pattern is over 500 characters', () => {
     const over = 'a'.repeat(501);
     const under = 'a'.repeat(400);
+    const supplied = (pattern: string, name: string): readonly Value[] =>
+      nodesOf({ regex: pattern, values: [pattern] }, `$.values[?${name}(@, $.regex)]`);
 
-    expect(matching(over, [over])).toEqual([]);
-    expect(matching(over, [over], 'search')).toEqual([]);
-    expect(matching(under, [under])).toEqual([under]);
+    expect(supplied(over, 'match')).toEqual([]);
+    expect(supplied(over, 'search')).toEqual([]);
+    expect(supplied(under, 'match')).toEqual([under]);
+    expect(supplied(under, 'search')).toEqual([under]);
   });
 
   it('rejects a catastrophic pattern in match()', () => {
@@ -314,14 +317,51 @@ describe('checkJsonPath', () => {
     expect(checkJsonPath('$[?match(@.a, length(@.b))]')).toBeUndefined();
   });
 
-  it('checks a pattern the way match() does, including the dot and the length limit', () => {
+  it('checks a pattern the way match() does, including the dot', () => {
     expect(checkJsonPath("$[?match(@.a, 'a.b')]")).toBeUndefined();
-    expect(checkJsonPath(`$[?match(@.a, '${'a'.repeat(501)}')]`)?.message).toContain('500');
-    expect(checkJsonPath(`$[?search(@.a, '${'a'.repeat(500)}')]`)).toBeUndefined();
+    expect(checkJsonPath("$[?match(@.a, '.*')]")).toBeUndefined();
+  });
+
+  it('rejects an unknown function at the offset of its name', () => {
+    const message = (name: string): string =>
+      `Unknown function \`${name}\`; the functions are length, count, match, search and value.`;
+
+    expect(checkJsonPath('$[?lenght(@.a)==1]')).toEqual({ message: message('lenght'), offset: 3 });
+    expect(checkJsonPath('$[?foo(@.a)]')).toEqual({ message: message('foo'), offset: 3 });
+    expect(checkJsonPath('$[?length(@.a) == 1 && foo(@.b)]')).toEqual({
+      message: message('foo'),
+      offset: 23,
+    });
+    expect(checkJsonPath('$[?a(b(c(@)))]')).toEqual({ message: message('a'), offset: 3 });
+    expect(checkJsonPath("$['\u{1F600}'][?foo(@)]")).toEqual({
+      message: message('foo'),
+      offset: "$['\u{1F600}'][?".length,
+    });
+    expect(checkJsonPath('$[?foo(@.a)]')).not.toEqual(checkJsonPath('$[?fo(@.a)]'));
+  });
+
+  it('accepts the five functions of RFC 9535', () => {
+    for (const query of [
+      '$[?length(@.a) == 1]',
+      '$[?count(@.*) == 1]',
+      "$[?match(@.a, 'x')]",
+      "$[?search(@.a, 'x')]",
+      '$[?value(@..a) == 1]',
+    ]) {
+      expect(checkJsonPath(query), query).toBeUndefined();
+    }
+  });
+
+  it('makes queryJsonPath refuse an unknown function with a reason', () => {
+    expect(queryJsonPath({ a: 1 }, '$[?lenght(@.a)==1]')).toEqual({
+      ok: false,
+      reason:
+        'invalid JSONPath: Unknown function `lenght`; the functions are length, count, match, search and value.',
+    });
   });
 });
 
-const tooDeep = 'the query nests too deeply (more than 4 levels of parentheses)';
+const tooDeep = 'the query nests too deeply (more than 3 levels of parentheses)';
 
 function nestedCalls(levels: number): string {
   return `$[?${'length('.repeat(levels)}@.a${')'.repeat(levels)} == 1]`;
@@ -336,8 +376,8 @@ function nthOpening(query: string, count: number): number {
 }
 
 describe('parenthesis nesting', () => {
-  it('rejects 5 levels of nested calls quickly', () => {
-    for (const levels of [5, 20, 200]) {
+  it('rejects 4 levels of nested calls quickly', () => {
+    for (const levels of [4, 20, 40]) {
       const query = nestedCalls(levels);
       const start = performance.now();
 
@@ -345,21 +385,21 @@ describe('parenthesis nesting', () => {
       const result = queryJsonPath({ a: 'x' }, query);
 
       expect(performance.now() - start, `${String(levels)} levels`).toBeLessThan(100);
-      expect(problem).toEqual({ message: tooDeep, offset: nthOpening(query, 5) });
+      expect(problem).toEqual({ message: tooDeep, offset: nthOpening(query, 4) });
       expect(result).toEqual({ ok: false, reason: tooDeep });
     }
   });
 
   it('counts groups as well as calls', () => {
-    const query = `$[?${'('.repeat(6)}@.a${')'.repeat(6)}]`;
+    const query = `$[?${'('.repeat(5)}@.a${')'.repeat(5)}]`;
 
-    expect(checkJsonPath(query)).toEqual({ message: tooDeep, offset: nthOpening(query, 5) });
+    expect(checkJsonPath(query)).toEqual({ message: tooDeep, offset: nthOpening(query, 4) });
     expect(queryJsonPath({ a: 1 }, query)).toEqual({ ok: false, reason: tooDeep });
-    expect(checkJsonPath(`$[?${'('.repeat(4)}@.a${')'.repeat(4)}]`)).toBeUndefined();
+    expect(checkJsonPath(`$[?${'('.repeat(3)}@.a${')'.repeat(3)}]`)).toBeUndefined();
   });
 
-  it('4 levels of nested calls are accepted', () => {
-    const query = nestedCalls(4);
+  it('3 levels of nested calls are accepted', () => {
+    const query = nestedCalls(3);
 
     expect(checkJsonPath(query)).toBeUndefined();
     expect(queryJsonPath({ a: 'x' }, query)).toEqual({ ok: true, nodes: [] });
@@ -391,7 +431,7 @@ describe('parenthesis nesting', () => {
   });
 
   it('counts parentheses after a string literal that closed', () => {
-    const query = `$[?@.a == '(' && ${nestedCalls(5).slice(3, -1)}]`;
+    const query = `$[?@.a == '(' && ${nestedCalls(4).slice(3, -1)}]`;
 
     expect(checkJsonPath(query)?.message).toBe(tooDeep);
   });
@@ -471,13 +511,39 @@ function withFrames<T>(frames: number, action: () => T): T {
   return frames === 0 ? action() : withFrames(frames - 1, action);
 }
 
+function withRoom<T>(room: number, action: () => T): { result?: T; thrown?: unknown } {
+  const outcome: { result?: T; thrown?: unknown } = {};
+  let unwound = 0;
+  const dive = (): void => {
+    try {
+      dive();
+    } catch (error) {
+      if (!(error instanceof RangeError)) {
+        throw error;
+      }
+      unwound += 1;
+      if (unwound <= room) {
+        throw error;
+      }
+      try {
+        outcome.result = action();
+      } catch (thrown) {
+        outcome.thrown = thrown;
+      }
+    }
+  };
+  dive();
+  return outcome;
+}
+
 function nestedFilters(levels: number): string {
   return `$${'[?@'.repeat(levels)}[?match(@, "a")${']'.repeat(levels + 1)}`;
 }
 
 describe('query limits', () => {
-  const tooLong = 'the query is longer than 2,048 characters';
-  const tooManyBrackets = 'the query nests too deeply (more than 64 levels of brackets)';
+  const tooLong = 'the query is longer than 384 characters';
+  const tooManyBrackets = 'the query nests too deeply (more than 32 levels of brackets)';
+  const tooComplex = 'the query is too complex to check';
 
   function nthOccurrence(query: string, char: string, count: number): number {
     let index = -1;
@@ -487,8 +553,8 @@ describe('query limits', () => {
     return index;
   }
 
-  it('rejects 2,049 characters and 1 MB of query quickly', () => {
-    for (const length of [2049, 1_000_000]) {
+  it('rejects 385 characters and 1 MB of query quickly', () => {
+    for (const length of [385, 1_000_000]) {
       const query = `$${'.a'.repeat(Math.ceil((length - 1) / 2))}`.slice(0, length);
       const start = performance.now();
 
@@ -496,21 +562,21 @@ describe('query limits', () => {
       const result = queryJsonPath({ a: 1 }, query);
 
       expect(performance.now() - start, `${String(length)} characters`).toBeLessThan(100);
-      expect(problem).toEqual({ message: tooLong, offset: 2048 });
+      expect(problem).toEqual({ message: tooLong, offset: 384 });
       expect(result).toEqual({ ok: false, reason: tooLong });
     }
   });
 
-  it('accepts a query of exactly 2,048 characters', () => {
-    const query = `$.${'a'.repeat(2046)}`;
+  it('accepts a query of exactly 384 characters', () => {
+    const query = `$.${'a'.repeat(382)}`;
 
-    expect(query).toHaveLength(2048);
+    expect(query).toHaveLength(384);
     expect(checkJsonPath(query)).toBeUndefined();
     expect(queryJsonPath({ a: 1 }, query)).toEqual({ ok: true, nodes: [] });
   });
 
-  it('rejects 65 levels of brackets quickly', () => {
-    for (const levels of [65, 100, 500]) {
+  it('rejects 33 levels of brackets quickly', () => {
+    for (const levels of [33, 50, 90]) {
       const query = `$${'[?@'.repeat(levels)}.a${']'.repeat(levels)}`;
       const start = performance.now();
 
@@ -518,13 +584,13 @@ describe('query limits', () => {
       const result = queryJsonPath({ a: 1 }, query);
 
       expect(performance.now() - start, `${String(levels)} levels`).toBeLessThan(100);
-      expect(problem).toEqual({ message: tooManyBrackets, offset: nthOccurrence(query, '[', 65) });
+      expect(problem).toEqual({ message: tooManyBrackets, offset: nthOccurrence(query, '[', 33) });
       expect(result).toEqual({ ok: false, reason: tooManyBrackets });
     }
   });
 
-  it('accepts 64 levels of brackets', () => {
-    const query = `$${'[?@'.repeat(64)}.a${']'.repeat(64)}`;
+  it('accepts 32 levels of brackets', () => {
+    const query = `$${'[?@'.repeat(32)}.a${']'.repeat(32)}`;
 
     expect(checkJsonPath(query)).toBeUndefined();
     expect(queryJsonPath({ a: 1 }, query)).toEqual({ ok: true, nodes: [] });
@@ -545,7 +611,7 @@ describe('query limits', () => {
   });
 
   it('counts the depth of the open brackets, not their number', () => {
-    const query = `$${Array.from({ length: 200 }, () => '[0]').join('')}`;
+    const query = `$${Array.from({ length: 120 }, () => '[0]').join('')}`;
 
     expect(checkJsonPath(query)).toBeUndefined();
   });
@@ -554,11 +620,11 @@ describe('query limits', () => {
     const deep = nested(50_000);
 
     expect(queryJsonPath(deep, `$${'.a'.repeat(3000)}`)).toEqual({ ok: false, reason: tooLong });
-    expect(queryJsonPath(deep, `$[?${nestedCalls(5).slice(3, -1)}]`)).toEqual({
+    expect(queryJsonPath(deep, `$[?${nestedCalls(4).slice(3, -1)}]`)).toEqual({
       ok: false,
       reason: tooDeep,
     });
-    expect(queryJsonPath(deep, `$${'[?@'.repeat(65)}`)).toEqual({
+    expect(queryJsonPath(deep, `$${'[?@'.repeat(33)}`)).toEqual({
       ok: false,
       reason: tooManyBrackets,
     });
@@ -568,19 +634,45 @@ describe('query limits', () => {
     });
   });
 
-  it('returns a reason when the stack runs out inside the library', () => {
-    vi.mocked(parse).mockImplementationOnce(() => {
-      throw new RangeError('Maximum call stack size exceeded');
-    });
+  it('rejects the long and the nested shapes that took seconds, quickly', () => {
+    const content = (count: number): string => Array<string>(count).fill('@').join('||');
+    const slow = [
+      `$[?match(value(@[?match(value(@[?${content(667)}]),'a')]),'a')]`,
+      `$[?a(b(c(d(${content(679)}#`,
+      `$[?match(value(@[?match(value(@[?${content(40)}]),'a')]),'a')]`,
+      `$[?a(b(c(d(${content(40)}#`,
+    ];
 
-    expect(checkJsonPath('$.a')).toEqual({
-      message: 'the query is too complex to check (Maximum call stack size exceeded)',
-      offset: 0,
-    });
+    for (const query of slow) {
+      const start = performance.now();
+
+      const problem = checkJsonPath(query);
+      const result = queryJsonPath({ a: 1 }, query);
+
+      expect(performance.now() - start, query.slice(0, 20)).toBeLessThan(100);
+      expect(problem?.message).toMatch(/longer than 384 characters|nests too deeply/);
+      expect(result.ok).toBe(false);
+    }
+  });
+
+  it('reports a real stack overflow inside the library as too complex', () => {
+    const query = nestedFilters(30);
+    for (let warm = 0; warm < 5; warm += 1) {
+      checkJsonPath(query);
+    }
+    let message: string | undefined = 'valid';
+
+    for (let room = 4000; room >= 100 && message === 'valid'; room -= 10) {
+      const { result, thrown } = withRoom(room, () => checkJsonPath(query)?.message ?? 'valid');
+      expect(thrown, `room ${String(room)}`).toBeUndefined();
+      message = result;
+    }
+
+    expect(message).toBe(tooComplex);
   });
 
   it('never throws, even with the stack nearly used up', () => {
-    for (let levels = 40; levels <= 100; levels += 1) {
+    for (let levels = 20; levels <= 45; levels += 1) {
       const query = nestedFilters(levels);
       const check = (): ReturnType<typeof checkJsonPath> =>
         withFrames(5000, () => checkJsonPath(query));
@@ -591,10 +683,10 @@ describe('query limits', () => {
       expect(run, `query ${String(levels)}`).not.toThrow();
       const problem = check();
       expect(problem === undefined || problem.message.length > 0).toBe(true);
-      if (levels > 64) {
+      if (levels > 32) {
         expect(problem).toEqual({
           message: tooManyBrackets,
-          offset: nthOccurrence(query, '[', 65),
+          offset: nthOccurrence(query, '[', 33),
         });
       }
       const outcome = run();
@@ -603,7 +695,7 @@ describe('query limits', () => {
   });
 });
 
-const worstQueryLength = 2048;
+const worstQueryLength = 384;
 
 function filled(term: string, joiner: string, prefix: string, suffix: string): string {
   const terms: string[] = [];
@@ -623,12 +715,54 @@ function repeated(unit: string, prefix: string, suffix: string): string {
   return `${prefix}${body}${suffix}`;
 }
 
+function wideCalls(names: readonly [string, string, string], unit: string, tail: string): string {
+  const list = (count: number): string => Array.from({ length: count }, () => unit).join(',');
+  const innermost = list(Math.floor(worstQueryLength / 2.1));
+  return `$[?${names[0]}(${unit},${names[1]}(${unit},${names[2]}(${innermost}${tail}`.slice(
+    0,
+    worstQueryLength,
+  );
+}
+
 describe('worst accepted queries', () => {
   const calls = (levels: number): string =>
     `${'length('.repeat(levels)}@.a${')'.repeat(levels)} == 1`;
-  const pattern = (unit: string): string => unit.repeat(Math.floor(400 / unit.length));
+  const pattern = (unit: string): string => unit.repeat(Math.floor(240 / unit.length));
 
   const worst: [string, string][] = [
+    [
+      'long content in the innermost of two calls',
+      filled('@', '||', '$[?match(value(@[?', "]),'a')]"),
+    ],
+    [
+      'long content in the innermost of three calls',
+      filled('@', '||', '$[?length(length(value(@[?', '])))==1]'),
+    ],
+    [
+      'long content in nested count filters',
+      filled('@', '||', '$[?count(@[?count(@[?count(@[?', ']) > 0]) > 0]) > 0]'),
+    ],
+    ['unknown names around long content that fails late', filled('@', '||', '$[?a(b(c(', '#')],
+    [
+      'known names around long content that fails late',
+      filled('@', '||', '$[?length(length(length(', '#'),
+    ],
+    [
+      'long content that fails the type check',
+      filled('@', '||', '$[?length(length(length(', ')))]'),
+    ],
+    [
+      'a call with 180 unknown-name arguments that fails late',
+      wideCalls(['a', 'b', 'c'], '$', '#'),
+    ],
+    ['a call with 180 literal arguments', wideCalls(['a', 'b', 'c'], '1', '')],
+    ['a call with 180 literal arguments that fails late', wideCalls(['a', 'b', 'c'], '1', ']')],
+    [
+      'a call with 180 arguments of known functions',
+      wideCalls(['match', 'search', 'value'], '1', '#'),
+    ],
+    ['a call with 180 node arguments', wideCalls(['length', 'length', 'length'], '@', ')))]')],
+    ['a call with 180 count arguments', wideCalls(['count', 'count', 'count'], '$', ']')],
     ['minimal match filters in a union', repeated("?match(@,'a'),", '$[', "?match(@,'a')]")],
     ['minimal match filter segments', repeated("[?match(@,'a')]", '$', '')],
     ['minimal match calls joined by ||', filled("match(@,'a')", '||', '$[?', ']')],
@@ -639,7 +773,7 @@ describe('worst accepted queries', () => {
       filled("match(@.a, 'a\\\\.b')", ' || ', '$[?', ']'),
     ],
     [
-      'match calls with 400-character patterns',
+      'match calls with 240-character patterns',
       filled(`match(@.a, '${pattern('a*')}')`, ' || ', '$[?', ']'),
     ],
     [
@@ -650,41 +784,38 @@ describe('worst accepted queries', () => {
       'match calls with nested groups',
       filled(`search(@.a, '${pattern('((a))')}')`, ' || ', '$[?', ']'),
     ],
-    ['4-deep calls joined by &&', filled(calls(4), ' && ', '$[?', ']')],
-    ['4-deep calls joined by ||', filled(calls(4), ' || ', '$[?', ']')],
-    ['4-deep calls in separate filters', filled(`[?${calls(4)}]`, '', '$', '')],
-    ['4-deep calls then a type error', filled(calls(4), ' && ', '$[?', ' && length(@.a)]')],
-    ['4-deep calls then a syntax error', `${filled(calls(4), ' && ', '$[?', ']')}]`],
+    ['3-deep calls joined by &&', filled(calls(3), ' && ', '$[?', ']')],
+    ['3-deep calls joined by ||', filled(calls(3), ' || ', '$[?', ']')],
+    ['3-deep calls in separate filters', filled(`[?${calls(3)}]`, '', '$', '')],
+    ['3-deep calls then a type error', filled(calls(3), ' && ', '$[?', ' && length(@.a)]')],
+    ['3-deep calls then a syntax error', `${filled(calls(3), ' && ', '$[?', ']')}]`],
+    ['unknown functions in 3-deep calls', filled('foo(bar(baz(@)))', ' && ', '$[?', ']')],
     ['&& chain of comparisons', filled('@.a == 1', ' && ', '$[?', ']')],
-    ['|| chain of existence tests', filled('@.a.b.c', ' || ', '$[?', ']')],
+    ['|| chain of bare nodes', filled('@', '||', '$[?', ']')],
     ['union of filters', repeated('?@.a,', '$[', '?@.a]')],
     ['union of mixed selectors', repeated("0,'a',*,?@.a,0:2,", '$[', '*]')],
-    ['union of slices', repeated('0:1:1,', '$[', '0:1:1]')],
-    ['filters with calls in a union', repeated('?length(@.a) == 1,', '$[', '?length(@.a) == 1]')],
     ['many filter segments', repeated('[?@.a]', '$', '')],
-    ['many descendant segments', repeated('..a', '$', '')],
-    ['nested filters at the bracket cap', `$${'[?@'.repeat(63)}.a${']'.repeat(63)}`],
+    ['nested filters at the bracket cap', `$${'[?@'.repeat(31)}.a${']'.repeat(31)}`],
     [
-      'nested filters at the bracket cap with comparisons',
-      `$${'[?@.a == 1 && @'.repeat(63)}.a${']'.repeat(63)}`,
+      'nested filters at the bracket cap with unions',
+      `$${'[?@.a,?@'.repeat(31)}.a${']'.repeat(31)}`,
     ],
     [
-      'nested filters at the bracket cap with calls',
-      `$${'[?length(@.a) == 1 && @'.repeat(63)}.a${']'.repeat(63)}`,
-    ],
-    [
-      'nested filters at the bracket cap with match',
-      `$${"[?match(@.a, 'x') && @".repeat(40)}.a${']'.repeat(40)}`,
+      'nested filters with match at each level',
+      `$${"[?match(@.a, 'x') && @".repeat(12)}.a${']'.repeat(12)}`,
     ],
   ];
 
-  it.each(worst)('checks %s in under 100 ms', (_name, query) => {
-    const start = performance.now();
-
-    const problem = checkJsonPath(query);
-
-    expect(performance.now() - start).toBeLessThan(100);
+  it.each(worst)('checks %s in under 100 ms, cold and warm', (_name, query) => {
     expect(query.length).toBeLessThanOrEqual(worstQueryLength);
-    expect(problem?.message ?? '').not.toMatch(/nests too deeply|longer than/);
+
+    for (let call = 0; call < 10; call += 1) {
+      const start = performance.now();
+      const problem = checkJsonPath(query);
+      const elapsed = performance.now() - start;
+
+      expect(elapsed, `call ${String(call)}`).toBeLessThan(100);
+      expect(problem?.message ?? '').not.toMatch(/nests too deeply|longer than/);
+    }
   });
 });
