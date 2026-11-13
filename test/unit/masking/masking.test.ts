@@ -130,6 +130,20 @@ describe('masking', () => {
     expect(preview.length).toBeLessThanOrEqual(4_096);
   });
 
+  it('maskedPreview shows only … when masking shrinks the window below 1 KiB', () => {
+    const units = `//${'k'.repeat(1_050)}@h`.repeat(4);
+    const credential = '//admin:synthetic-pass';
+    const window = `${units}${credential}${'P'.repeat(5_120 - units.length - credential.length)}`;
+    const text = `${window}@h${'z'.repeat(1_000)}`;
+    expect(maskUrl(window).length).toBeGreaterThanOrEqual(500);
+    expect(maskUrl(window).length).toBeLessThan(1_024);
+
+    const preview = maskedPreview(text);
+
+    expect(preview).not.toMatch(/admin|synth/);
+    expect(preview.length).toBeLessThanOrEqual(4_096);
+  });
+
   it('maskedPreview never shows user info from a list of URLs at any offset', () => {
     const list = JSON.stringify(
       Array.from({ length: 120 }, (_, index) => {
