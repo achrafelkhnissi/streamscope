@@ -2,7 +2,7 @@ import type { StreamEvent } from '../events/model';
 import type { Expr, SourceNode, Value } from '../expressions/ast';
 import { holds, type ConditionItem, type Outcome } from '../expressions/evaluate';
 import { sourcesOf } from '../expressions/parse';
-import type { WorkBudget } from '../expressions/work';
+import { unitsPerCheck, type WorkBudget } from '../expressions/work';
 import type { RunAccess, RunEnd } from '../runs/observer';
 import type { ResponseHead } from '../transport/model';
 import {
@@ -144,6 +144,18 @@ export const congestedBytes = 8_388_608;
 export const drainedEvents = 1_000;
 export const drainedBytes = 2_097_152;
 const compactQueueAt = 1_024;
+
+interface Resumed {
+  readonly resumed: StreamEvent;
+  readonly captures: readonly Tracked[];
+  readonly inlineBytes: number;
+}
+
+type Queued = StreamEvent | Resumed;
+
+function queuedEvent(entry: Queued): StreamEvent {
+  return 'resumed' in entry ? entry.resumed : entry;
+}
 type CompletedEnd = Extract<RunEnd, { kind: 'completed' }>;
 
 const headPhase: Phase = { events: 'unknown', reply: undefined, body: undefined };
@@ -330,7 +342,7 @@ export class CaptureTracker {
   private access: RunAccess | undefined;
   private readonly inFlight: Promise<void>[] = [];
   private ending: Promise<void> | undefined;
-  private queue: (StreamEvent | undefined)[] = [];
+  private queue: (Queued | undefined)[] = [];
   private queueStart = 0;
   private queuedBytes = 0;
   private draining = false;
@@ -432,7 +444,7 @@ export class CaptureTracker {
       this.enqueue(event);
       return;
     }
-    this.process(event);
+    this.process(event, this.watching, 0);
   }
 
   end(end: RunEnd): Promise<void> {
@@ -449,14 +461,16 @@ export class CaptureTracker {
     return this.ending;
   }
 
-  private process(event: StreamEvent): void {
+  private process(event: StreamEvent, captures: readonly Tracked[], inlineStart: number): void {
     const item: ConditionItem = { value: event.value, sse: event.sse, malformed: false };
     const budget = this.budget.enter();
     let changed = false;
-    let inlineBytes = 0;
+    let inlineBytes = inlineStart;
     const away: Tracked[] = [];
     let settled: [Tracked, Inserted][] | undefined;
-    for (const tracked of this.watching) {
+    let position = 0;
+    for (const tracked of captures) {
+      position += 1;
       if (tracked.settled) {
         continue;
       }
@@ -469,10 +483,14 @@ export class CaptureTracker {
         changed = true;
         if (event.length > inlineBodyBytes || inlineBytes + event.length > inlineBodyBytes) {
           away.push(tracked);
-          continue;
+        } else {
+          inlineBytes += event.length;
+          (settled ??= []).push([tracked, this.evaluateNow(tracked, eventPhase, budget)]);
         }
-        inlineBytes += event.length;
-        (settled ??= []).push([tracked, this.evaluateNow(tracked, eventPhase, budget)]);
+      }
+      if (budget.spent >= unitsPerCheck && position < captures.length && !this.budget.roomLeft()) {
+        this.resume({ resumed: event, captures: captures.slice(position), inlineBytes });
+        break;
       }
     }
     this.budget.leave();
@@ -485,6 +503,18 @@ export class CaptureTracker {
     if (changed) {
       this.watching = this.watching.filter((tracked) => !tracked.settled && !tracked.inFlight);
     }
+  }
+
+  private resume(entry: Resumed): void {
+    if (this.queueStart > 0) {
+      this.queueStart -= 1;
+      this.queue[this.queueStart] = entry;
+    } else {
+      this.queue.unshift(entry);
+    }
+    this.queuedBytes += entry.resumed.length;
+    this.backlogged ||= this.congested;
+    this.scheduleDrain();
   }
 
   private enqueue(event: StreamEvent): void {
@@ -503,14 +533,14 @@ export class CaptureTracker {
     }
   }
 
-  private dequeue(): StreamEvent | undefined {
-    const event = this.queue[this.queueStart];
-    if (event === undefined) {
+  private dequeue(): Queued | undefined {
+    const entry = this.queue[this.queueStart];
+    if (entry === undefined) {
       return undefined;
     }
     this.queue[this.queueStart] = undefined;
     this.queueStart += 1;
-    this.queuedBytes -= event.length;
+    this.queuedBytes -= queuedEvent(entry).length;
     if (this.queueStart === this.queue.length) {
       this.queue = [];
       this.queueStart = 0;
@@ -518,7 +548,7 @@ export class CaptureTracker {
       this.queue = this.queue.slice(this.queueStart);
       this.queueStart = 0;
     }
-    return event;
+    return entry;
   }
 
   private drain(): void {
@@ -532,7 +562,11 @@ export class CaptureTracker {
       if (next === undefined) {
         break;
       }
-      this.process(next);
+      if ('resumed' in next) {
+        this.process(next.resumed, next.captures, next.inlineBytes);
+      } else {
+        this.process(next, this.watching, 0);
+      }
     }
     if (this.watching.length === 0) {
       this.dropQueue(false);

@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { hostBudget, TaskBudget } from '../../../src/capture/task-budget';
+import { captureSliceMs, hostBudget, TaskBudget } from '../../../src/capture/task-budget';
 import {
   CaptureTracker,
   type CaptureDefinition,
@@ -1962,6 +1962,60 @@ describe('evaluation paced by slices and backpressure', () => {
     expect(listener.drains).toBe(1);
     run.send({ type: 'x', n: 5_010 }, { length: 38 });
     expect(run.tracker.queued).toBe(0);
+  });
+
+  it('one event with 64 captures near the unit limit runs at most one slice and one evaluation per task, and every capture settles', () => {
+    const step = 4;
+    const { budget, tasks } = stepped(step);
+    const names = Array.from({ length: 64 }, (_, at) => `h${String(at)}`);
+    const run = harness(
+      names.map((name) => capture(name, `first(type == "E").items[?@ in [${sevens}]] | json`)),
+      missingWorker,
+      budget,
+    );
+    run.tracker.head(ndjsonHead);
+
+    run.send({ type: 'E', items: [...Array<number>(1_400).fill(0), 7] });
+    const perTask = [run.results.size];
+    for (let round = 0; tasks.length > 0 && round < 1_000; round += 1) {
+      const before = run.results.size;
+      runTasks(tasks, 2);
+      perTask.push(run.results.size - before);
+    }
+
+    expect(Math.max(...perTask)).toBeLessThanOrEqual(Math.floor(captureSliceMs / step) + 1);
+    expect(perTask.length).toBeGreaterThan(10);
+    for (const name of names) {
+      expect(run.results.get(name)).toEqual(resolved('[7]', 1, 'items[?…]'));
+    }
+    expect(run.tracker.queued).toBe(0);
+  });
+
+  it('a capture deferred within an event still sees that event before later ones', async () => {
+    const { budget, tasks } = stepped(4);
+    const heavy = Array.from({ length: 7 }, (_, at) =>
+      capture(`h${String(at)}`, `first(type == "A").items[?@ in [${sevens}]] | json`),
+    );
+    const run = harness(
+      [...heavy, capture('firstN', 'first(n >= 1).n'), capture('counted', 'count(n >= 1)')],
+      missingWorker,
+      budget,
+    );
+    run.tracker.head(ndjsonHead);
+
+    run.send({ type: 'A', n: 1, items: [...Array<number>(1_400).fill(0), 7] });
+    expect(run.results.has('firstN')).toBe(false);
+    expect(run.tracker.queued).toBe(1);
+    run.send({ type: 'B', n: 2 });
+    run.send({ type: 'B', n: 3 });
+    runTasks(tasks);
+    await run.tracker.end(completed('ndjson'));
+
+    expect(run.results.get('firstN')).toEqual(resolved('1', 1, 'n'));
+    expect(run.results.get('counted')).toEqual(resolved('3', undefined, ''));
+    for (const { name } of heavy) {
+      expect(run.results.get(name)).toEqual(resolved('[7]', 1, 'items[?…]'));
+    }
   });
 
   it('fails an evaluation past 2,000,000 units on a clock that never moves, whatever default(…) says', () => {

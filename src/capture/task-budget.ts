@@ -41,6 +41,10 @@ export class TaskBudget {
     return this.work;
   }
 
+  roomLeft(): boolean {
+    return this.spentMs + this.clock.now() - this.since < captureSliceMs;
+  }
+
   leave(): void {
     this.spentMs += this.clock.now() - this.since;
     this.work.forget();

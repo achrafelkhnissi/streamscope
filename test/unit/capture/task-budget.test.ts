@@ -88,6 +88,21 @@ describe('TaskBudget', () => {
     expect(tasks).toHaveLength(1);
   });
 
+  it('tells mid-evaluation whether the slice still has room', () => {
+    let time = 0;
+    const budget = new TaskBudget({ now: () => time, nextTask: () => undefined });
+
+    budget.enter();
+    time += 6;
+    budget.leave();
+    budget.enter();
+    time += 3;
+    expect(budget.roomLeft()).toBe(true);
+    time += 1;
+    expect(budget.roomLeft()).toBe(false);
+    budget.leave();
+  });
+
   it('runs a callback in a later task', () => {
     const tasks: (() => void)[] = [];
     const budget = new TaskBudget({
