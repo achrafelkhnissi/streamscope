@@ -59,7 +59,7 @@ describe('captureDisplayText', () => {
 });
 
 describe('sensitive values of a response', () => {
-  it('takes sensitive header values and the cookie values of Set-Cookie', () => {
+  it('takes sensitive header values and the cookie values of Set-Cookie of 8 characters or more', () => {
     expect(
       sensitiveHeaderValues([
         ['Content-Type', 'application/json'],
@@ -68,13 +68,17 @@ describe('sensitive values of a response', () => {
         ['X-Api-Key', 'synthetic-key'],
         ['X-Trace', 'trace-1'],
         ['Authorization', ''],
+        ['X-Session-Token', 'token-08'],
+        ['X-Auth-Token', 'tok-007'],
+        ['Set-Cookie', 'consent=1'],
       ]),
     ).toEqual([
       'session=synthetic-cookie; Path=/; HttpOnly',
       'synthetic-cookie',
       'theme=dark',
-      'dark',
       'synthetic-key',
+      'token-08',
+      'consent=1',
     ]);
   });
 

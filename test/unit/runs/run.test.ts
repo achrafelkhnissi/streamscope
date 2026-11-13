@@ -2408,5 +2408,98 @@ describe('waiting for captured values', () => {
       expect(logged.join('\n')).not.toContain(cookie);
       expect(describeOutcome(sent)).not.toContain(token);
     });
+
+    describe('values taken from response headers', () => {
+      async function shownAndLogged(
+        headers: Record<string, string | string[]>,
+        threadText: string,
+      ): Promise<{ strip: string; hint: string; logged: string }> {
+        const api = await track(
+          startHttpServer((_request, response) => {
+            response.writeHead(200, { 'Content-Type': 'application/json', ...headers });
+            response.end(JSON.stringify({ threadId: threadText }));
+          }),
+        );
+        const registry = new CaptureRegistry();
+        const lines = [
+          '# @name login',
+          '# @capture threadId = body.threadId',
+          `POST ${api.url}/login`,
+          '',
+          '###',
+          '# @name continue',
+          `GET ${api.url}/continue`,
+          'X-Thread: {{login.threadId}}',
+        ];
+        const login = startRun(capturing(registry, lines, 0), dependencies);
+        await login.done;
+        await waitFor(() => registry.get(loginKey, 'threadId')?.result.state === 'resolved');
+        const posted: ToPanel[] = [];
+        const feed = new PanelFeed(login, {
+          readOnly: false,
+          streamView: 'events',
+          post: (message) => posted.push(message),
+          captures: registry,
+          timed: (work) => {
+            work();
+          },
+        });
+        feed.start();
+        feed.pause();
+        const sent = await startRun(
+          capturing(registry, lines, 1, (key) => (key === loginKey ? login : undefined)),
+          dependencies,
+        ).done;
+        const logged: string[] = [];
+        const record = (line: string): void => {
+          logged.push(line);
+        };
+        logRunEnd(
+          { info: record, warn: record, debug: record } as unknown as Parameters<
+            typeof logRunEnd
+          >[0],
+          sent,
+        );
+        const reset = posted.find((message) => message.type === 'reset');
+        return {
+          strip: reset?.captures[0]?.text ?? '',
+          hint: captureHint(registry.get(loginKey, 'threadId'))?.label ?? '',
+          logged: logged.join('\n'),
+        };
+      }
+
+      it("Set-Cookie: consent=1 does not mask the 1s in a capture or in a consumer's log line", async () => {
+        const shown = await shownAndLogged({ 'Set-Cookie': 'consent=1' }, 'thread-1');
+
+        expect(shown.strip).toBe('thread-1');
+        expect(shown.hint).toBe('= thread-1');
+        expect(shown.logged).toContain('X-Thread: thread-1');
+        expect(shown.logged).toContain('127.0.0.1');
+      });
+
+      it("a cookie value of 8 characters or more is still masked in the strip, the hint and the consumer's log", async () => {
+        const shown = await shownAndLogged(
+          { 'Set-Cookie': ['session=cookie08', 'consent=1'] },
+          'thread-1 cookie08',
+        );
+
+        expect(shown.strip).toBe(`thread-1 ${maskedValue}`);
+        expect(shown.hint).toBe(`= thread-1 ${maskedValue}`);
+        expect(shown.logged).toContain(`X-Thread: thread-1 ${maskedValue}`);
+        expect(shown.logged).not.toContain('cookie08');
+      });
+
+      it('a sensitive response header of 8 characters or more is still masked, a shorter one is not', async () => {
+        const shown = await shownAndLogged(
+          { 'X-Session-Token': 'token-08', 'X-Api-Key': 'key-007' },
+          'thread-1 token-08 key-007',
+        );
+
+        expect(shown.strip).toBe(`thread-1 ${maskedValue} key-007`);
+        expect(shown.hint).toBe(`= thread-1 ${maskedValue} key-007`);
+        expect(shown.logged).toContain(`X-Thread: thread-1 ${maskedValue} key-007`);
+        expect(shown.logged).not.toContain('token-08');
+      });
+    });
   });
 });

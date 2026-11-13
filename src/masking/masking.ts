@@ -84,6 +84,8 @@ export function sensitiveValuesIn(text: string, values: readonly string[]): stri
   );
 }
 
+const minimumHeaderValueLength = 8;
+
 function cookieValue(setCookie: string): string {
   const pair = setCookie.split(';', 1)[0] ?? '';
   const equals = pair.indexOf('=');
@@ -101,5 +103,5 @@ export function sensitiveHeaderValues(headers: Headers): string[] {
       values.push(cookieValue(value));
     }
   }
-  return values.filter((value) => value !== '');
+  return values.filter((value) => value.length >= minimumHeaderValueLength);
 }

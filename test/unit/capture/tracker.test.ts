@@ -298,12 +298,10 @@ describe('CaptureTracker', () => {
 
     expect(run.results.get('code')).toEqual(resolved('200', undefined, ''));
     expect(run.results.get('token')).toEqual(
-      resolved('token-1', undefined, '["x-session-token"]', true, ['token-1']),
+      resolved('token-1', undefined, '["x-session-token"]', true),
     );
     expect(run.results.get('trace')).toEqual(resolved('a, b', undefined, '["x-trace"]'));
-    expect(run.results.get('session')).toEqual(
-      resolved('def', undefined, 'session', false, ['def']),
-    );
+    expect(run.results.get('session')).toEqual(resolved('def', undefined, 'session'));
     expect(run.results.get('allHeaders')).toEqual(
       resolved(
         JSON.stringify({
@@ -315,20 +313,11 @@ describe('CaptureTracker', () => {
         undefined,
         '',
         false,
-        [
-          'token-1',
-          'session=abc; Path=/',
-          'abc',
-          'theme=dark',
-          'dark',
-          'session=def; HttpOnly',
-          'def',
-          'flag',
-        ],
+        ['session=abc; Path=/', 'theme=dark', 'session=def; HttpOnly'],
       ),
     );
     expect(run.results.get('allCookies')).toEqual(
-      resolved('{"session":"def","theme":"dark"}', undefined, '', false, ['dark', 'def']),
+      resolved('{"session":"def","theme":"dark"}', undefined, ''),
     );
     expect(run.results.get('constant')).toEqual(resolved('fixed', undefined, ''));
   });
