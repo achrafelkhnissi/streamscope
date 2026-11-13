@@ -69,6 +69,10 @@ export function notRunMessage(expression: string, label: string): string {
   return `${quoted(expression)} comes from ${label}, which has not run in this session.`;
 }
 
+export function latestResponseMessage(request: string, reference: string): string {
+  return `${quoted(`${request}.${reference}`)} is read from ${request}'s latest response when the request is sent.`;
+}
+
 export function pendingMessage(label: string, name: string): string {
   return `${label} › ${name} has not arrived yet.`;
 }

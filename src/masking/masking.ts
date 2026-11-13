@@ -18,7 +18,10 @@ const sensitiveWords: ReadonlySet<string> = new Set([
   'signature',
 ]);
 const urlUserInfoPattern = /^((?:[a-z][a-z\d+.-]*:)?\/\/)[^/?#]*@/i;
-const embeddedUserInfoPattern = /((?:\b[a-z][a-z\d+.-]*:)?\/\/)[^\s/?#<>"'`]*@/gi;
+const embeddedUserInfoPattern = /(\/\/)[^\s/?#<>"'`]*@/g;
+const previewLookahead = 1_024;
+
+const maxDisplayLength = 4_096;
 
 export function isSensitiveHeader(name: string): boolean {
   return name
@@ -38,6 +41,19 @@ export function maskUrl(url: string): string {
   return url
     .replace(urlUserInfoPattern, `$1${maskedValue}@`)
     .replace(embeddedUserInfoPattern, `$1${maskedValue}@`);
+}
+
+function isHighSurrogate(code: number): boolean {
+  return code >= 0xd800 && code <= 0xdbff;
+}
+
+export function maskedPreview(text: string, length = maxDisplayLength): string {
+  const masked = maskUrl(text.slice(0, length + previewLookahead));
+  if (masked.length <= length && text.length <= length + previewLookahead) {
+    return masked;
+  }
+  const kept = isHighSurrogate(masked.charCodeAt(length - 2)) ? length - 2 : length - 1;
+  return `${masked.slice(0, kept)}…`;
 }
 
 const credentialWords = ['token', 'bearer', 'apikey', 'secret', 'password'];

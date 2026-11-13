@@ -2,11 +2,13 @@ import { describe, expect, it } from 'vitest';
 import {
   isSensitiveHeader,
   looksLikeCredential,
+  maskedPreview,
   maskedValue,
   maskHeaders,
   maskUrl,
   maskValues,
 } from '../../../src/masking/masking';
+import { fastest } from '../timing';
 
 describe('masking', () => {
   it('masks sensitive header values in any letter case and keeps names and order', () => {
@@ -87,6 +89,44 @@ describe('masking', () => {
       '{{base}}/redirect?to=https://••••••@api.example.test/x',
     );
     expect(maskUrl('//user:synthetic@files.example.test/a')).toBe('//••••••@files.example.test/a');
+  });
+
+  it('masks 1 MiB without a colon in linear time', () => {
+    const dotted = 'a.'.repeat(524_288);
+    const kebab = 'word-'.repeat(209_716).slice(0, 1_048_576);
+
+    for (const text of [dotted, kebab]) {
+      const { value, ms } = fastest(() => maskUrl(text));
+      expect(value).toBe(text);
+      expect(ms).toBeLessThan(100);
+    }
+  });
+
+  it('masks user info after a scheme longer than 32 characters', () => {
+    const scheme = `x${'-scheme'.repeat(8)}`;
+
+    expect(maskUrl(`${scheme}://admin:synthetic-pass@api.example.test/a`)).toBe(
+      `${scheme}://••••••@api.example.test/a`,
+    );
+    expect(maskUrl(`go to ${'y'.repeat(40)}://admin:synthetic-pass@api.example.test/a`)).toBe(
+      `go to ${'y'.repeat(40)}://••••••@api.example.test/a`,
+    );
+  });
+
+  it('maskedPreview fits a length with … and masks user info just past the cut', () => {
+    const userInfo = 'https://admin:synthetic-pass@api.example.test/a';
+    const preview = maskedPreview(`${'b'.repeat(4_080)} ${userInfo} ${'c'.repeat(1_048_576)}`);
+
+    expect(maskedPreview('short https://admin:synthetic-pass@api.example.test/a')).toBe(
+      'short https://••••••@api.example.test/a',
+    );
+    expect(preview).toBe(`${'b'.repeat(4_080)} https://••••••…`);
+    expect(preview.length).toBe(4_096);
+    expect(maskedPreview('d'.repeat(4_096))).toBe('d'.repeat(4_096));
+    expect(maskedPreview('d'.repeat(4_097))).toBe(`${'d'.repeat(4_095)}…`);
+    expect(maskedPreview(`${'e'.repeat(8)}😀x`, 10)).toBe(`${'e'.repeat(8)}…`);
+    expect(maskedPreview('f'.repeat(30), 10)).toBe(`${'f'.repeat(9)}…`);
+    expect(maskedPreview('g'.repeat(10), 10)).toBe('g'.repeat(10));
   });
 
   it('masks URL user info inside other header values', () => {

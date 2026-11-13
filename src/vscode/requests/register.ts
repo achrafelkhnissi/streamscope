@@ -201,6 +201,11 @@ async function showBlocked(document: vscode.TextDocument, toast: BlockedToast): 
   }
 }
 
+export interface RequestFeatures {
+  shutdown: () => Promise<void>;
+  hasRun: (key: string) => boolean;
+}
+
 export function registerRequestFeatures(
   context: vscode.ExtensionContext,
   log: vscode.LogOutputChannel,
@@ -208,7 +213,7 @@ export function registerRequestFeatures(
   environments: EnvironmentStore,
   secrets: SecretStore,
   captures: CaptureRegistry,
-): () => Promise<void> {
+): RequestFeatures {
   const confirmRestrictedSend = confirmOnce(async () => {
     const choice = await vscode.window.showWarningMessage(
       'Send requests from this restricted workspace?',
@@ -693,5 +698,8 @@ export function registerRequestFeatures(
     );
   }
 
-  return sessionShutdown(history, spill);
+  return {
+    shutdown: sessionShutdown(history, spill),
+    hasRun: (key) => registry.latest(key) !== undefined,
+  };
 }

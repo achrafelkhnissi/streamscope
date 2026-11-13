@@ -414,6 +414,65 @@ describe('captures in the editor', () => {
     );
   });
 
+  it('hovering a response reference says it is read from the latest response once its producer ran', async () => {
+    const server = await serve();
+    const document = await open('response-ran.http', [
+      '# @name login',
+      `POST ${server.url}/login`,
+      '',
+      '###',
+      'GET https://api.example.test/me?token={{login.response.body.$.token}}',
+    ]);
+
+    await send(document.uri, 1);
+    const text = await hoverText(document, 4, '{{login.response.body.$.token}}');
+
+    assert.equal(
+      text,
+      "`{{login.response.body.$.token}}` is read from login's latest response when the request is sent.",
+    );
+  });
+
+  it('hovering a 1 MiB capture shows at most 4,096 characters plus …', async () => {
+    const server = await serve();
+    const document = await open('large-hover.http', [
+      '# @name bigRun',
+      '# @capture padding = first(type == "RUN_STARTED").padding',
+      `GET ${server.url}/stream?seconds=0&size=1040000`,
+      '',
+      '###',
+      'GET https://api.example.test/continue?padding={{bigRun.padding}}',
+    ]);
+
+    await send(document.uri, 2);
+    await waitFor(
+      async () => (await hintLabels(document)).some((label) => label.startsWith('= xxx')),
+      'the padding capture never resolved',
+    );
+    const text = await hoverText(document, 5, '{{bigRun.padding}}');
+
+    assert.equal(text.split('\n')[0], `{{bigRun.padding}} = ${'x'.repeat(4_095)}…`);
+    assert.ok(text.length < 4_400, String(text.length));
+  });
+
+  it('a run fires onDidChangeInlayHints when it begins and again when its value arrives', async () => {
+    const server = await serve();
+    const document = await open(
+      'hint-events.http',
+      agentFile(server, 'eventful', 'delayMs=1000&seconds=0'),
+    );
+    const changes = (): Thenable<number> =>
+      vscode.commands.executeCommand<number>('streamscope.test.inlayHintChanges');
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    const before = await changes();
+
+    await send(document.uri, producerLine);
+    await new Promise((resolve) => setTimeout(resolve, 400));
+
+    assert.equal((await changes()) - before, 2);
+    assert.ok((await hintLabels(document)).includes('= thread-1'));
+  });
+
   it('a secret capture is masked in the inlay hint and the hover', async () => {
     const server = await serve();
     const document = await open('secret.http', [

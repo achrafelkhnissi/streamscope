@@ -1,10 +1,11 @@
 import * as vscode from 'vscode';
-import { captureCompletions } from '../../capture/hints';
-import { captureLookup } from '../../capture/lookup';
+import { captureCompletions } from '../../capture/completions';
+import { captureLookup, namedRequestKey } from '../../capture/lookup';
 import type { CaptureRegistry } from '../../capture/registry';
 import { directiveKinds, type HttpFile } from '../../http-file/model';
 import { scanReferences } from '../../http-file/references';
-import { maskedValue, maskUrl } from '../../masking/masking';
+import { maskedPreview, maskedValue } from '../../masking/masking';
+import { latestResponseMessage } from '../../variables/references';
 import { unescapeFileVariable } from '../../variables/resolve';
 import { describeReference, secretCandidates, variableCompletions } from '../../variables/inspect';
 import {
@@ -36,6 +37,7 @@ export function createLanguageVariables(
   secrets: SecretStore,
   cache: ParseCache,
   registry: CaptureRegistry,
+  hasRun: (key: string) => boolean,
 ): LanguageVariables {
   const changed = new vscode.EventEmitter<void>();
   const subscriptions = [
@@ -49,9 +51,13 @@ export function createLanguageVariables(
   return {
     onDidChange: changed.event,
     sourcesFor: async (document) => {
+      const uri = document.uri.toString();
       const captures: CaptureLookup = {
-        ...captureLookup(registry, document.uri.toString(), cache.get(document), noResponses),
-        response: (requestName, reference) => emptyCaptureLookup.response(requestName, reference),
+        ...captureLookup(registry, uri, cache.get(document), noResponses),
+        response: (requestName, reference) =>
+          hasRun(namedRequestKey(uri, requestName))
+            ? { kind: 'failed', message: latestResponseMessage(requestName, reference) }
+            : emptyCaptureLookup.response(requestName, reference),
       };
       const restricted = !vscode.workspace.isTrusted;
       const catalog = await environments.catalogFor(document.uri);
@@ -93,7 +99,7 @@ function hover(
   switch (description.kind) {
     case 'value':
       markdown.appendText(
-        `${reference} = ${description.sensitive ? maskedValue : maskUrl(description.value)}`,
+        `${reference} = ${description.sensitive ? maskedValue : maskedPreview(description.value)}`,
       );
       markdown.appendMarkdown('\n\n');
       markdown.appendText(description.origin);

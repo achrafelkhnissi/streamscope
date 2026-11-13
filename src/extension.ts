@@ -27,10 +27,18 @@ export function activate(context: vscode.ExtensionContext): void {
   const secrets = new SecretStore(context.secrets, context.workspaceState, workspaceIdentity());
   registerSecretCommands(context, secrets);
   const captures = new CaptureRegistry();
-  const variables = createLanguageVariables(context, environments, secrets, cache, captures);
+  const requests = registerRequestFeatures(context, log, cache, environments, secrets, captures);
+  shutdown = requests.shutdown;
+  const variables = createLanguageVariables(
+    context,
+    environments,
+    secrets,
+    cache,
+    captures,
+    requests.hasRun,
+  );
   registerVariableFeatures(context, cache, variables, secrets);
   registerLanguageFeatures(context, cache, variables, captures);
-  shutdown = registerRequestFeatures(context, log, cache, environments, secrets, captures);
   void offerToHideOtherSendLenses(context);
   log.info('Extension activated');
 }
