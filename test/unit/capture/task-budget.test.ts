@@ -136,6 +136,33 @@ describe('TaskBudget', () => {
     expect(ran).toStrictEqual(['busy', 'quiet', 'busy']);
   });
 
+  it('still gives the turns behind a turn that throws their turn in the next task', () => {
+    const tasks: (() => void)[] = [];
+    const budget = new TaskBudget({
+      now: () => 0,
+      nextTask: (callback) => {
+        tasks.push(callback);
+      },
+    });
+    const ran: string[] = [];
+
+    budget.requestTurn(() => {
+      ran.push('failing');
+      throw new Error('a listener failed');
+    });
+    budget.requestTurn(() => {
+      ran.push('normal');
+    });
+    expect(() => {
+      tasks.shift()?.();
+    }).toThrow('a listener failed');
+    expect(tasks).toHaveLength(1);
+    tasks.shift()?.();
+
+    expect(ran).toStrictEqual(['failing', 'normal']);
+    expect(tasks).toHaveLength(0);
+  });
+
   it('opens a new slice after a real setImmediate', async () => {
     hostBudget.enter();
     const start = performance.now();

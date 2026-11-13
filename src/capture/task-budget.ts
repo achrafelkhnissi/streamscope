@@ -68,11 +68,14 @@ export class TaskBudget {
 
   private dispatch(): void {
     this.dispatching = false;
-    for (let waiting = this.turns.length; waiting > 0 && this.hasRoom; waiting -= 1) {
-      this.turns.shift()?.();
-    }
-    if (this.turns.length > 0) {
-      this.scheduleTurns();
+    try {
+      for (let waiting = this.turns.length; waiting > 0 && this.hasRoom; waiting -= 1) {
+        this.turns.shift()?.();
+      }
+    } finally {
+      if (this.turns.length > 0) {
+        this.scheduleTurns();
+      }
     }
   }
 }
