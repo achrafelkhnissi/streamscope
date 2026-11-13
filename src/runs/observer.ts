@@ -28,5 +28,5 @@ export interface RunObserver {
   head(head: ResponseHead, access: RunAccess): void;
   event(event: StreamEvent): void;
   end(end: RunEnd): void;
-  backpressure?: EventBackpressure;
+  backpressure: EventBackpressure;
 }

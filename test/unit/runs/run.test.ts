@@ -603,6 +603,17 @@ describe('startRun streaming', () => {
     expect(snapshot.stream?.store.count).toBe(12);
   });
 
+  it('requires every observer to say how it holds back the stream', () => {
+    // @ts-expect-error an observer without backpressure could queue events without bound
+    const unpaced: RunObserver = {
+      head: () => undefined,
+      event: () => undefined,
+      end: () => undefined,
+    };
+
+    expect(unpaced).not.toHaveProperty('backpressure');
+  });
+
   it('stops reading the socket while the observer is congested, until it drains', async () => {
     const line = `${JSON.stringify({ type: 'TICK', pad: 'x'.repeat(200) })}\n`;
     const body = line.repeat(Math.ceil((4 * 1_048_576) / line.length));
@@ -647,9 +658,7 @@ describe('startRun streaming', () => {
     expect(run.snapshot().status).toBe('receiving');
     expect(listeners.size).toBe(1);
 
-    if (observer.backpressure !== undefined) {
-      Object.assign(observer.backpressure, { congested: false });
-    }
+    Object.assign(observer.backpressure, { congested: false });
     for (const listener of [...listeners]) {
       listener();
     }
@@ -1316,6 +1325,7 @@ describe('the observer sees head, events and exactly one end on every exit path'
         end: (end) => {
           recorded.ends.push(end);
         },
+        backpressure: { congested: false, onDrain: () => () => undefined },
       },
       heads: [],
       accesses: [],

@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { hostBudget } from '../../../src/capture/task-budget';
 import {
   CaptureTracker,
+  congestedEvents,
   type CaptureDefinition,
   type CaptureResult,
 } from '../../../src/capture/tracker';
@@ -159,6 +160,7 @@ interface TrackedRun {
   pacing: Pacing;
   settledAt: Map<string, number>;
   endedAt: number;
+  maxQueued: number;
 }
 
 async function trackedRun(url: string, definitions: CaptureDefinition[]): Promise<TrackedRun> {
@@ -175,12 +177,14 @@ async function trackedRun(url: string, definitions: CaptureDefinition[]): Promis
     hostBudget,
   );
   let ended: Promise<void> | undefined;
+  let maxQueued = 0;
   const observer: RunObserver = {
     head: (head, access) => {
       tracker.head(head, access);
     },
     event: (event) => {
       tracker.event(event);
+      maxQueued = Math.max(maxQueued, tracker.queued);
     },
     end: (end) => {
       ended = tracker.end(end);
@@ -195,7 +199,7 @@ async function trackedRun(url: string, definitions: CaptureDefinition[]): Promis
   expect(snapshot.status).toBe('completed');
   const events = snapshot.stream?.store.count;
   await run.release();
-  return { results, events, pacing, settledAt, endedAt };
+  return { results, events, pacing, settledAt, endedAt, maxQueued };
 }
 
 describe('many cheap captures on a fast stream of small events', () => {
@@ -209,7 +213,7 @@ describe('many cheap captures on a fast stream of small events', () => {
     const captures = smallEventCaptures(64, stream.events);
 
     const {
-      result: { results, events, pacing },
+      result: { results, events, pacing, maxQueued },
       stallMs,
     } = await longestStall(() =>
       trackedRun(
@@ -222,6 +226,7 @@ describe('many cheap captures on a fast stream of small events', () => {
     expectSmallEventResults(results, captures);
     expect(pacing.pauses).toBeGreaterThan(0);
     expect(pacing.deliveredWhilePaused).toBe(0);
+    expect(maxQueued).toBeLessThanOrEqual(congestedEvents + Math.ceil(65_536 / smallEventBytes));
     expect(stallMs).toBeLessThan(100);
   }, 60_000);
 
