@@ -16,6 +16,28 @@ export async function expectNoChild(): Promise<void> {
   }
 }
 
+export async function longestStall<T>(
+  work: () => Promise<T>,
+): Promise<{ result: T; stallMs: number }> {
+  let longest = 0;
+  let last = performance.now();
+  const ticker = setInterval(() => {
+    const now = performance.now();
+    longest = Math.max(longest, now - last - 2);
+    last = now;
+  }, 2);
+  try {
+    const started = performance.now();
+    const pending = work();
+    const synchronous = performance.now() - started;
+    const result = await pending;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    return { result, stallMs: Math.max(longest, synchronous) };
+  } finally {
+    clearInterval(ticker);
+  }
+}
+
 export interface WorkerFiles {
   worker: string;
   script(name: string, source: string): string;

@@ -1,39 +1,35 @@
 import { closeSync, openSync, readSync } from 'node:fs';
-import type { Outcome } from '../expressions/evaluate';
-import { insertText, maxInsertedLength, valueTooLargeReason } from '../expressions/insert';
+import type { Value } from '../expressions/ast';
 import { parseExpression } from '../expressions/parse';
+import { parseEventBytes } from '../streaming/parser';
 import {
-  runJobs,
-  type BodyJob,
+  inserted,
+  jobEvaluator,
+  valuesOnly,
   type BodySubject,
+  type Inserted,
+  type ReadCollected,
   type WorkerReply,
   type WorkerRequest,
 } from './body';
 
-function bounded(outcome: Outcome): Outcome {
-  return !outcome.present || insertText(outcome.value, maxInsertedLength).ok
-    ? outcome
-    : { present: false, reason: valueTooLargeReason };
+function readAt(descriptor: number, offset: number, length: number): Uint8Array | undefined {
+  const bytes = new Uint8Array(length);
+  for (let read = 0; read < length;) {
+    const count = readSync(descriptor, bytes, read, length - read, offset + read);
+    if (count === 0) {
+      return undefined;
+    }
+    read += count;
+  }
+  return bytes;
 }
 
-function reply(name: string, outcome: Outcome): void {
-  const message: WorkerReply = { name, outcome: bounded(outcome) };
-  process.send?.(message);
-}
-
-function readFully(path: string, length: number): Uint8Array | undefined {
+function withFile<T>(path: string, use: (descriptor: number) => T | undefined): T | undefined {
   let descriptor: number | undefined;
   try {
     descriptor = openSync(path, 'r');
-    const bytes = new Uint8Array(length);
-    for (let offset = 0; offset < length;) {
-      const read = readSync(descriptor, bytes, offset, length - offset, offset);
-      if (read === 0) {
-        return undefined;
-      }
-      offset += read;
-    }
-    return bytes;
+    return use(descriptor);
   } catch {
     return undefined;
   } finally {
@@ -47,19 +43,54 @@ function loaded(subject: BodySubject): BodySubject {
   if (subject.kind !== 'file') {
     return subject;
   }
-  const bytes = readFully(subject.path, subject.length);
+  const bytes = withFile(subject.path, (descriptor) => readAt(descriptor, 0, subject.length));
   return bytes === undefined ? subject : { kind: 'body', bytes, contentType: subject.contentType };
 }
 
-process.once('message', ({ subject, jobs }: WorkerRequest) => {
-  const parsed: BodyJob[] = [];
-  for (const job of jobs) {
-    const result = parseExpression(job.text, 'capture');
-    if (result.ok) {
-      parsed.push({ ...job, expression: result.expr });
-    } else {
-      reply(job.name, { present: false, reason: result.error.message });
-    }
+function rangeReader(subject: BodySubject): ReadCollected {
+  if (subject.kind !== 'events' || subject.path === undefined) {
+    return valuesOnly;
   }
-  runJobs(loaded(subject), parsed, reply);
+  const { path, format } = subject;
+  return (collected) => {
+    if (collected.kind === 'values') {
+      return collected.values;
+    }
+    return withFile(path, (descriptor) => {
+      const values: Value[] = [];
+      const { ranges } = collected;
+      for (let at = 0; at + 1 < ranges.length; at += 2) {
+        const offset = ranges[at] ?? 0;
+        const length = ranges[at + 1] ?? 0;
+        const bytes = readAt(descriptor, offset, length);
+        const event =
+          bytes === undefined
+            ? undefined
+            : parseEventBytes(bytes, format, { maxEventSize: length + 1, typeFields: [] });
+        if (event === undefined || (event.kind !== 'json' && event.kind !== 'text')) {
+          return undefined;
+        }
+        values.push(event.value);
+      }
+      return values;
+    });
+  };
+}
+
+function reply(name: string, result: Inserted): void {
+  const message: WorkerReply = { name, result };
+  process.send?.(message);
+}
+
+process.once('message', ({ subject, jobs }: WorkerRequest) => {
+  const evaluateJob = jobEvaluator(loaded(subject), rangeReader(subject));
+  for (const job of jobs) {
+    const parsed = parseExpression(job.text, 'capture');
+    reply(
+      job.name,
+      parsed.ok
+        ? inserted(evaluateJob({ ...job, expression: parsed.expr }))
+        : { present: false, reason: parsed.error.message },
+    );
+  }
 });

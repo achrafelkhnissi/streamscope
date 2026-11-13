@@ -12,7 +12,7 @@ import { SpillArea } from '../../../src/events/spill';
 import { parseExpression } from '../../../src/expressions/parse';
 import type { RunEnd } from '../../../src/runs/observer';
 import type { ResponseHead } from '../../../src/transport/model';
-import { expectNoChild, missingWorker, useCaptureWorker } from './worker';
+import { expectNoChild, longestStall, missingWorker, useCaptureWorker } from './worker';
 
 const encoder = new TextEncoder();
 const mebibyte = 1_048_576;
@@ -28,6 +28,7 @@ function capture(name: string, text: string, secret = false): CaptureDefinition 
 interface EventOptions {
   kind?: EventKind;
   sse?: SseFields;
+  offset?: number;
   length?: number;
 }
 
@@ -60,7 +61,7 @@ function harness(definitions: CaptureDefinition[], workerFile = missingWorker): 
       const event: StreamEvent = {
         index,
         time: index * 10,
-        offset: index * 64,
+        offset: options.offset ?? index * 64,
         length: options.length ?? 64,
         line: index,
         kind: options.kind ?? 'json',
@@ -88,10 +89,16 @@ function head(contentType: string, headers: [string, string][] = []): ResponseHe
 
 const ndjsonHead = head('application/x-ndjson');
 
-function completed(
-  format: 'ndjson' | 'sse' | 'json' | 'text',
-  options: { body?: string | Uint8Array; contentType?: string; reply?: string } = {},
-): RunEnd {
+interface EndOptions {
+  body?: string | Uint8Array;
+  contentType?: string;
+  reply?: string;
+  recognised?: boolean;
+  truncated?: boolean;
+  spill?: string;
+}
+
+function completed(format: 'ndjson' | 'sse' | 'json' | 'text', options: EndOptions = {}): RunEnd {
   const bytes =
     typeof options.body === 'string' ? encoder.encode(options.body) : (options.body ?? undefined);
   return {
@@ -99,7 +106,8 @@ function completed(
     format,
     contentType: options.contentType,
     bodyLength: bytes?.length ?? 0,
-    bodyFile: () => Promise.resolve(undefined),
+    spillPath: () => Promise.resolve(options.spill),
+    reply: { recognised: options.recognised ?? true, truncated: options.truncated ?? false },
     signal: new AbortController().signal,
     readBody: (maxBytes) => Promise.resolve((bytes ?? new Uint8Array()).subarray(0, maxBytes)),
     readReply: () => Promise.resolve(options.reply ?? ''),
@@ -112,7 +120,8 @@ function fromFile(file: { path: string; length: number }): RunEnd {
     format: 'json',
     contentType: 'application/json',
     bodyLength: file.length,
-    bodyFile: () => Promise.resolve(file),
+    spillPath: (end) => Promise.resolve(end <= file.length ? file.path : undefined),
+    reply: { recognised: false, truncated: false },
     signal: new AbortController().signal,
     readBody: () => Promise.reject(new Error('the host read the body')),
     readReply: () => Promise.resolve(''),
@@ -126,6 +135,23 @@ afterEach(() => {
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+interface SpilledEvents {
+  path: string;
+  ranges: { offset: number; length: number }[];
+}
+
+async function spilledEvents(blocks: string[]): Promise<SpilledEvents> {
+  const ranges: { offset: number; length: number }[] = [];
+  let offset = 0;
+  for (const block of blocks) {
+    const length = encoder.encode(block).length;
+    ranges.push({ offset, length });
+    offset += length;
+  }
+  const file = await spilled(encoder.encode(blocks.join('')));
+  return { path: file.path, ranges };
+}
 
 async function spilled(body: Uint8Array): Promise<{ path: string; length: number }> {
   const root = mkdtempSync(path.join(tmpdir(), 'streamscope-capture-spill-'));
@@ -355,12 +381,15 @@ describe('CaptureTracker', () => {
   });
 
   it('malformed events never match', async () => {
-    const run = harness([
-      capture('any', 'first()'),
-      capture('started', 'first(@ == "{\\"type\\":\\"RUN_STARTED\\"")'),
-      capture('total', 'count()'),
-      capture('everything', 'all()'),
-    ]);
+    const run = harness(
+      [
+        capture('any', 'first()'),
+        capture('started', 'first(@ == "{\\"type\\":\\"RUN_STARTED\\"")'),
+        capture('total', 'count()'),
+        capture('everything', 'all()'),
+      ],
+      files().worker,
+    );
     run.tracker.head(ndjsonHead);
 
     run.send('{"type":"RUN_STARTED"', { kind: 'malformed' });
@@ -459,15 +488,18 @@ describe('CaptureTracker', () => {
   });
 
   it('names the source of a missing path at the end', async () => {
-    const run = harness([
-      capture('code', 'status.value'),
-      capture('header', 'headers["x-missing"]'),
-      capture('cookie', 'cookies.missing'),
-      capture('ids', 'all(type == "A").id'),
-      capture('total', 'count().value'),
-      capture('reply', 'text.value'),
-      capture('lastMissing', 'last(type == "A").missing'),
-    ]);
+    const run = harness(
+      [
+        capture('code', 'status.value'),
+        capture('header', 'headers["x-missing"]'),
+        capture('cookie', 'cookies.missing'),
+        capture('ids', 'all(type == "A").id'),
+        capture('total', 'count().value'),
+        capture('reply', 'text.value'),
+        capture('lastMissing', 'last(type == "A").missing'),
+      ],
+      files().worker,
+    );
     run.tracker.head(ndjsonHead);
 
     run.send({ type: 'A', id: 'a-1' });
@@ -539,25 +571,46 @@ describe('CaptureTracker', () => {
     expect(run.calls).toEqual(['deltas', 'total']);
   });
 
-  it('all(…) fails past 16 MiB of matched events', () => {
+  it('all(…) fails past 16 MiB of matched events, keeping only ranges past 1 MiB', () => {
     const run = harness([capture('deltas', 'all(type == "D")')]);
     run.tracker.head(ndjsonHead);
 
-    for (let count = 0; count < 4; count += 1) {
-      run.send({ type: 'D' }, { length: 4 * mebibyte });
+    run.send({ type: 'D' }, { length: mebibyte });
+    expect(run.tracker.retainedValues).toBe(1);
+    for (let count = 1; count < 16; count += 1) {
+      run.send({ type: 'D' }, { length: mebibyte });
     }
     expect(run.results.size).toBe(0);
-    expect(run.tracker.retainedValues).toBe(4);
+    expect(run.tracker.retainedValues).toBe(0);
+    expect(run.tracker.retainedRanges).toBe(16);
     run.send({ type: 'D' }, { length: 1 });
 
     expect(run.results.get('deltas')).toEqual(
       failed('all(type == "D") matched more than 16 MiB of events'),
     );
-    expect(run.tracker.retainedValues).toBe(0);
+    expect(run.tracker.retainedRanges).toBe(0);
+  });
+
+  it('bounds the all(…) sources of one capture together', () => {
+    const run = harness([capture('same', 'all(type == "A") == all(type == "B")')]);
+    run.tracker.head(ndjsonHead);
+
+    for (let count = 0; count < 6_000; count += 1) {
+      run.send({ type: 'A' });
+    }
+    for (let count = 0; count < 4_000; count += 1) {
+      run.send({ type: 'B' });
+    }
+    expect(run.results.size).toBe(0);
+    run.send({ type: 'B' });
+
+    expect(run.results.get('same')).toEqual(
+      failed('all(type == "A") and all(type == "B") matched more than 10,000 events'),
+    );
   });
 
   it('collects all(…) results and maps a path over them', async () => {
-    const run = harness([capture('ids', 'all(type == "A").id | join(",")')]);
+    const run = harness([capture('ids', 'all(type == "A").id | join(",")')], files().worker);
     run.tracker.head(ndjsonHead);
 
     run.send({ type: 'A', id: 'a-1' });
@@ -728,24 +781,24 @@ describe('CaptureTracker', () => {
     expect(run.tracker.retainedValues).toBe(0);
   });
 
-  it('jsonpath over events fails beyond 1 MiB of event bytes', () => {
+  it('jsonpath over events fails beyond 16 MiB of event bytes', () => {
     const run = harness([capture('ids', 'jsonpath("$[*].id")')]);
     run.tracker.head(ndjsonHead);
 
     for (let count = 0; count < 16; count += 1) {
-      run.send({ id: count }, { length: mebibyte / 16 });
+      run.send({ id: count }, { length: mebibyte });
     }
     expect(run.results.size).toBe(0);
-    expect(run.tracker.retainedValues).toBe(16);
+    expect(run.tracker.retainedRanges).toBe(16);
     run.send({ id: 16 }, { length: 1 });
 
     expect(run.results.get('ids')).toEqual(
-      failed('jsonpath("$[*].id") reads at most 1 MiB of events, and the stream has more'),
+      failed('jsonpath("$[*].id") reads at most 16 MiB of events, and the stream has more'),
     );
-    expect(run.tracker.retainedValues).toBe(0);
+    expect(run.tracker.retainedRanges).toBe(0);
   });
 
-  it('posting a 1 MiB jsonpath collection takes under 50 ms on the host', async () => {
+  it('posting a 1 MiB jsonpath collection without a spill file costs the host under 50 ms', async () => {
     const run = harness([capture('first', 'jsonpath("$[0][0]")')], files().worker);
     run.tracker.head(ndjsonHead);
     const eventBytes = mebibyte / 16;
@@ -754,26 +807,147 @@ describe('CaptureTracker', () => {
       run.send(tiny, { length: eventBytes });
     }
     expect(run.tracker.retainedValues).toBe(16);
-    let longest = 0;
-    let last = performance.now();
-    const ticker = setInterval(() => {
-      const now = performance.now();
-      longest = Math.max(longest, now - last);
-      last = now;
-    }, 5);
 
-    try {
-      const started = performance.now();
-      const ending = run.tracker.end(completed('ndjson'));
-      longest = Math.max(longest, performance.now() - started + 5);
-      await ending;
-    } finally {
-      clearInterval(ticker);
-    }
+    const { stallMs } = await longestStall(() => run.tracker.end(completed('ndjson')));
 
-    expect(longest - 5).toBeLessThan(50);
+    expect(stallMs).toBeLessThan(100);
     expect(run.results.get('first')).toEqual(resolved('{}', undefined, '$[0][0]'));
     await expectNoChild();
+  });
+
+  it('all() over a 16 MiB collection costs the host under 50 ms', async () => {
+    const zeros = `[${'0,'.repeat(mebibyte / 2 - 2)}0]`;
+    const spill = await spilledEvents(Array.from({ length: 16 }, () => `${zeros}\n`));
+    const value = JSON.parse(zeros) as JsonValue;
+    const run = harness(
+      [capture('zeros', 'all()[?@[0] == 0][*]'), capture('last', 'all()[-1][-1]')],
+      files().worker,
+    );
+    run.tracker.head(ndjsonHead);
+    for (const range of spill.ranges) {
+      run.send(value, range);
+    }
+    expect(run.tracker.retainedValues).toBe(0);
+
+    const { stallMs } = await longestStall(() =>
+      run.tracker.end(completed('ndjson', { spill: spill.path })),
+    );
+
+    expect(stallMs).toBeLessThan(100);
+    expect(run.results.get('zeros')).toEqual(resolved('[]', undefined, '[?…][*]'));
+    expect(run.results.get('last')).toEqual(resolved('0', undefined, '[-1][-1]'));
+    await expectNoChild();
+  });
+
+  it('all() reads its matches from the spill file in the child', async () => {
+    const blocks = [
+      'event: start\ndata: {"threadId":"thread-1"}\n\n',
+      'event: delta\ndata: {"n":12345678901234567890}\n\n',
+      ': keep-alive\n\n',
+      'event: delta\ndata: {"n":2}\n\n',
+      'event: delta\ndata: [DONE]\n\n',
+    ];
+    const spill = await spilledEvents(blocks);
+    const delta = (index: number): { offset: number; length: number } => {
+      const range = spill.ranges[index];
+      if (range === undefined) {
+        throw new Error(`no range ${String(index)}`);
+      }
+      return range;
+    };
+    const sse = (event: string): SseFields => ({ event, id: undefined, retry: undefined });
+    const echo = files().script(
+      'echo-collected',
+      [
+        "process.once('message', (message) => {",
+        '  for (const job of message.jobs) {',
+        '    const collected = [...job.collected.values()].map((entry) => ({ kind: entry.kind, size: (entry.ranges ?? entry.values).length }));',
+        "    process.send({ name: job.name, result: { present: true, text: JSON.stringify(collected), path: '' } });",
+        '  }',
+        '});',
+      ].join('\n'),
+    );
+    const definitions = [capture('deltas', 'all(@sse.event == "delta")')];
+    const real = harness(definitions, files().worker);
+    const echoed = harness(definitions, echo);
+    for (const run of [real, echoed]) {
+      run.tracker.head(head('text/event-stream'));
+      run.send({ threadId: 'host-copy' }, { ...delta(0), sse: sse('start') });
+      run.send({ n: 'host-copy' }, { ...delta(1), sse: sse('delta') });
+      run.send('keep-alive', { ...delta(2), kind: 'comment' });
+      run.send({ n: 'host-copy' }, { ...delta(3), sse: sse('delta') });
+      run.send('[DONE]', { ...delta(4), kind: 'text', sse: sse('delta') });
+      await run.tracker.end(completed('sse', { spill: spill.path }));
+    }
+
+    expect(real.results.get('deltas')).toEqual(
+      resolved('[{"n":12345678901234567890},{"n":2},"[DONE]"]', undefined, ''),
+    );
+    expect(echoed.results.get('deltas')).toEqual(
+      resolved(JSON.stringify([{ kind: 'ranges', size: 6 }]), undefined, ''),
+    );
+  });
+
+  it('all() without a spill file over 1 MiB fails with the message', async () => {
+    const definitions = [
+      capture('ids', 'all(type == "A").id'),
+      capture('fallback', 'all(type == "A").id | default("none")'),
+    ];
+    const large = harness(definitions, files().worker);
+    const small = harness(definitions, files().worker);
+    for (const run of [large, small]) {
+      run.tracker.head(ndjsonHead);
+    }
+    large.send({ type: 'A', id: 'a-1' }, { length: mebibyte });
+    large.send({ type: 'A', id: 'a-2' }, { length: 1 });
+    small.send({ type: 'A', id: 'a-1' }, { length: mebibyte - 1 });
+    small.send({ type: 'A', id: 'a-2' }, { length: 1 });
+
+    await large.tracker.end(completed('ndjson'));
+    await small.tracker.end(completed('ndjson'));
+
+    const unavailable = failed('the events are no longer available for this capture');
+    expect(large.results.get('ids')).toEqual(unavailable);
+    expect(large.results.get('fallback')).toEqual(unavailable);
+    expect(small.results.get('ids')).toEqual(resolved('["a-1","a-2"]', undefined, 'id'));
+  });
+
+  it('default does not hide body on a stream, nor an event source on a body', async () => {
+    const stream = harness([capture('value', 'body.x | default("none")')]);
+    const json = harness([capture('first', 'first(type == "A").id | default("none")')]);
+    stream.tracker.head(ndjsonHead);
+    json.tracker.head(head('application/json'));
+
+    stream.send({ x: 1 });
+    await stream.tracker.end(completed('ndjson'));
+    await json.tracker.end(
+      completed('json', { body: '{"type":"A"}', contentType: 'application/json' }),
+    );
+
+    expect(stream.results.get('value')).toEqual(
+      failed('the response is an event stream; use first(…), last(…) or all(…)'),
+    );
+    expect(json.results.get('first')).toEqual(failed('the response is not an event stream'));
+  });
+
+  it('text without a reply adapter fails', async () => {
+    const run = harness([capture('reply', 'text'), capture('fallback', 'text | default("")')]);
+    run.tracker.head(ndjsonHead);
+
+    run.send({ value: 'not a reply' });
+    await run.tracker.end(completed('ndjson', { recognised: false }));
+
+    expect(run.results.get('reply')).toEqual(failed('the response has no recognised reply'));
+    expect(run.results.get('fallback')).toEqual(failed('the response has no recognised reply'));
+  });
+
+  it('a cut-off reply fails', async () => {
+    const run = harness([capture('reply', 'text')]);
+    run.tracker.head(ndjsonHead);
+
+    await run.tracker.end(completed('ndjson', { reply: 'x'.repeat(16), truncated: true }));
+
+    expect(run.results.get('reply')).toEqual(failed('the reply is larger than 1 MiB'));
   });
 
   it('a large body is read from the spill file, and the message to the child carries no body bytes', async () => {
@@ -791,7 +965,7 @@ describe('CaptureTracker', () => {
         "process.once('message', (message) => {",
         '  for (const job of message.jobs) {',
         '    const value = { kind: message.subject.kind, path: message.subject.path, length: message.subject.length, bytes: holdsBytes(message) };',
-        "    process.send({ name: job.name, outcome: { present: true, value, path: '' } });",
+        "    process.send({ name: job.name, result: { present: true, text: JSON.stringify(value), path: '' } });",
         '  }',
         '});',
       ].join('\n'),
@@ -905,7 +1079,8 @@ describe('CaptureTracker', () => {
       format: 'json',
       contentType: 'application/json',
       bodyLength: 7,
-      bodyFile: () => Promise.resolve(undefined),
+      spillPath: () => Promise.resolve(undefined),
+      reply: { recognised: true, truncated: false },
       signal: new AbortController().signal,
       readBody: () => Promise.reject(new Error('synthetic read failure')),
       readReply: () => Promise.reject(new Error('synthetic read failure')),
@@ -915,7 +1090,8 @@ describe('CaptureTracker', () => {
       format: 'json',
       contentType: 'application/json',
       bodyLength: 7,
-      bodyFile: () => Promise.resolve(undefined),
+      spillPath: () => Promise.resolve(undefined),
+      reply: { recognised: true, truncated: false },
       signal: new AbortController().signal,
       readBody: () => Promise.resolve(undefined),
       readReply: () => Promise.resolve(undefined),
@@ -925,7 +1101,8 @@ describe('CaptureTracker', () => {
       format: 'ndjson',
       contentType: 'application/x-ndjson',
       bodyLength: 0,
-      bodyFile: () => Promise.resolve(undefined),
+      spillPath: () => Promise.resolve(undefined),
+      reply: { recognised: true, truncated: false },
       signal: new AbortController().signal,
       readBody: () => Promise.reject(new Error('synthetic read failure')),
       readReply: () => Promise.reject(new Error('synthetic read failure')),

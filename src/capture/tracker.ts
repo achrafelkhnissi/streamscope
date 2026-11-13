@@ -1,30 +1,35 @@
 import type { StreamEvent } from '../events/model';
 import type { Expr, SourceNode, Value } from '../expressions/ast';
 import { holds, type ConditionItem, type Outcome } from '../expressions/evaluate';
-import { insertText, maxInsertedLength, valueTooLargeReason } from '../expressions/insert';
 import { sourcesOf } from '../expressions/parse';
 import type { RunEnd } from '../runs/observer';
 import type { ResponseHead } from '../transport/model';
 import {
   evaluateJobs,
   evaluateWith,
-  inlineBodyLimit,
+  fileBodyBytes,
+  inserted,
   sourceKey,
   type BodyJob,
   type BodySubject,
+  type Collected,
+  type Inserted,
 } from './body';
 import {
   bodyUnavailableReason,
   cancelledReason,
+  eventsUnavailableReason,
   eventStreamBodyReason,
   failedReason,
   maxCollectedBytes,
   maxCollectedEvents,
-  maxQueriedBytes,
+  maxSentValueBytes,
   noEventMatchedReason,
   noHeadersReason,
+  noReplyReason,
   notAnEventStreamReason,
   notSentReason,
+  replyCutOffReason,
   replyUnavailableReason,
   responsePendingReason,
   tooFewMatchedReason,
@@ -79,22 +84,34 @@ type Watch =
       match: Match | undefined;
     }
   | { kind: 'count'; node: EventNode; condition: Expr | undefined; count: number }
-  | { kind: 'all'; node: EventNode; condition: Expr | undefined; values: Value[]; bytes: number };
+  | { kind: 'all'; node: EventNode; condition: Expr | undefined; matches: Matches };
 
 type Timing = 'head' | 'event' | 'end';
+
+interface Matches {
+  ranges: number[];
+  values: Value[];
+}
+
+interface Budget {
+  events: number;
+  bytes: number;
+  values: boolean;
+}
 
 interface Tracked {
   readonly definition: CaptureDefinition;
   readonly sources: readonly SourceNode[];
   readonly timing: Timing;
   readonly queries: boolean;
+  readonly budget: Budget;
   watches: Watch[];
   settled: boolean;
 }
 
 interface Collection {
-  values: Value[];
-  bytes: number;
+  matches: Matches;
+  budget: Budget;
 }
 
 interface HeadValues {
@@ -161,7 +178,7 @@ function watchOf(node: EventNode): Watch {
     case 'count':
       return { kind: 'count', node, condition, count: 0 };
     case 'all':
-      return { kind: 'all', node, condition, values: [], bytes: 0 };
+      return { kind: 'all', node, condition, matches: { ranges: [], values: [] } };
   }
 }
 
@@ -198,24 +215,83 @@ function matchedNow(tracked: Tracked): boolean {
   );
 }
 
+function readsSource(tracked: Tracked, name: 'body' | 'text'): boolean {
+  return tracked.sources.some((node) => node.kind === 'source' && node.name === name);
+}
+
+function allWatches(tracked: Tracked): Extract<Watch, { kind: 'all' }>[] {
+  return tracked.watches.filter((watch) => watch.kind === 'all');
+}
+
+function newBudget(): Budget {
+  return { events: 0, bytes: 0, values: true };
+}
+
+function collect(
+  matches: Matches,
+  budget: Budget,
+  event: StreamEvent,
+  dropValues: () => void,
+): 'events' | 'bytes' | undefined {
+  if (budget.events === maxCollectedEvents) {
+    return 'events';
+  }
+  if (budget.bytes + event.length > maxCollectedBytes) {
+    return 'bytes';
+  }
+  budget.events += 1;
+  budget.bytes += event.length;
+  matches.ranges.push(event.offset, event.length);
+  if (budget.values && budget.bytes > maxSentValueBytes) {
+    budget.values = false;
+    dropValues();
+  } else if (budget.values) {
+    matches.values.push(event.value);
+  }
+  return undefined;
+}
+
+function collected(
+  matches: Matches,
+  budget: Budget,
+  path: string | undefined,
+): Collected | undefined {
+  if (path !== undefined) {
+    return { kind: 'ranges', ranges: matches.ranges };
+  }
+  return budget.values ? { kind: 'values', values: matches.values } : undefined;
+}
+
 async function bodySubject(end: CompletedEnd): Promise<BodySubject | undefined> {
-  const file =
-    end.bodyLength > inlineBodyLimit ? await end.bodyFile().catch(() => undefined) : undefined;
-  if (file !== undefined) {
-    return { kind: 'file', path: file.path, length: file.length, contentType: end.contentType };
+  const path =
+    end.bodyLength > fileBodyBytes
+      ? await end.spillPath(end.bodyLength).catch(() => undefined)
+      : undefined;
+  if (path !== undefined) {
+    return { kind: 'file', path, length: end.bodyLength, contentType: end.contentType };
   }
   const bytes = await end.readBody(Number.MAX_SAFE_INTEGER).catch(() => undefined);
   return bytes === undefined ? undefined : { kind: 'body', bytes, contentType: end.contentType };
 }
 
-function readsSource(tracked: Tracked, name: 'body' | 'text'): boolean {
-  return tracked.sources.some((node) => node.kind === 'source' && node.name === name);
+async function replyOutcome(end: CompletedEnd): Promise<Outcome> {
+  if (!end.reply.recognised) {
+    return { present: false, reason: noReplyReason };
+  }
+  if (end.reply.truncated) {
+    return { present: false, reason: replyCutOffReason };
+  }
+  const reply = await end.readReply().catch(() => undefined);
+  return reply === undefined
+    ? { present: false, reason: replyUnavailableReason }
+    : { present: true, value: reply, path: '' };
 }
 
 export class CaptureTracker {
   private readonly tracked: readonly Tracked[];
   private watching: Tracked[];
-  private collection: Collection | undefined;
+  private query: Collection | undefined;
+  private rangesEnd = 0;
   private readonly counts: EventCounts = { events: 0, malformed: 0, oversize: 0 };
   private response: HeadValues | undefined;
   private ending: Promise<void> | undefined;
@@ -233,33 +309,42 @@ export class CaptureTracker {
         sources,
         timing: timingOf(sources),
         queries: sources.some((node) => node.kind === 'jsonpath'),
+        budget: newBudget(),
         watches: sources.filter(isEventNode).map(watchOf),
         settled: false,
       };
     });
     this.watching = this.tracked.filter((tracked) => tracked.watches.length > 0);
-    this.collection = this.tracked.some((tracked) => tracked.queries)
-      ? { values: [], bytes: 0 }
+    this.query = this.tracked.some((tracked) => tracked.queries)
+      ? { matches: { ranges: [], values: [] }, budget: newBudget() }
       : undefined;
   }
 
   get retainedValues(): number {
-    let retained = this.collection?.values.length ?? 0;
+    let retained = this.query?.matches.values.length ?? 0;
     for (const tracked of this.tracked) {
-      for (const watch of tracked.watches) {
-        if (watch.kind === 'all') {
-          retained += watch.values.length;
-        }
+      for (const watch of allWatches(tracked)) {
+        retained += watch.matches.values.length;
       }
     }
     return retained;
+  }
+
+  get retainedRanges(): number {
+    let retained = this.query?.matches.ranges.length ?? 0;
+    for (const tracked of this.tracked) {
+      for (const watch of allWatches(tracked)) {
+        retained += watch.matches.ranges.length;
+      }
+    }
+    return retained / 2;
   }
 
   head(head: ResponseHead): void {
     this.response = headValues(head);
     for (const tracked of this.tracked) {
       if (!tracked.settled && tracked.timing === 'head') {
-        this.settle(tracked, this.evaluateNow(tracked, headPhase));
+        this.settle(tracked, inserted(this.evaluateNow(tracked, headPhase)));
       }
     }
   }
@@ -274,7 +359,7 @@ export class CaptureTracker {
     if (event.kind !== 'json' && event.kind !== 'text') {
       return;
     }
-    let changed = this.collect(event);
+    let changed = this.collectQuery(event);
     if (this.watching.length === 0) {
       return;
     }
@@ -288,7 +373,7 @@ export class CaptureTracker {
         this.fail(tracked, overflow);
         changed = true;
       } else if (matchedNow(tracked)) {
-        this.settle(tracked, this.evaluateNow(tracked, eventPhase));
+        this.settle(tracked, inserted(this.evaluateNow(tracked, eventPhase)));
         changed = true;
       }
     }
@@ -316,52 +401,100 @@ export class CaptureTracker {
       for (const tracked of pending) {
         this.fail(tracked, this.endReason(end, tracked.definition.name));
       }
-      this.collection = undefined;
+      this.query = undefined;
       return;
     }
-    const streamed = end.format === 'sse' || end.format === 'ndjson';
-    const values = this.collection?.values ?? [];
-    this.collection = undefined;
-    let subject: BodySubject;
-    let phase: Phase;
-    if (streamed) {
-      const reply = pending.some((tracked) => readsSource(tracked, 'text'))
-        ? await end.readReply().catch(() => undefined)
-        : undefined;
-      subject = { kind: 'events', values };
-      phase = {
-        events: 'streamed',
-        reply:
-          reply === undefined
-            ? { present: false, reason: replyUnavailableReason }
-            : { present: true, value: reply, path: '' },
-        body: eventPhase.body,
-      };
-    } else {
-      const needsBody = pending.some((tracked) => tracked.queries || readsSource(tracked, 'body'));
-      const read = needsBody ? await bodySubject(end) : undefined;
-      subject = read ?? { kind: 'body', bytes: new Uint8Array(), contentType: end.contentType };
-      phase = {
+    const format = end.format === 'sse' || end.format === 'ndjson' ? end.format : undefined;
+    const subject =
+      format === undefined
+        ? await this.bodyPhase(end, pending)
+        : await this.streamPhase(end, format, pending);
+    const jobs: TrackedJob[] = [];
+    for (const tracked of pending) {
+      const job = this.job(tracked, subject);
+      if (job === undefined) {
+        this.fail(tracked, eventsUnavailableReason);
+      } else {
+        jobs.push(job);
+      }
+    }
+    const results = await evaluateJobs(subject.subject, jobs, this.workerFile, {
+      signal: end.signal,
+    });
+    for (const [job, result] of results) {
+      this.settle(job.tracked, result);
+    }
+  }
+
+  private async bodyPhase(
+    end: CompletedEnd,
+    pending: readonly Tracked[],
+  ): Promise<{ subject: BodySubject; phase: Phase; path: undefined }> {
+    const needsBody = pending.some((tracked) => tracked.queries || readsSource(tracked, 'body'));
+    const read = needsBody ? await bodySubject(end) : undefined;
+    return {
+      subject: read ?? { kind: 'body', bytes: new Uint8Array(), contentType: end.contentType },
+      phase: {
         events: 'none',
         reply: { present: false, reason: notAnEventStreamReason },
         body:
           needsBody && read === undefined
             ? { present: false, reason: bodyUnavailableReason }
             : undefined,
-      };
+      },
+      path: undefined,
+    };
+  }
+
+  private async streamPhase(
+    end: CompletedEnd,
+    format: 'sse' | 'ndjson',
+    pending: readonly Tracked[],
+  ): Promise<{ subject: BodySubject; phase: Phase; path: string | undefined }> {
+    const reply = pending.some((tracked) => readsSource(tracked, 'text'))
+      ? await replyOutcome(end)
+      : undefined;
+    const path =
+      this.rangesEnd > 0 ? await end.spillPath(this.rangesEnd).catch(() => undefined) : undefined;
+    const query = this.query;
+    this.query = undefined;
+    return {
+      subject: {
+        kind: 'events',
+        format,
+        path,
+        query: query === undefined ? undefined : collected(query.matches, query.budget, path),
+      },
+      phase: { events: 'streamed', reply, body: eventPhase.body },
+      path,
+    };
+  }
+
+  private job(
+    tracked: Tracked,
+    { subject, phase, path }: { subject: BodySubject; phase: Phase; path: string | undefined },
+  ): TrackedJob | undefined {
+    const gathered = new Map<string, Collected>();
+    if (phase.events === 'streamed') {
+      if (tracked.queries && subject.kind === 'events' && subject.query === undefined) {
+        return undefined;
+      }
+      for (const watch of allWatches(tracked)) {
+        const matches = collected(watch.matches, tracked.budget, path);
+        if (matches === undefined) {
+          return undefined;
+        }
+        gathered.set(sourceKey(watch.node), matches);
+      }
     }
-    const jobs: TrackedJob[] = pending.map((tracked) => ({
+    return {
       tracked,
       name: tracked.definition.name,
       expression: tracked.definition.expression,
       text: tracked.definition.text,
       known: this.known(tracked, phase),
-    }));
-    for (const [job, outcome] of await evaluateJobs(subject, jobs, this.workerFile, {
-      signal: end.signal,
-    })) {
-      this.settle(job.tracked, outcome);
-    }
+      collected: gathered,
+    };
   }
 
   private endReason(end: Exclude<RunEnd, { kind: 'completed' }>, name: string): string {
@@ -375,27 +508,24 @@ export class CaptureTracker {
     }
   }
 
-  private collect(event: StreamEvent): boolean {
-    const collection = this.collection;
-    if (collection === undefined || event.kind !== 'json') {
+  private collectQuery(event: StreamEvent): boolean {
+    const query = this.query;
+    if (query === undefined || event.kind !== 'json') {
       return false;
     }
-    const overflow =
-      collection.values.length === maxCollectedEvents
-        ? tooManyStreamEventsReason
-        : collection.bytes + event.length > maxQueriedBytes
-          ? tooManyStreamBytesReason
-          : undefined;
+    const overflow = collect(query.matches, query.budget, event, () => {
+      query.matches.values = [];
+    });
     if (overflow === undefined) {
-      collection.values.push(event.value);
-      collection.bytes += event.length;
+      this.rangesEnd = event.offset + event.length;
       return false;
     }
-    this.collection = undefined;
+    this.query = undefined;
+    const reason = overflow === 'events' ? tooManyStreamEventsReason : tooManyStreamBytesReason;
     for (const tracked of this.tracked) {
-      const query = tracked.sources.find((node) => node.kind === 'jsonpath');
-      if (!tracked.settled && query !== undefined) {
-        this.fail(tracked, overflow(this.sourceText(tracked, query)));
+      const node = tracked.sources.find((source) => source.kind === 'jsonpath');
+      if (!tracked.settled && node !== undefined) {
+        this.fail(tracked, reason(this.sourceText(tracked, node)));
       }
     }
     return true;
@@ -423,16 +553,23 @@ export class CaptureTracker {
         case 'count':
           watch.count += 1;
           break;
-        case 'all':
-          if (watch.values.length === maxCollectedEvents) {
-            return tooManyMatchesReason(this.sourceText(tracked, watch.node));
+        case 'all': {
+          const overflow = collect(watch.matches, tracked.budget, event, () => {
+            for (const other of allWatches(tracked)) {
+              other.matches.values = [];
+            }
+          });
+          if (overflow !== undefined) {
+            const sources = allWatches(tracked)
+              .map((other) => this.sourceText(tracked, other.node))
+              .join(' and ');
+            return overflow === 'events'
+              ? tooManyMatchesReason(sources)
+              : tooManyMatchBytesReason(sources);
           }
-          if (watch.bytes + event.length > maxCollectedBytes) {
-            return tooManyMatchBytesReason(this.sourceText(tracked, watch.node));
-          }
-          watch.values.push(event.value);
-          watch.bytes += event.length;
+          this.rangesEnd = event.offset + event.length;
           break;
+        }
       }
     }
     return undefined;
@@ -442,7 +579,7 @@ export class CaptureTracker {
     return tracked.definition.text.slice(node.span.start, node.span.end);
   }
 
-  private watchOutcome(tracked: Tracked, watch: Watch): Outcome {
+  private watchOutcome(tracked: Tracked, watch: Exclude<Watch, { kind: 'all' }>): Outcome {
     switch (watch.kind) {
       case 'first':
       case 'last':
@@ -462,8 +599,6 @@ export class CaptureTracker {
       }
       case 'count':
         return { present: true, value: watch.count, path: '' };
-      case 'all':
-        return { present: true, value: watch.values, path: '' };
     }
   }
 
@@ -494,7 +629,9 @@ export class CaptureTracker {
     }
     if (phase.events === 'streamed') {
       for (const watch of tracked.watches) {
-        known.set(sourceKey(watch.node), this.watchOutcome(tracked, watch));
+        if (watch.kind !== 'all') {
+          known.set(sourceKey(watch.node), this.watchOutcome(tracked, watch));
+        }
       }
     }
     return known;
@@ -509,26 +646,16 @@ export class CaptureTracker {
     );
   }
 
-  private settle(tracked: Tracked, outcome: Outcome): void {
-    if (!outcome.present) {
-      this.fail(tracked, outcome.reason);
-      return;
-    }
-    const inserted = insertText(outcome.value, maxInsertedLength);
-    if (!inserted.ok) {
-      this.fail(tracked, valueTooLargeReason);
+  private settle(tracked: Tracked, result: Inserted): void {
+    if (!result.present) {
+      this.fail(tracked, result.reason);
       return;
     }
     this.report(tracked, {
       state: 'resolved',
-      text: inserted.text,
+      text: result.text,
       secret: tracked.definition.secret,
-      provenance: {
-        runId: this.run.id,
-        event: outcome.event,
-        path: outcome.path,
-        time: Date.now(),
-      },
+      provenance: { runId: this.run.id, event: result.event, path: result.path, time: Date.now() },
     });
   }
 
@@ -540,7 +667,7 @@ export class CaptureTracker {
     tracked.settled = true;
     tracked.watches = [];
     if (tracked.queries && !this.tracked.some((other) => other.queries && !other.settled)) {
-      this.collection = undefined;
+      this.query = undefined;
     }
     this.onResult(tracked.definition.name, result);
   }

@@ -319,13 +319,12 @@ export function startRun(
     const bytes = await spillFile?.readSide();
     return bytes === undefined ? undefined : decoder.decode(bytes);
   };
-  const bodyFile = async (): Promise<{ path: string; length: number } | undefined> => {
+  const spillPath = async (end: number): Promise<string | undefined> => {
     const file = spillFile;
-    const length = state.bodyLength;
-    if (file === undefined || released || file.evicted || file.savedBytes < length) {
+    if (file === undefined || released || file.evicted || file.savedBytes < end) {
       return undefined;
     }
-    return (await file.whenWritten(length)) ? { path: file.path, length } : undefined;
+    return (await file.whenWritten(end)) ? file.path : undefined;
   };
   const endOf = (): RunEnd => {
     const { status, failure, head } = state;
@@ -335,7 +334,11 @@ export function startRun(
         format: session?.format?.format,
         contentType: head === undefined ? undefined : contentTypeOf(head),
         bodyLength: state.bodyLength,
-        bodyFile,
+        spillPath,
+        reply: {
+          recognised: session?.reply.adapter !== undefined,
+          truncated: session?.reply.truncated === true,
+        },
         signal: controller.signal,
         readBody,
         readReply,

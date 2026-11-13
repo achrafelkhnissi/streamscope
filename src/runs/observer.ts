@@ -8,7 +8,8 @@ export type RunEnd =
       format: StreamFormat | undefined;
       contentType: string | undefined;
       bodyLength: number;
-      bodyFile: () => Promise<{ path: string; length: number } | undefined>;
+      spillPath: (end: number) => Promise<string | undefined>;
+      reply: { recognised: boolean; truncated: boolean };
       signal: AbortSignal;
       readBody: (maxBytes: number) => Promise<Uint8Array | undefined>;
       readReply: () => Promise<string | undefined>;

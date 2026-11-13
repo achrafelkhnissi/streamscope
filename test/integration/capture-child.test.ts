@@ -81,12 +81,14 @@ describe('capture child processes', () => {
         bytes: new TextEncoder().encode('{"items":[{"id":12345678901234567890}]}'),
         contentType: 'application/json',
       },
-      jobs: [{ name: 'id', text: 'jsonpath("$.items[0].id")', known: new Map() }],
+      jobs: [
+        { name: 'id', text: 'jsonpath("$.items[0].id")', known: new Map(), collected: new Map() },
+      ],
     });
 
     assert.deepEqual(reply, {
       name: 'id',
-      outcome: { present: true, value: 12345678901234567890n, path: '$.items[0].id' },
+      result: { present: true, text: '12345678901234567890', path: '$.items[0].id' },
     });
   });
 });

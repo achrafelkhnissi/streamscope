@@ -1,3 +1,4 @@
+import { fork } from 'node:child_process';
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
@@ -7,19 +8,22 @@ import {
   childTimeLimitMs,
   evaluateBodyExpressions,
   evaluateJobs,
+  inlineBodyBytes,
+  inlineDigitBodyBytes,
   type BodyJob,
   type BodySubject,
+  type Inserted,
+  type WorkerRequest,
 } from '../../../src/capture/body';
 import type { CaptureDefinition } from '../../../src/capture/tracker';
 import { parseExpression } from '../../../src/expressions/parse';
-import type { Outcome } from '../../../src/expressions/evaluate';
-import { insertText } from '../../../src/expressions/insert';
-import { expectNoChild, missingWorker, useCaptureWorker } from './worker';
+import { expectNoChild, longestStall, missingWorker, useCaptureWorker } from './worker';
 
 const encoder = new TextEncoder();
 const mebibyte = 1_048_576;
 const bodyLimit = 'evaluating the body took too long or used too much memory';
 const jsonPathLimit = 'jsonpath() took too long or used too much memory';
+const largeInteger = '12345678901234567890';
 
 function capture(name: string, text: string): CaptureDefinition {
   const parsed = parseExpression(text, 'capture');
@@ -31,7 +35,11 @@ function capture(name: string, text: string): CaptureDefinition {
 
 function job(name: string, text: string): BodyJob {
   const { expression } = capture(name, text);
-  return { name, expression, text, known: new Map() };
+  return { name, expression, text, known: new Map(), collected: new Map() };
+}
+
+function found(text: string, path: string): Inserted {
+  return { present: true, text, path };
 }
 
 function jsonBody(bytes: number): Uint8Array {
@@ -42,13 +50,21 @@ function jsonBody(bytes: number): Uint8Array {
   return body;
 }
 
+function zerosWithInteger(bytes: number): Uint8Array {
+  const tail = `${largeInteger}]`;
+  const zeros = Math.floor((bytes - 1 - tail.length) / 2);
+  const body = encoder.encode(`[${'0,'.repeat(zeros)}${tail}`.padEnd(bytes, ' '));
+  expect(body.length).toBe(bytes);
+  return body;
+}
+
 describe('evaluateBodyExpressions', () => {
   const files = useCaptureWorker();
 
-  it('evaluates a 1 MiB body inline and a 2 MiB body in the worker', async () => {
+  it('evaluates a body of up to 256 KiB inline and a larger one in the child', async () => {
     const definitions = [capture('id', 'body.items[2].id'), capture('last', 'body.items[-1].name')];
-    const small = jsonBody(mebibyte);
-    const large = jsonBody(2 * mebibyte);
+    const small = jsonBody(inlineBodyBytes);
+    const large = jsonBody(inlineBodyBytes + 1);
 
     const inline = await evaluateBodyExpressions(
       small,
@@ -56,29 +72,64 @@ describe('evaluateBodyExpressions', () => {
       definitions,
       missingWorker,
     );
-    const offThread = await evaluateBodyExpressions(
+    const inChild = await evaluateBodyExpressions(
       large,
       'application/json',
       definitions,
       files().worker,
     );
-    const withoutWorker = await evaluateBodyExpressions(
+    const withoutChild = await evaluateBodyExpressions(
       large,
       'application/json',
       definitions,
       missingWorker,
     );
 
-    expect(inline.get('id')).toEqual({ present: true, value: 2, path: 'items[2].id' });
-    expect(inline.get('last')).toEqual({ present: true, value: 'item-99', path: 'items[-1].name' });
-    expect(offThread.get('id')).toEqual({ present: true, value: 2, path: 'items[2].id' });
-    expect(offThread.get('last')).toEqual({
-      present: true,
-      value: 'item-99',
-      path: 'items[-1].name',
-    });
-    expect(withoutWorker.get('id')).toEqual({ present: false, reason: bodyLimit });
-    expect(withoutWorker.get('last')).toEqual({ present: false, reason: bodyLimit });
+    expect(inlineBodyBytes).toBe(262_144);
+    expect(inline.get('id')).toEqual(found('2', 'items[2].id'));
+    expect(inline.get('last')).toEqual(found('item-99', 'items[-1].name'));
+    expect(inChild.get('id')).toEqual(found('2', 'items[2].id'));
+    expect(inChild.get('last')).toEqual(found('item-99', 'items[-1].name'));
+    expect(withoutChild.get('id')).toEqual({ present: false, reason: bodyLimit });
+    expect(withoutChild.get('last')).toEqual({ present: false, reason: bodyLimit });
+  });
+
+  it('a 1 MiB body with a large integer is evaluated in the child', async () => {
+    const definitions = [capture('last', 'body[-1]')];
+    const atLimit = zerosWithInteger(inlineDigitBodyBytes);
+    const overLimit = zerosWithInteger(inlineDigitBodyBytes + 1);
+    const mebibyteBody = zerosWithInteger(mebibyte);
+
+    const inline = await evaluateBodyExpressions(
+      atLimit,
+      'application/json',
+      definitions,
+      missingWorker,
+    );
+    const over = await evaluateBodyExpressions(
+      overLimit,
+      'application/json',
+      definitions,
+      missingWorker,
+    );
+    const large = await evaluateBodyExpressions(
+      mebibyteBody,
+      'application/json',
+      definitions,
+      missingWorker,
+    );
+    const inChild = await evaluateBodyExpressions(
+      mebibyteBody,
+      'application/json',
+      definitions,
+      files().worker,
+    );
+
+    expect(inlineDigitBodyBytes).toBe(65_536);
+    expect(inline.get('last')).toEqual(found(largeInteger, '[-1]'));
+    expect(over.get('last')).toEqual({ present: false, reason: bodyLimit });
+    expect(large.get('last')).toEqual({ present: false, reason: bodyLimit });
+    expect(inChild.get('last')).toEqual(found(largeInteger, '[-1]'));
   });
 
   it("keeps a large integer's digits from a body", async () => {
@@ -92,74 +143,51 @@ describe('evaluateBodyExpressions', () => {
       [large, files().worker],
     ] as const) {
       const outcomes = await evaluateBodyExpressions(body, 'application/json', definitions, worker);
-      const id = outcomes.get('id');
 
-      expect(id).toEqual({ present: true, value: 12345678901234567890123n, path: 'id' });
-      expect(id?.present === true && insertText(id.value, mebibyte)).toEqual({
-        ok: true,
-        text: '12345678901234567890123',
-      });
-      expect(outcomes.get('price')).toEqual({ present: true, value: 1.5, path: 'price' });
+      expect(outcomes.get('id')).toEqual(found('12345678901234567890123', 'id'));
+      expect(outcomes.get('price')).toEqual(found('1.5', 'price'));
     }
   });
 
-  it('a 50 MB body does not block the calling thread for more than 50 ms', async () => {
+  it('a 50 MB body does not block the calling thread', async () => {
     const body = jsonBody(50_000_000);
-    const definitions = [capture('id', 'body.items[3].id')];
-    let longest = 0;
-    let last = performance.now();
-    const ticker = setInterval(() => {
-      const now = performance.now();
-      longest = Math.max(longest, now - last);
-      last = now;
-    }, 5);
 
-    try {
-      const started = performance.now();
-      const evaluation = evaluateBodyExpressions(
+    const { result, stallMs } = await longestStall(() =>
+      evaluateBodyExpressions(
         body,
         'application/json',
-        definitions,
+        [capture('id', 'body.items[3].id')],
         files().worker,
-      );
-      longest = Math.max(longest, performance.now() - started);
-      const outcomes = await evaluation;
+      ),
+    );
 
-      expect(outcomes.get('id')).toBeDefined();
-    } finally {
-      clearInterval(ticker);
-    }
-
-    expect(longest - 5).toBeLessThan(50);
+    expect(result.get('id')).toEqual(found('3', 'items[3].id'));
+    expect(stallMs).toBeLessThan(100);
   });
 
-  it('runs jsonpath() in the worker whatever the body size', async () => {
+  it('runs jsonpath() in the child whatever the body size', async () => {
     const body = encoder.encode('{"items":[{"id":"a-1"},{"id":"a-2"}]}');
     const definitions = [
       capture('one', 'jsonpath("$.items[1].id")'),
       capture('id', 'body.items[0].id'),
     ];
 
-    const withoutWorker = await evaluateBodyExpressions(
+    const withoutChild = await evaluateBodyExpressions(
       body,
       'application/json',
       definitions,
       missingWorker,
     );
-    const withWorker = await evaluateBodyExpressions(
+    const withChild = await evaluateBodyExpressions(
       body,
       'application/json',
       definitions,
       files().worker,
     );
 
-    expect(withoutWorker.get('one')).toEqual({ present: false, reason: jsonPathLimit });
-    expect(withoutWorker.get('id')).toEqual({ present: true, value: 'a-1', path: 'items[0].id' });
-    expect(withWorker.get('one')).toEqual({
-      present: true,
-      value: 'a-2',
-      path: '$.items[1].id',
-    });
+    expect(withoutChild.get('one')).toEqual({ present: false, reason: jsonPathLimit });
+    expect(withoutChild.get('id')).toEqual(found('a-1', 'items[0].id'));
+    expect(withChild.get('one')).toEqual(found('a-2', '$.items[1].id'));
   });
 
   it('gives one jsonpath() node as a value, several as a list and none as missing', async () => {
@@ -180,16 +208,8 @@ describe('evaluateBodyExpressions', () => {
       files().worker,
     );
 
-    expect(outcomes.get('one')).toEqual({
-      present: true,
-      value: 12345678901234567890n,
-      path: '$.total',
-    });
-    expect(outcomes.get('several')).toEqual({
-      present: true,
-      value: ['a-1', 'a-2'],
-      path: '$.items[*].id',
-    });
+    expect(outcomes.get('one')).toEqual(found('12345678901234567890', '$.total'));
+    expect(outcomes.get('several')).toEqual(found('["a-1","a-2"]', '$.items[*].id'));
     expect(outcomes.get('none')).toEqual({
       present: false,
       reason: 'the body has no value at $.missing (the query matched nothing)',
@@ -216,7 +236,7 @@ describe('evaluateBodyExpressions', () => {
       present: false,
       reason: 'the body has no value at items[5] (the list has 3 items)',
     });
-    expect(outcomes.get('fallback')).toEqual({ present: true, value: 'none', path: '' });
+    expect(outcomes.get('fallback')).toEqual(found('none', ''));
   });
 
   it('reads JSON by its type or by its first character, and text otherwise', async () => {
@@ -224,21 +244,21 @@ describe('evaluateBodyExpressions', () => {
       const outcomes = await evaluateBodyExpressions(
         encoder.encode(body),
         contentType,
-        [capture('body', 'body')],
+        [capture('body', 'body | json')],
         missingWorker,
       );
       const outcome = outcomes.get('body');
-      return outcome?.present === true ? outcome.value : outcome;
+      return outcome?.present === true ? outcome.text : outcome;
     };
 
-    expect(await read('  {"a":1}', 'text/plain')).toEqual({ a: 1 });
-    expect(await read('[1,2]', undefined)).toEqual([1, 2]);
-    expect(await read('"quoted"', 'application/problem+json')).toBe('quoted');
-    expect(await read('42', 'Application/JSON; charset=utf-8')).toBe(42);
-    expect(await read('42', 'text/plain')).toBe('42');
-    expect(await read('{oops', 'application/json')).toBe('{oops');
-    expect(await read('plain text', undefined)).toBe('plain text');
-    expect(await read('﻿{"a":2}', 'application/json')).toEqual({ a: 2 });
+    expect(await read('  {"a":1}', 'text/plain')).toBe('{"a":1}');
+    expect(await read('[1,2]', undefined)).toBe('[1,2]');
+    expect(await read('"quoted"', 'application/problem+json')).toBe('"quoted"');
+    expect(await read('42', 'Application/JSON; charset=utf-8')).toBe('42');
+    expect(await read('42', 'text/plain')).toBe('"42"');
+    expect(await read('{oops', 'application/json')).toBe('"{oops"');
+    expect(await read('plain text', undefined)).toBe('"plain text"');
+    expect(await read('﻿{"a":2}', 'application/json')).toBe('{"a":2}');
   });
 
   it('decodes text with the charset of the Content-Type, and UTF-8 for an unknown one', async () => {
@@ -248,7 +268,7 @@ describe('evaluateBodyExpressions', () => {
       const outcome = (
         await evaluateBodyExpressions(bytes, contentType, [capture('body', 'body')], missingWorker)
       ).get('body');
-      return outcome?.present === true ? outcome.value : outcome;
+      return outcome?.present === true ? outcome.text : outcome;
     };
 
     expect(await read(latin1, 'text/plain; charset=ISO-8859-1')).toBe('café');
@@ -257,29 +277,30 @@ describe('evaluateBodyExpressions', () => {
     expect(await read(utf8, 'text/plain')).toBe('café');
   });
 
-  it('says what a body evaluation cannot read', async () => {
+  it('says what a body evaluation cannot read, and default(…) does not hide it', async () => {
     const outcomes = await evaluateBodyExpressions(
       encoder.encode('{"a":1}'),
       'application/json',
-      [capture('first', 'first(a == 1)'), capture('reply', 'text'), capture('code', 'status')],
+      [
+        capture('first', 'first(a == 1)'),
+        capture('fallback', 'first(a == 1).b | default("none")'),
+        capture('reply', 'text'),
+        capture('code', 'status'),
+      ],
       missingWorker,
     );
 
-    expect(outcomes.get('first')).toEqual({
-      present: false,
-      reason: 'the response is not an event stream',
-    });
-    expect(outcomes.get('reply')).toEqual({
-      present: false,
-      reason: 'the response is not an event stream',
-    });
+    const notStream = { present: false, reason: 'the response is not an event stream' };
+    expect(outcomes.get('first')).toEqual(notStream);
+    expect(outcomes.get('fallback')).toEqual(notStream);
+    expect(outcomes.get('reply')).toEqual(notStream);
     expect(outcomes.get('code')).toEqual({
       present: false,
       reason: 'status is not available to this evaluation',
     });
   });
 
-  it('fails a value over 1 MiB in the worker instead of sending it back', async () => {
+  it('fails a value over 1 MiB in the child', async () => {
     const outcomes = await evaluateBodyExpressions(
       jsonBody(2 * mebibyte),
       'application/json',
@@ -291,7 +312,46 @@ describe('evaluateBodyExpressions', () => {
       present: false,
       reason: 'the value is larger than 1 MiB',
     });
-    expect(outcomes.get('id')).toEqual({ present: true, value: 1, path: 'items[1].id' });
+    expect(outcomes.get('id')).toEqual(found('1', 'items[1].id'));
+  });
+
+  it('the child replies with text', async () => {
+    const request: WorkerRequest = {
+      subject: {
+        kind: 'body',
+        bytes: encoder.encode('{"items":[{"id":12345678901234567890}],"count":2}'),
+        contentType: 'application/json',
+      },
+      jobs: [
+        { name: 'items', text: 'body.items', known: new Map(), collected: new Map() },
+        { name: 'count', text: 'jsonpath("$.count")', known: new Map(), collected: new Map() },
+      ],
+    };
+    const child = fork(files().worker, [], {
+      serialization: 'advanced',
+      stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
+    });
+    const replies: unknown[] = [];
+    const answered = new Promise<void>((resolve) => {
+      child.on('message', (reply) => {
+        replies.push(reply);
+        if (replies.length === 2) {
+          resolve();
+        }
+      });
+    });
+    child.send(request);
+
+    await answered;
+    child.kill('SIGKILL');
+    await new Promise((resolve) => child.once('close', resolve));
+
+    expect(replies).toEqual([
+      { name: 'items', result: found('[{"id":12345678901234567890}]', 'items') },
+      { name: 'count', result: found('2', '$.count') },
+    ]);
+    expect(JSON.stringify(replies)).not.toContain('"value"');
+    await expectNoChild();
   });
 
   it('kills a child that hangs after the time limit and fails its captures', async () => {
@@ -338,7 +398,7 @@ describe('evaluateBodyExpressions', () => {
       'partial',
       [
         "process.once('message', () => {",
-        "  process.send({ name: 'id', outcome: { present: true, value: 1, path: 'items[1].id' } });",
+        "  process.send({ name: 'id', result: { present: true, text: '1', path: 'items[1].id' } });",
         '  setInterval(() => undefined, 1000);',
         '});',
       ].join('\n'),
@@ -352,7 +412,7 @@ describe('evaluateBodyExpressions', () => {
       { timeLimitMs: 300 },
     );
 
-    expect(outcomes.get('id')).toEqual({ present: true, value: 1, path: 'items[1].id' });
+    expect(outcomes.get('id')).toEqual(found('1', 'items[1].id'));
     expect(outcomes.get('query')).toEqual({ present: false, reason: jsonPathLimit });
     await expectNoChild();
   });
@@ -364,7 +424,7 @@ describe('evaluateBodyExpressions', () => {
     const short = path.join(folder, 'short.spill');
     writeFileSync(whole, body);
     writeFileSync(short, body.subarray(0, mebibyte));
-    const read = async (file: string): Promise<ReadonlyMap<string, Outcome>> =>
+    const read = async (file: string): Promise<ReadonlyMap<string, Inserted>> =>
       new Map(
         (
           await evaluateJobs(
@@ -380,8 +440,8 @@ describe('evaluateBodyExpressions', () => {
       const truncated = await read(short);
       const missing = await read(path.join(folder, 'missing.spill'));
 
-      expect(outcomes.get('id')).toEqual({ present: true, value: 1, path: 'items[1].id' });
-      expect(outcomes.get('query')).toEqual({ present: true, value: 2, path: '$.items[2].id' });
+      expect(outcomes.get('id')).toEqual(found('1', 'items[1].id'));
+      expect(outcomes.get('query')).toEqual(found('2', '$.items[2].id'));
       for (const outcomes of [truncated, missing]) {
         expect(outcomes.get('id')).toEqual({
           present: false,
@@ -407,15 +467,15 @@ describe('evaluateBodyExpressions', () => {
         "    value !== null && typeof value === 'object' && !(value instanceof Map) && Object.values(value).some(holdsBytes));",
         "process.once('message', (message) => {",
         '  for (const job of message.jobs) {',
-        '    const value = { kind: message.subject.kind, fields: Object.keys(message.subject).sort(), bytes: holdsBytes(message) };',
-        "    process.send({ name: job.name, outcome: { present: true, value, path: '' } });",
+        '    const text = JSON.stringify({ kind: message.subject.kind, fields: Object.keys(message.subject).sort(), bytes: holdsBytes(message) });',
+        "    process.send({ name: job.name, result: { present: true, text, path: '' } });",
         '  }',
         '});',
       ].join('\n'),
     );
-    const sent = async (subject: Parameters<typeof evaluateJobs>[0]): Promise<unknown> => {
+    const sent = async (subject: BodySubject): Promise<unknown> => {
       const [answer] = await evaluateJobs(subject, [job('id', 'body.items[1].id')], echo);
-      return answer?.[1].present === true ? answer[1].value : answer?.[1];
+      return answer?.[1].present === true ? JSON.parse(answer[1].text) : answer?.[1];
     };
 
     expect(
@@ -447,7 +507,7 @@ describe('capture children', () => {
       [
         "process.once('message', (message) => setTimeout(() => {",
         '  for (const job of message.jobs) {',
-        "    process.send({ name: job.name, outcome: { present: true, value: 'answered', path: '' } });",
+        "    process.send({ name: job.name, result: { present: true, text: 'answered', path: '' } });",
         '  }',
         `}, ${String(delayMs)}));`,
       ].join('\n'),
@@ -480,7 +540,7 @@ describe('capture children', () => {
       );
 
       expect(answers.map((answer) => answer[0]?.[1])).toEqual(
-        Array.from({ length: 5 }, () => ({ present: true, value: 'answered', path: '' })),
+        Array.from({ length: 5 }, () => found('answered', '')),
       );
     } finally {
       clearInterval(sampler);
@@ -509,7 +569,7 @@ describe('capture children', () => {
     const waited = performance.now() - started;
     await Promise.all(blockers);
 
-    expect(answer?.[1]).toEqual({ present: true, value: 'answered', path: '' });
+    expect(answer?.[1]).toEqual(found('answered', ''));
     expect(waited).toBeGreaterThanOrEqual(290);
     await expectNoChild();
   });

@@ -1307,6 +1307,7 @@ describe('the observer sees head, events and exactly one end on every exit path'
     expect(end.contentType).toBe('application/x-ndjson');
     expect(await end.readReply()).toBe(await run.readReply());
     expect((await end.readBody(1024))?.length).toBe(0);
+    expect(end.reply).toEqual({ recognised: true, truncated: false });
   });
 
   it('completed: a JSON body that readBody returns whole or cut', async () => {
@@ -1333,9 +1334,10 @@ describe('the observer sees head, events and exactly one end on every exit path'
     );
     expect(Buffer.from((await end.readBody(4)) ?? []).toString()).toBe('{"to');
     expect(end.bodyLength).toBe(19);
+    expect(end.reply).toEqual({ recognised: false, truncated: false });
   });
 
-  it('completed: names the spill file that holds the whole body, while it does', async () => {
+  it('completed: names the spill file while it holds the bytes asked for', async () => {
     const body = Buffer.from(JSON.stringify({ padding: 'x'.repeat(2 * 1_048_576) }));
     const server = await track(
       startHttpServer((_request, response) => {
@@ -1355,14 +1357,14 @@ describe('the observer sees head, events and exactly one end on every exit path'
       throw new Error('expected completed ends');
     }
     expect(end.bodyLength).toBe(body.length);
-    const file = await end.bodyFile();
-    expect(file?.length).toBe(body.length);
-    expect(readFileSync(file?.path ?? '').equals(body)).toBe(true);
-    expect(await without.bodyFile()).toBeUndefined();
+    const file = await end.spillPath(body.length);
+    expect(readFileSync(file ?? '').equals(body)).toBe(true);
+    expect(await end.spillPath(body.length + 1)).toBeUndefined();
+    expect(await without.spillPath(body.length)).toBeUndefined();
     expect(end.signal.aborted).toBe(false);
     await run.release();
     expect(end.signal.aborted).toBe(true);
-    expect(await end.bodyFile()).toBeUndefined();
+    expect(await end.spillPath(body.length)).toBeUndefined();
   });
 
   it('failed: a run that never reached headers', async () => {

@@ -14,7 +14,7 @@ export interface Subject {
 
 export const maxCollectedEvents = 10_000;
 export const maxCollectedBytes = 16_777_216;
-export const maxQueriedBytes = 1_048_576;
+export const maxSentValueBytes = 1_048_576;
 
 export const notAnEventStreamReason = 'the response is not an event stream';
 export const eventStreamBodyReason =
@@ -24,9 +24,22 @@ export const bodyLimitReason = 'evaluating the body took too long or used too mu
 export const bodyUnavailableReason = 'the body is no longer available';
 export const evaluationCancelledReason = 'evaluating the capture was cancelled';
 export const replyUnavailableReason = 'the reply text is no longer available';
+export const eventsUnavailableReason = 'the events are no longer available for this capture';
+export const noReplyReason = 'the response has no recognised reply';
+export const replyCutOffReason = 'the reply is larger than 1 MiB';
 export const noHeadersReason = 'the response has no headers';
 export const responsePendingReason = 'the response has not ended yet';
 export const checkSourceReason = 'exists(…), before(…) and unique(…) work only in # @expect';
+
+export const hardReasons: ReadonlySet<string> = new Set([
+  notAnEventStreamReason,
+  eventStreamBodyReason,
+  bodyUnavailableReason,
+  eventsUnavailableReason,
+  replyUnavailableReason,
+  noReplyReason,
+  replyCutOffReason,
+]);
 
 const missingPrefix = 'has no value';
 const genericSubject: Subject = { text: 'the expression', plural: false };
@@ -86,7 +99,7 @@ export function tooManyStreamEventsReason(source: string): string {
 }
 
 export function tooManyStreamBytesReason(source: string): string {
-  return `${source} reads at most 1 MiB of events, and the stream has more`;
+  return `${source} reads at most 16 MiB of events, and the stream has more`;
 }
 
 export function unavailableSourceReason(source: string): string {
