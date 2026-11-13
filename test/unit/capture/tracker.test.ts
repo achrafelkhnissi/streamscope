@@ -1777,6 +1777,35 @@ describe('evaluation paced by slices and backpressure', () => {
     return state;
   }
 
+  it('a run with a continuous backlog does not starve another run of the shared slice', () => {
+    const { budget, tasks } = stepped(4);
+    const busy = harness([capture('counted', 'count(type == "x")')], missingWorker, budget);
+    const quiet = harness(
+      [capture('threadId', 'first(type == "RUN_STARTED").threadId')],
+      missingWorker,
+      budget,
+    );
+    busy.tracker.head(ndjsonHead);
+    quiet.tracker.head(ndjsonHead);
+    for (let n = 0; n < 3_000; n += 1) {
+      busy.send({ type: 'x', n }, { length: 38 });
+    }
+    runTasks(tasks, 2);
+
+    quiet.send({ type: 'RUN_STARTED', threadId: 'thread-1' });
+    let rounds = 0;
+    while (!quiet.results.has('threadId') && rounds < 100) {
+      runTasks(tasks, 2);
+      rounds += 1;
+    }
+
+    expect(quiet.results.get('threadId')).toEqual(resolved('thread-1', 1, 'threadId'));
+    expect(rounds).toBeLessThanOrEqual(2);
+    expect(busy.tracker.queued).toBeGreaterThan(2_000);
+    runTasks(tasks);
+    expect(busy.tracker.queued).toBe(0);
+  });
+
   it('first(…) resolves synchronously at its event while nothing is queued', () => {
     const run = harness(
       [capture('threadId', 'first(type == "RUN_STARTED").threadId')],

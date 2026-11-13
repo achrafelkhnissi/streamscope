@@ -157,15 +157,19 @@ interface TrackedRun {
   results: Map<string, CaptureResult>;
   events: number | undefined;
   pacing: Pacing;
+  settledAt: Map<string, number>;
+  endedAt: number;
 }
 
 async function trackedRun(url: string, definitions: CaptureDefinition[]): Promise<TrackedRun> {
   const results = new Map<string, CaptureResult>();
+  const settledAt = new Map<string, number>();
   const tracker = new CaptureTracker(
     { id: 1, label: 'startRun' },
     definitions,
     (name, result) => {
       results.set(name, result);
+      settledAt.set(name, performance.now());
     },
     missingWorker,
     hostBudget,
@@ -187,10 +191,11 @@ async function trackedRun(url: string, definitions: CaptureDefinition[]): Promis
   const run = startRun({ ...runInput([`GET ${url}`]), observer }, pacedDependencies(pacing));
   const snapshot = await run.done;
   await ended;
+  const endedAt = performance.now();
   expect(snapshot.status).toBe('completed');
   const events = snapshot.stream?.store.count;
   await run.release();
-  return { results, events, pacing };
+  return { results, events, pacing, settledAt, endedAt };
 }
 
 describe('many cheap captures on a fast stream of small events', () => {
@@ -244,6 +249,36 @@ describe('many cheap captures on a fast stream of small events', () => {
       expectSmallEventResults(results, captures);
       expect(pacing.deliveredWhilePaused).toBe(0);
     }
+  }, 60_000);
+});
+
+describe('runs sharing the capture slice', () => {
+  it('a quiet run resolves its first() capture while a busy run is still evaluating', async () => {
+    const busyStream = smallEvents(8 * mebibyte);
+    const quietStream = agentStream(65_536);
+    const server = await startHttpServer((request, response) => {
+      response.writeHead(200, { 'Content-Type': 'application/x-ndjson' });
+      response.end(request.url === '/quiet' ? quietStream.body : busyStream.body);
+    });
+    servers.push(server);
+    const busyCaptures = smallEventCaptures(64, busyStream.events);
+
+    const busy = trackedRun(
+      `${server.url}/busy`,
+      busyCaptures.map(({ definition }) => definition),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    const quietStarted = performance.now();
+    const quiet = await trackedRun(`${server.url}/quiet`, [
+      capture('threadId', 'first(type == "RUN_STARTED").threadId'),
+    ]);
+    const busyRun = await busy;
+
+    const quietSettled = quiet.settledAt.get('threadId') ?? Number.POSITIVE_INFINITY;
+    expect(quiet.results.get('threadId')).toMatchObject({ state: 'resolved', text: 'thread-1' });
+    expect(quietSettled - quietStarted).toBeLessThan(500);
+    expect(quietSettled).toBeLessThan(busyRun.endedAt);
+    expectSmallEventResults(busyRun.results, busyCaptures);
   }, 60_000);
 });
 

@@ -21,6 +21,8 @@ export class TaskBudget {
   private open = false;
   private spentMs = 0;
   private since = 0;
+  private readonly turns: (() => void)[] = [];
+  private dispatching = false;
 
   constructor(private readonly clock: TaskClock = realClock) {}
 
@@ -50,8 +52,28 @@ export class TaskBudget {
     this.work.forget();
   }
 
-  afterTask(callback: () => void): void {
-    this.clock.nextTask(callback);
+  requestTurn(turn: () => void): void {
+    this.turns.push(turn);
+    this.scheduleTurns();
+  }
+
+  private scheduleTurns(): void {
+    if (!this.dispatching) {
+      this.dispatching = true;
+      this.clock.nextTask(() => {
+        this.dispatch();
+      });
+    }
+  }
+
+  private dispatch(): void {
+    this.dispatching = false;
+    for (let waiting = this.turns.length; waiting > 0 && this.hasRoom; waiting -= 1) {
+      this.turns.shift()?.();
+    }
+    if (this.turns.length > 0) {
+      this.scheduleTurns();
+    }
   }
 }
 

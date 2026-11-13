@@ -527,7 +527,7 @@ export class CaptureTracker {
   private scheduleDrain(): void {
     if (!this.draining) {
       this.draining = true;
-      this.budget.afterTask(() => {
+      this.budget.requestTurn(() => {
         this.drain();
       });
     }

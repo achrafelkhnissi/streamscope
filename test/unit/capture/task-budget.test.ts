@@ -103,23 +103,37 @@ describe('TaskBudget', () => {
     budget.leave();
   });
 
-  it('runs a callback in a later task', () => {
+  it('gives waiting turns the slice in order, and a turn that asks again waits at the back', () => {
+    let time = 0;
     const tasks: (() => void)[] = [];
     const budget = new TaskBudget({
-      now: () => 0,
+      now: () => time,
       nextTask: (callback) => {
         tasks.push(callback);
       },
     });
-    let ran = false;
+    const ran: string[] = [];
+    const busy = (): void => {
+      ran.push('busy');
+      budget.enter();
+      time += 11;
+      budget.leave();
+      budget.requestTurn(busy);
+    };
+    const quiet = (): void => {
+      ran.push('quiet');
+    };
 
-    budget.afterTask(() => {
-      ran = true;
-    });
+    budget.requestTurn(busy);
+    budget.requestTurn(quiet);
+    expect(tasks).toHaveLength(1);
+    for (let round = 0; round < 3; round += 1) {
+      while (tasks.length > 0 && ran.length < 3) {
+        tasks.shift()?.();
+      }
+    }
 
-    expect(ran).toBe(false);
-    tasks.shift()?.();
-    expect(ran).toBe(true);
+    expect(ran).toStrictEqual(['busy', 'quiet', 'busy']);
   });
 
   it('opens a new slice after a real setImmediate', async () => {
