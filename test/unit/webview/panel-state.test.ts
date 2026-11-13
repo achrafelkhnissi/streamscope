@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { panelViews, type PanelStatus } from '../../../src/response/panel-protocol';
-import { canOpen, canSave, effectiveView, visibleViews } from '../../../src/webview/panel-state';
+import {
+  canOpen,
+  canSave,
+  effectiveView,
+  setDisabledKeepingFocus,
+  visibleViews,
+} from '../../../src/webview/panel-state';
 
 function status(overrides: Partial<PanelStatus> = {}): PanelStatus {
   return {
@@ -76,5 +82,53 @@ describe('canOpen', () => {
 
   it('does not allow opening a run that has left history', () => {
     expect(canOpen(status({ released: true }))).toBe(false);
+  });
+});
+
+describe('setDisabledKeepingFocus', () => {
+  function fakes(): {
+    button: { disabled: boolean };
+    list: {
+      focused: { preventScroll: boolean }[];
+      focus(options: { preventScroll: boolean }): void;
+    };
+  } {
+    const focused: { preventScroll: boolean }[] = [];
+    return {
+      button: { disabled: false },
+      list: {
+        focused,
+        focus: (options) => {
+          focused.push(options);
+        },
+      },
+    };
+  }
+
+  it('moves focus to the fallback when the focused button becomes disabled', () => {
+    const { button, list } = fakes();
+
+    setDisabledKeepingFocus(button, true, true, list);
+
+    expect(button.disabled).toBe(true);
+    expect(list.focused).toEqual([{ preventScroll: true }]);
+  });
+
+  it('leaves focus alone when the button was not focused', () => {
+    const { button, list } = fakes();
+
+    setDisabledKeepingFocus(button, true, false, list);
+
+    expect(button.disabled).toBe(true);
+    expect(list.focused).toEqual([]);
+  });
+
+  it('leaves focus alone when the focused button stays enabled', () => {
+    const { button, list } = fakes();
+
+    setDisabledKeepingFocus(button, false, true, list);
+
+    expect(button.disabled).toBe(false);
+    expect(list.focused).toEqual([]);
   });
 });

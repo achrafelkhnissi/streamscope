@@ -15,3 +15,19 @@ export function canSave(status: PanelStatus | undefined): boolean {
 export function canOpen(status: PanelStatus | undefined): boolean {
   return status?.released !== true;
 }
+
+export interface Focusable {
+  focus(options: { preventScroll: boolean }): void;
+}
+
+export function setDisabledKeepingFocus(
+  button: { disabled: boolean },
+  disabled: boolean,
+  focused: boolean,
+  fallback: Focusable,
+): void {
+  button.disabled = disabled;
+  if (disabled && focused) {
+    fallback.focus({ preventScroll: true });
+  }
+}

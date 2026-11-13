@@ -17,6 +17,15 @@ function policy(page: string): string | undefined {
   return /<meta http-equiv="Content-Security-Policy" content="([^"]*)">/.exec(page)?.[1];
 }
 
+function stylesheet(): string {
+  return /<style[^>]*>([\s\S]*)<\/style>/.exec(html())?.[1] ?? '';
+}
+
+function rule(selector: string): string | undefined {
+  const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`(?:^|\\n)${escaped} \\{([^}]*)\\}`).exec(stylesheet())?.[1];
+}
+
 function openingTags(page: string, name: string): string[] {
   return [...page.matchAll(new RegExp(`<${name}\\b[^>]*>`, 'gi'))].map((match) => match[0]);
 }
@@ -120,6 +129,86 @@ describe('panelHtml', () => {
     expect(style).toContain('var(--vscode-');
     expect(style).not.toMatch(/#[0-9a-f]{3,8}\b|rgba?\(|hsla?\(/i);
     expect(style).not.toMatch(/@import|url\(/i);
+  });
+
+  it('draws text only with text tokens, never icon, chart, gutter or error tokens', () => {
+    const textTokens = new Set([
+      'foreground',
+      'descriptionForeground',
+      'button-foreground',
+      'badge-foreground',
+      'panelTitle-activeForeground',
+      'panelTitle-inactiveForeground',
+      'list-activeSelectionForeground',
+      'debugTokenExpression-name',
+      'debugTokenExpression-string',
+      'debugTokenExpression-number',
+      'debugTokenExpression-boolean',
+    ]);
+    const colours = [...stylesheet().matchAll(/(?<![-\w])color:\s*([^;}]+)/g)].map((match) =>
+      (match[1] ?? '').trim(),
+    );
+
+    expect(colours.length).toBeGreaterThan(0);
+    for (const colour of colours) {
+      const token = /^var\(--vscode-([\w-]+)\)$/.exec(colour)?.[1];
+      expect(colour === 'inherit' || (token !== undefined && textTokens.has(token)), colour).toBe(
+        true,
+      );
+    }
+  });
+
+  it('pins the text token of each part of the list, the status and the raw view', () => {
+    expect(rule('.label')).toContain('color: var(--vscode-foreground);');
+    expect(rule('.index')).toContain('color: var(--vscode-descriptionForeground);');
+    expect(rule('.time')).toContain('color: var(--vscode-descriptionForeground);');
+    expect(rule('.preview')).toContain('color: var(--vscode-descriptionForeground);');
+    expect(rule('#status')).toContain('color: var(--vscode-descriptionForeground);');
+    expect(rule('.key, .field')).toBe(' color: var(--vscode-debugTokenExpression-name); ');
+    expect(rule('.comment')).toContain('color: var(--vscode-descriptionForeground);');
+  });
+
+  it('draws the state pill with the badge pair whatever the state', () => {
+    expect(rule('.pill')).toContain(
+      'background: var(--vscode-badge-background); color: var(--vscode-badge-foreground);',
+    );
+    expect(stylesheet()).not.toContain('.pill[data-state');
+  });
+
+  it('gives every cell of the selected row the selection foreground', () => {
+    expect(rule('.row[aria-selected="true"]')).toBe(
+      ' background: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); ',
+    );
+    expect(rule('.row[aria-selected="true"] > span')).toBe(' color: inherit; ');
+  });
+
+  it('marks malformed and oversize rows with a coloured edge, not coloured text', () => {
+    expect(rule('.row[data-kind="malformed"]')).toBe(
+      ' box-shadow: inset 2px 0 var(--vscode-editorError-foreground); ',
+    );
+    expect(rule('.row[data-kind="oversize"]')).toBe(
+      ' box-shadow: inset 2px 0 var(--vscode-editorWarning-foreground); ',
+    );
+  });
+
+  it('outlines the selected row in high contrast, the focused one always, and a hovered one dashed', () => {
+    const page = stylesheet();
+    const hover = page.indexOf('body.vscode-high-contrast .row:hover');
+    const selected = page.indexOf('body.vscode-high-contrast .row[aria-selected="true"]');
+
+    expect(
+      rule('body.vscode-high-contrast .row:hover, body.vscode-high-contrast-light .row:hover'),
+    ).toBe(' outline: 1px dashed var(--vscode-contrastActiveBorder); outline-offset: -1px; ');
+    expect(
+      rule(
+        'body.vscode-high-contrast .row[aria-selected="true"], body.vscode-high-contrast-light .row[aria-selected="true"]',
+      ),
+    ).toBe(' outline: 1px solid var(--vscode-contrastActiveBorder); outline-offset: -1px; ');
+    expect(rule('.list:focus .row[aria-selected="true"]')).toBe(
+      ' outline: 1px solid var(--vscode-list-focusOutline); outline-offset: -1px; ',
+    );
+    expect(hover).toBeGreaterThan(-1);
+    expect(selected).toBeGreaterThan(hover);
   });
 
   it('has a tab for every view, each paired with its panel', () => {

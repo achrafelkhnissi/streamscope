@@ -32,10 +32,6 @@ body { margin: 0; padding: 0; height: 100vh; display: flex; flex-direction: colu
 .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .bar { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-bottom: 1px solid var(--vscode-panel-border); }
 .pill { padding: 1px 8px; border-radius: 10px; font-size: 11px; white-space: nowrap; background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); }
-.pill[data-state="receiving"], .pill[data-state="sending"] { background: var(--vscode-charts-blue); color: var(--vscode-editor-background); }
-.pill[data-state="completed"] { background: var(--vscode-charts-green); color: var(--vscode-editor-background); }
-.pill[data-state="failed"], .pill[data-state="blocked"] { background: var(--vscode-charts-red); color: var(--vscode-editor-background); }
-.pill[data-state="cancelled"] { background: var(--vscode-charts-orange); color: var(--vscode-editor-background); }
 #status { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--vscode-descriptionForeground); }
 button { font-family: inherit; font-size: inherit; color: var(--vscode-button-foreground); background: var(--vscode-button-background); border: 1px solid var(--vscode-button-border, transparent); padding: 3px 10px; border-radius: 2px; cursor: pointer; }
 button:hover { background: var(--vscode-button-hoverBackground); }
@@ -52,20 +48,24 @@ button:focus-visible, .list:focus-visible { outline: 1px solid var(--vscode-focu
 #spacer { position: relative; overflow: hidden; }
 .row { position: absolute; left: 0; right: 0; height: 22px; line-height: 22px; padding: 0 12px; display: flex; gap: 12px; white-space: nowrap; cursor: pointer; }
 .row:hover { background: var(--vscode-list-hoverBackground); }
+body.vscode-high-contrast .row:hover, body.vscode-high-contrast-light .row:hover { outline: 1px dashed var(--vscode-contrastActiveBorder); outline-offset: -1px; }
 .row[aria-selected="true"] { background: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); }
-.index { min-width: 64px; text-align: right; color: var(--vscode-editorLineNumber-foreground); }
+body.vscode-high-contrast .row[aria-selected="true"], body.vscode-high-contrast-light .row[aria-selected="true"] { outline: 1px solid var(--vscode-contrastActiveBorder); outline-offset: -1px; }
+.list:focus .row[aria-selected="true"] { outline: 1px solid var(--vscode-list-focusOutline); outline-offset: -1px; }
+.index { min-width: 64px; text-align: right; color: var(--vscode-descriptionForeground); }
 .time { min-width: 84px; color: var(--vscode-descriptionForeground); }
-.label { min-width: 200px; max-width: 200px; overflow: hidden; text-overflow: ellipsis; color: var(--vscode-symbolIcon-classForeground); }
+.label { min-width: 200px; max-width: 200px; overflow: hidden; text-overflow: ellipsis; color: var(--vscode-foreground); }
 .preview { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--vscode-descriptionForeground); }
-.row[data-kind="malformed"] .label { color: var(--vscode-errorForeground); }
-.row[data-kind="oversize"] .label { color: var(--vscode-editorWarning-foreground); }
+.row[aria-selected="true"] > span { color: inherit; }
+.row[data-kind="malformed"] { box-shadow: inset 2px 0 var(--vscode-editorError-foreground); }
+.row[data-kind="oversize"] { box-shadow: inset 2px 0 var(--vscode-editorWarning-foreground); }
 .row[data-kind="comment"] .label, .row[data-kind="comment"] .preview { font-style: italic; }
 .detail { position: absolute; left: 24px; right: 12px; padding: 8px 12px; border-left: 2px solid var(--vscode-focusBorder); background: var(--vscode-textBlockQuote-background); }
 .detail pre { margin: 0 0 8px; padding: 0; max-height: 300px; overflow: auto; word-break: break-all; }
 .detail p { padding: 0 0 8px; }
 pre { margin: 0; padding: 8px 12px; font-family: var(--vscode-editor-font-family); font-size: var(--vscode-editor-font-size); white-space: pre-wrap; word-break: break-word; }
 #raw .line { white-space: pre; min-height: 1lh; }
-.key, .field { color: var(--vscode-symbolIcon-propertyForeground); }
+.key, .field { color: var(--vscode-debugTokenExpression-name); }
 .string { color: var(--vscode-debugTokenExpression-string); }
 .number { color: var(--vscode-debugTokenExpression-number); }
 .literal { color: var(--vscode-debugTokenExpression-boolean); }

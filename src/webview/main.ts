@@ -11,7 +11,13 @@ import {
   type ToPanel,
 } from '../response/panel-protocol';
 import { followingAfterScroll, listWindow, scrollTopFor, type ListInput } from './list-window';
-import { canOpen, canSave, effectiveView, visibleViews } from './panel-state';
+import {
+  canOpen,
+  canSave,
+  effectiveView,
+  setDisabledKeepingFocus,
+  visibleViews,
+} from './panel-state';
 import {
   bodyNote,
   historyNote,
@@ -239,7 +245,7 @@ function showStatus(status: PanelStatus): void {
   statePill.dataset.state = status.state;
   statusText.textContent = line;
   statusText.title = line;
-  stopButton.disabled = !status.running;
+  setDisabledKeepingFocus(stopButton, !status.running, document.activeElement === stopButton, list);
   saveButton.disabled = !canSave(status);
   openButton.disabled = !canOpen(status);
   const gone = historyNote(status);
