@@ -91,5 +91,8 @@ export function checkSurfaceResult(
   if (result.latency.count < result.visible) {
     return `${plural(result.visible - result.latency.count, 'visible event')} have no latency.`;
   }
+  if (!Number.isFinite(result.longestTaskMs) || !Number.isFinite(result.tasksOverBudget)) {
+    return 'The surface reported no task durations.';
+  }
   return undefined;
 }

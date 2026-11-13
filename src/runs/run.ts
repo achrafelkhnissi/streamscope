@@ -1,5 +1,9 @@
+import { StreamSession } from '../events/session';
+import type { SpillArea, SpillFile } from '../events/spill';
 import type { Directive, DirectiveKind, HttpFile, HttpRequest } from '../http-file/model';
 import { formatBytes } from '../response/labels';
+import type { FormatDecision, StreamDirective } from '../streaming/detect';
+import type { StreamLimits } from '../streaming/limits';
 import type {
   FailureKind,
   Outcome,
@@ -17,8 +21,13 @@ import type { SystemContext } from '../variables/system';
 import type { BodyFileContext } from './body-files';
 import { buildOutgoingRequest, type BuildResult } from './build-request';
 import { parseDuration } from './duration';
+import { bodySourceOf, readBodyFromSpill, type DataSource } from './body-spill';
+import { readRawTail } from './raw-read';
+import { RawTail } from './raw-tail';
 
 export type RunStatus = 'sending' | 'receiving' | 'completed' | 'failed' | 'cancelled' | 'blocked';
+
+export type RawData = 'saved' | 'stopped' | 'removed' | 'unsaved';
 
 export interface RunFailure {
   kind: FailureKind | 'body-too-large';
@@ -31,13 +40,24 @@ export interface RunSnapshot {
   label: string;
   status: RunStatus;
   startedAt: number;
+  wallStartedAt: number;
   elapsedMs: number;
   sent: SentRequest | undefined;
   head: ResponseHead | undefined;
   hops: readonly RedirectHop[];
   timing: Timing | undefined;
   wireBytes: number;
+  receivedBytes: number;
   body: Uint8Array;
+  bodyKept: boolean;
+  bodyLength: number;
+  bodySource: DataSource;
+  stream: StreamSession | undefined;
+  raw: RawTail;
+  rawData: RawData;
+  rawSource: DataSource;
+  replySource: DataSource;
+  released: boolean;
   failure: RunFailure | undefined;
   problems: readonly ResolutionProblem[];
   sensitiveValues: readonly string[];
@@ -63,6 +83,8 @@ export interface RunInput {
   variables: Omit<VariableSources, 'system' | 'restricted'>;
   restricted: boolean;
   confirmSend: (() => Promise<boolean>) | undefined;
+  spill: SpillArea | undefined;
+  limits: StreamLimits;
 }
 
 export interface RunDependencies {
@@ -76,11 +98,38 @@ export interface RunHandle {
   readonly done: Promise<RunSnapshot>;
   snapshot(): RunSnapshot;
   cancel(): void;
+  onUpdate(listener: () => void): () => void;
+  compact(): void;
+  readBody(maxBytes: number): Promise<Uint8Array | undefined>;
+  readRaw(): Promise<string | undefined>;
+  readReply(): Promise<string | undefined>;
+  indexBytes(): number;
+  release(): Promise<void>;
 }
 
-type RunState = Omit<RunSnapshot, 'elapsedMs'>;
+type RunState = Omit<
+  RunSnapshot,
+  | 'elapsedMs'
+  | 'receivedBytes'
+  | 'rawData'
+  | 'rawSource'
+  | 'replySource'
+  | 'released'
+  | 'bodySource'
+>;
 
 const timeoutMessage = 'Expected a duration such as 500ms, 30s or 5m.';
+const rawTailChars = 2_097_152;
+const streamDirectives: ReadonlySet<string> = new Set<StreamDirective>([
+  'sse',
+  'ndjson',
+  'json',
+  'text',
+  'raw',
+  'auto',
+]);
+const encoder = new TextEncoder();
+const decoder = new TextDecoder();
 let nextRunId = 1;
 
 function lastDirective(request: HttpRequest, kind: DirectiveKind): Directive | undefined {
@@ -91,10 +140,62 @@ function hasDirective(request: HttpRequest, kind: DirectiveKind): boolean {
   return lastDirective(request, kind) !== undefined;
 }
 
+function isStreamDirective(argument: string): argument is StreamDirective {
+  return streamDirectives.has(argument);
+}
+
+function streamDirective(request: HttpRequest): StreamDirective | undefined {
+  const argument = lastDirective(request, 'stream')?.argument;
+  return argument !== undefined && isStreamDirective(argument) ? argument : undefined;
+}
+
+function isEventFormat(decision: FormatDecision | undefined): boolean {
+  return decision?.format === 'sse' || decision?.format === 'ndjson';
+}
+
+function contentTypeOf(head: ResponseHead): string | undefined {
+  return head.headers.find(([name]) => name.toLowerCase() === 'content-type')?.[1];
+}
+
+function drained(session: StreamSession): Promise<void> {
+  return new Promise((resolve) => {
+    const stop = session.onDrain(() => {
+      stop();
+      resolve();
+    });
+  });
+}
+
+async function createSpillFile(area: SpillArea | undefined): Promise<SpillFile | undefined> {
+  try {
+    return await area?.create();
+  } catch {
+    return undefined;
+  }
+}
+
+function rawDataOf(file: SpillFile | undefined, released: boolean): RawData {
+  if (file === undefined) {
+    return 'unsaved';
+  }
+  if (released || file.evicted) {
+    return 'removed';
+  }
+  return file.capped ? 'stopped' : 'saved';
+}
+
+async function deleteSpillFile(file: SpillFile | undefined): Promise<void> {
+  await file?.delete().catch(() => undefined);
+}
+
 export function requestKey(documentUri: string, request: HttpRequest, index: number): string {
   return request.name === undefined
     ? `${documentUri}\n#${String(index)} ${request.requestLine.method.toUpperCase()} ${request.requestLine.url}`
     : `${documentUri}\n@${request.name}`;
+}
+
+export function requestKeyDocument(key: string): string {
+  return key.slice(0, key.indexOf('\n'));
 }
 
 export function startRun(
@@ -106,37 +207,105 @@ export function startRun(
   const id = nextRunId++;
   const controller = new AbortController();
   const chunks: Uint8Array[] = [];
+  const listeners = new Set<() => void>();
+  const raw = new RawTail(rawTailChars);
   let received = 0;
+  let arrived = 0;
   let cancelled = false;
   let tooLarge = false;
+  let released = false;
+  let bodyDropped = false;
+  let rawDropped = false;
+  let replyDropped = false;
+  let replyStored: boolean | undefined;
+  let replyWrite: Promise<boolean> = Promise.resolve(false);
   let endedAt: number | undefined;
+  let session: StreamSession | undefined;
+  let spillFile: SpillFile | undefined;
   const state: RunState = {
     id,
     key: input.key,
     label: input.label,
     status: 'sending',
     startedAt: dependencies.clock(),
+    wallStartedAt: dependencies.system.now().getTime(),
     sent: undefined,
     head: undefined,
     hops: [],
     timing: undefined,
     wireBytes: 0,
     body: new Uint8Array(),
+    bodyKept: true,
+    bodyLength: 0,
+    stream: undefined,
+    raw,
     failure: undefined,
     problems: [],
     sensitiveValues: [],
   };
 
+  const rawSource = (): DataSource => {
+    if (!rawDropped) {
+      return 'memory';
+    }
+    const kept = rawDataOf(spillFile, released);
+    return kept === 'saved' || kept === 'stopped' ? 'spill' : 'gone';
+  };
+  const replySource = (): DataSource => {
+    if (!replyDropped) {
+      return 'memory';
+    }
+    const kept =
+      !released && spillFile !== undefined && !spillFile.evicted && replyStored !== false;
+    return kept ? 'spill' : 'gone';
+  };
   const snapshot = (): RunSnapshot => ({
     ...state,
     elapsedMs: (endedAt ?? dependencies.clock()) - state.startedAt,
+    receivedBytes: arrived,
+    rawData: rawDataOf(spillFile, released),
+    rawSource: rawSource(),
+    replySource: replySource(),
+    released,
+    bodySource: bodySourceOf(bodyDropped, spillFile, released, state.bodyLength),
   });
   const wasCancelled = (): boolean => cancelled;
+  const update = (): void => {
+    for (const listener of listeners) {
+      listener();
+    }
+  };
   const notify = (): void => {
     onChange?.(snapshot());
+    update();
+  };
+  const dropBodyOfEvents = (stream: StreamSession): void => {
+    if (state.bodyKept && isEventFormat(stream.format)) {
+      state.bodyKept = false;
+      chunks.length = 0;
+      received = 0;
+    }
+  };
+  const closeStream = async (completed: boolean): Promise<void> => {
+    if (session === undefined) {
+      await deleteSpillFile(spillFile);
+      return;
+    }
+    if (completed) {
+      raw.end();
+      session.end();
+      dropBodyOfEvents(session);
+    } else {
+      session.stop();
+    }
+  };
+  const cancel = (): void => {
+    cancelled = true;
+    controller.abort();
   };
   const finish = (changes: Partial<RunState>): RunSnapshot => {
     Object.assign(state, changes, { body: Buffer.concat(chunks) });
+    state.bodyLength = state.body.length;
     chunks.length = 0;
     endedAt = dependencies.clock();
     notify();
@@ -148,23 +317,39 @@ export function startRun(
       state.sent = sent;
     },
     onHead: (head, sent) => {
-      Object.assign(state, { head, sent, status: 'receiving' });
+      session = new StreamSession({
+        contentType: contentTypeOf(head),
+        directive: streamDirective(request),
+        spill: spillFile,
+        now: () => dependencies.clock() - state.startedAt,
+        onUpdate: update,
+        onText: () => undefined,
+        limits: input.limits,
+      });
+      Object.assign(state, { head, sent, status: 'receiving', stream: session });
       notify();
     },
     onData: (chunk) => {
-      if (tooLarge) {
-        return;
+      if (tooLarge || session === undefined) {
+        return undefined;
       }
-      const room = settings.maxBodyBytes - received;
-      if (chunk.length > room) {
-        chunks.push(chunk.subarray(0, room));
-        received += room;
-        tooLarge = true;
-        controller.abort();
-        return;
+      arrived += chunk.length;
+      raw.push(chunk);
+      const accepted = session.write(chunk);
+      dropBodyOfEvents(session);
+      if (state.bodyKept) {
+        const room = settings.maxBodyBytes - received;
+        if (chunk.length > room) {
+          chunks.push(chunk.subarray(0, room));
+          received += room;
+          tooLarge = true;
+          controller.abort();
+          return undefined;
+        }
+        chunks.push(chunk);
+        received += chunk.length;
       }
-      chunks.push(chunk);
-      received += chunk.length;
+      return accepted ? undefined : drained(session);
     },
   };
 
@@ -231,10 +416,12 @@ export function startRun(
       followRedirects: settings.followRedirects && !hasDirective(request, 'no-redirect'),
       maxRedirects: settings.maxRedirects,
     };
+    spillFile = await createSpillFile(input.spill);
     let outcome: Outcome;
     try {
       outcome = await dependencies.transport.send(built.request, options, sink, controller.signal);
     } catch (error) {
+      await closeStream(false);
       const reason = error instanceof Error ? error.message : String(error);
       return finish({
         status: 'failed',
@@ -244,6 +431,7 @@ export function startRun(
         },
       });
     }
+    await closeStream(outcome.kind === 'completed');
     const exchange = { hops: outcome.hops, timing: outcome.timing, wireBytes: outcome.wireBytes };
     if (outcome.kind === 'completed') {
       return finish({ ...exchange, status: 'completed' });
@@ -269,9 +457,60 @@ export function startRun(
     id,
     done: Promise.resolve().then(run),
     snapshot,
-    cancel: () => {
-      cancelled = true;
-      controller.abort();
+    cancel,
+    onUpdate: (listener) => {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
+    },
+    compact: () => {
+      session?.store.compact();
+      if (endedAt === undefined) {
+        return;
+      }
+      if (state.bodyKept && state.body.length > 0) {
+        state.body = new Uint8Array();
+        bodyDropped = true;
+      }
+      if (!rawDropped && raw.total > 0) {
+        raw.release();
+        rawDropped = true;
+      }
+      const reply = session?.reply;
+      if (!replyDropped && reply !== undefined && reply.size > 0) {
+        const text = reply.release();
+        replyDropped = true;
+        replyWrite = (spillFile?.writeSide(encoder.encode(text)) ?? Promise.resolve(false)).then(
+          (stored) => {
+            replyStored = stored;
+            return stored;
+          },
+        );
+      }
+    },
+    readBody: (maxBytes) =>
+      bodyDropped
+        ? readBodyFromSpill(spillFile, state.bodyLength, maxBytes)
+        : Promise.resolve(state.body.subarray(0, maxBytes)),
+    readRaw: () => (rawDropped ? readRawTail(spillFile, released) : Promise.resolve(raw.text)),
+    readReply: async () => {
+      if (!replyDropped) {
+        return session?.reply.text() ?? '';
+      }
+      if (!(await replyWrite)) {
+        return undefined;
+      }
+      const bytes = await spillFile?.readSide();
+      return bytes === undefined ? undefined : decoder.decode(bytes);
+    },
+    indexBytes: () => session?.store.indexBytes ?? 0,
+    release: async () => {
+      released = true;
+      cancel();
+      session?.dispose();
+      session?.store.release();
+      await deleteSpillFile(spillFile);
     },
   };
 }

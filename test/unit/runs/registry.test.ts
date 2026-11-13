@@ -1,12 +1,13 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { RunRegistry } from '../../../src/runs/registry';
+import { isActive, RunRegistry } from '../../../src/runs/registry';
 import type { RunStatus } from '../../../src/runs/run';
 import { startHttpServer, type LocalServer } from '../../support/servers';
 import { waitFor } from '../transport/harness';
-import { dependencies, runInput } from './support';
+import { dependencies, runInput, useSpillArea } from './support';
 
 const servers: LocalServer[] = [];
 const registries: RunRegistry[] = [];
+useSpillArea();
 
 function registry(): RunRegistry {
   const created = new RunRegistry(dependencies);
@@ -64,6 +65,40 @@ describe('RunRegistry', () => {
     expect((await held.done).status).toBe('cancelled');
     expect(runs.isRunning()).toBe(false);
     expect(runs.cancel('held')).toBe(false);
+  });
+
+  it('lists the running requests, one per key, and drops them when they end', async () => {
+    const server = await holdingServer();
+    const runs = registry();
+    expect(runs.running()).toEqual([]);
+
+    const first = runs.start(runInput([`GET ${server.url}/hold`], { key: 'first' }));
+    const second = runs.start(runInput([`GET ${server.url}/hold`], { key: 'second' }));
+    const quick = runs.start(runInput([`GET ${server.url}/quick`], { key: 'quick' }));
+    await quick.done;
+
+    expect(runs.running()).toEqual([first, second]);
+    const replacing = runs.start(runInput([`GET ${server.url}/hold`], { key: 'first' }));
+    expect(runs.running()).toEqual([replacing, second]);
+    runs.cancel('second');
+    await second.done;
+    expect(runs.running()).toEqual([replacing]);
+  });
+
+  it('tells whether a run is still active, even after a re-send replaced it', async () => {
+    const server = await holdingServer();
+    const runs = registry();
+    const first = runs.start(runInput([`GET ${server.url}/hold`], { key: 'same' }));
+    await waitFor(() => first.snapshot().status === 'receiving', 2000);
+    expect(isActive(first)).toBe(true);
+
+    const second = runs.start(runInput([`GET ${server.url}/quick`], { key: 'same' }));
+
+    expect(runs.running()).not.toContain(first);
+    await second.done;
+    await first.done;
+    expect(isActive(first)).toBe(false);
+    expect(isActive(second)).toBe(false);
   });
 
   it('notifies listeners on every status change', async () => {

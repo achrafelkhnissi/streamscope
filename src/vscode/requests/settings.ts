@@ -3,11 +3,19 @@ import * as path from 'node:path';
 import * as vscode from 'vscode';
 import type { RequestSettings } from '../../runs/run';
 import { parseDuration } from '../../runs/duration';
+import {
+  resolveSpillLimits,
+  resolveStreamLimits,
+  type LimitsResult,
+} from '../../runs/stream-limits';
+import { defaultStreamLimits, type SpillLimits, type StreamLimits } from '../../streaming/limits';
 import { trustedCertificates } from '../../transport/certificates';
 
 export const maxBodyBytes = 268_435_456;
 
 type SettingsResult = { ok: true; settings: RequestSettings } | { ok: false; message: string };
+
+const views = ['events', 'reply', 'raw'] as const;
 
 function duration(
   configuration: vscode.WorkspaceConfiguration,
@@ -98,4 +106,28 @@ export async function readRequestSettings(
       insecureEnvironment: false,
     },
   };
+}
+
+export function readStreamSettings(uri: vscode.Uri): LimitsResult<StreamLimits> {
+  const configuration = vscode.workspace.getConfiguration('streamscope.stream', uri);
+  return resolveStreamLimits({
+    maxEventSize: configuration.get<string>('maxEventSize', '16MiB'),
+    memoryEvents: configuration.get<number>('memoryEvents', defaultStreamLimits.memoryEvents),
+    typeFields: configuration.get<unknown>('typeFields', defaultStreamLimits.typeFields),
+  });
+}
+
+export function readSpillLimits(): LimitsResult<SpillLimits> {
+  const configuration = vscode.workspace.getConfiguration('streamscope.stream');
+  return resolveSpillLimits({
+    maxSpillSize: configuration.get<string>('maxSpillSize', '512MiB'),
+    maxTotalSpillSize: configuration.get<string>('maxTotalSpillSize', '2GiB'),
+  });
+}
+
+export function readDefaultView(): (typeof views)[number] {
+  const view = vscode.workspace
+    .getConfiguration('streamscope.view')
+    .get<string>('default', 'events');
+  return views.find((candidate) => candidate === view) ?? 'events';
 }

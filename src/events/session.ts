@@ -3,7 +3,7 @@ import { defaultStreamLimits, maxIndexedEvents, type StreamLimits } from '../str
 import { parseEventBytes, StreamParser, type StreamWarning } from '../streaming/parser';
 import { UpdateBatcher } from './batcher';
 import { ReplyAssembler } from './reply';
-import type { SpillFile } from './spill';
+import type { SpillCopy, SpillFile } from './spill';
 import { EventStore } from './store';
 
 export interface StreamSessionOptions {
@@ -14,6 +14,11 @@ export interface StreamSessionOptions {
   onUpdate: () => void;
   onText: (text: string) => void;
   limits?: Partial<StreamLimits>;
+}
+
+export interface RawCopy {
+  result: SpillCopy | 'unsaved';
+  bytes: number;
 }
 
 export class StreamSession {
@@ -95,6 +100,15 @@ export class StreamSession {
 
   onDrain(listener: () => void): () => void {
     return this.options.spill?.onDrain(listener) ?? (() => undefined);
+  }
+
+  async copyRaw(destination: string): Promise<RawCopy> {
+    const spill = this.options.spill;
+    if (spill === undefined) {
+      return { result: 'unsaved', bytes: 0 };
+    }
+    const result = await spill.copyTo(destination);
+    return { result, bytes: spill.savedBytes };
   }
 
   end(): void {

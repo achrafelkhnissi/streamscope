@@ -400,9 +400,30 @@ function exchange(context: ExchangeContext): Promise<ExchangeResult> {
         return;
       }
       sink.onHead(head, sent);
+      let latest: Promise<void> | undefined;
+      const complete = (): void => {
+        const finish = (): void => {
+          settle({ kind: 'completed' });
+        };
+        if (latest === undefined) {
+          finish();
+        } else {
+          latest.then(finish, finish);
+        }
+      };
       const deliver = (chunk: Buffer): void => {
         counters.decodedBytes += chunk.length;
-        sink.onData(chunk);
+        const pending = sink.onData(chunk);
+        if (pending === undefined) {
+          return;
+        }
+        latest = pending;
+        const output = decoder ?? incoming;
+        output.pause();
+        const resume = (): void => {
+          output.resume();
+        };
+        pending.then(resume, resume);
       };
       const contentEncoding = head.headers
         .filter(([name]) => name.toLowerCase() === 'content-encoding')
@@ -423,9 +444,7 @@ function exchange(context: ExchangeContext): Promise<ExchangeResult> {
           decoder?.on('drain', () => {
             incoming.resume();
           });
-          decoder?.on('end', () => {
-            settle({ kind: 'completed' });
-          });
+          decoder?.on('end', complete);
           decoder?.on('error', (error) => {
             settle(failed('decompression', decompressionMessage(error)));
           });
@@ -442,7 +461,7 @@ function exchange(context: ExchangeContext): Promise<ExchangeResult> {
         if (decoder) {
           decoder.end();
         } else {
-          settle({ kind: 'completed' });
+          complete();
         }
       });
       incoming.on('error', (error) => {

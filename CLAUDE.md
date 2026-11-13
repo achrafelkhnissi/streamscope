@@ -18,32 +18,33 @@ The product is **Streamscope** (`achrafelkhnissi.streamscope`, display name "Str
 
 ## Layout
 
-| Path                               | Purpose                                                                                                    |
-| ---------------------------------- | ---------------------------------------------------------------------------------------------------------- |
-| `src/extension.ts`                 | Activation and VS Code wiring                                                                              |
-| `src/http-file/`                   | `.http` parser, directives and diagnostics                                                                 |
-| `src/environments/`                | REST Client and JetBrains environments, the merged catalog, and `.env` parsing and lookup order            |
-| `src/variables/`                   | Variable resolution from every source, sensitive values, and reference descriptions for hovers             |
-| `src/secrets/`                     | Secret storage key format                                                                                  |
-| `src/transport/`                   | `node:http`/`node:https` exchange, decompression, TLS options and redirects                                |
-| `src/runs/`                        | Outgoing request building, body files, durations, runs and the run registry                                |
-| `src/response/`                    | Body formatting (worker above 1 MiB), labels and the Headers document                                      |
-| `src/streaming/`                   | Byte-level line framing, format detection, and NDJSON and SSE parsing into events                          |
-| `src/events/`                      | Event model, labels, reply assembly, spill files, event store, update batching, stream sessions            |
-| `src/masking/`                     | Masking of secret headers, URL user info, credential names and sensitive values                            |
-| `src/coexistence/`                 | Detection of other extensions' Send CodeLens                                                               |
-| `src/benchmark/`                   | Latency histogram and the command contract between the view benchmark and a response view                  |
-| `src/vscode/`                      | VS Code wiring: language features, environments, secrets, requests, response view, log                     |
-| `test/support/`                    | Local HTTP, HTTPS, raw and stream servers, stream fixtures, a chunk splitter, a test certificate           |
-| `test/benchmark/`                  | Throughput, soak and VS Code response view benchmarks, run with `npm run bench`                            |
-| `test/unit/`                       | Vitest tests for pure modules and the manifest                                                             |
-| `test/integration/`                | Mocha tests run by `@vscode/test-cli` inside the Extension Development Host, on VS Code stable and 1.101.0 |
-| `test/restricted/`                 | Checks run in a real restricted (untrusted) workspace built from `test/fixtures/restricted`                |
-| `test/vsix/`                       | Check that the packaged VSIX installs and activates in an isolated profile                                 |
-| `scripts/verify-vsix.mjs`          | Installs the VSIX into a temporary profile and runs `test/vsix`                                            |
-| `scripts/run-restricted-tests.mjs` | Launches VS Code on a fresh copy of the restricted fixture without `--disable-workspace-trust`             |
-| `.claude/`                         | Project plugins, subagents, hooks and security-review rules                                                |
-| `.github/`                         | CI on Linux, macOS and Windows; Dependabot                                                                 |
+| Path                               | Purpose                                                                                                                      |
+| ---------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `src/extension.ts`                 | Activation and VS Code wiring                                                                                                |
+| `src/http-file/`                   | `.http` parser, directives and diagnostics                                                                                   |
+| `src/environments/`                | REST Client and JetBrains environments, the merged catalog, and `.env` parsing and lookup order                              |
+| `src/variables/`                   | Variable resolution from every source, sensitive values, and reference descriptions for hovers                               |
+| `src/secrets/`                     | Secret storage key format                                                                                                    |
+| `src/transport/`                   | `node:http`/`node:https` exchange, decompression, TLS options and redirects                                                  |
+| `src/runs/`                        | Outgoing request building, body files, durations, runs and the run registry                                                  |
+| `src/response/`                    | Body formatting (worker above 1 MiB), labels, Headers document, and the panel's messages, rows and feed                      |
+| `src/webview/`                     | Browser page of the response view (`dist/response-view.js`): imports only `src/response/panel-protocol.ts` and its own files |
+| `src/streaming/`                   | Byte-level line framing, format detection, and NDJSON and SSE parsing into events                                            |
+| `src/events/`                      | Event model, labels, reply assembly, spill files, event store, update batching, stream sessions                              |
+| `src/masking/`                     | Masking of secret headers, URL user info, credential names and sensitive values                                              |
+| `src/coexistence/`                 | Detection of other extensions' Send CodeLens                                                                                 |
+| `src/benchmark/`                   | Latency histogram, task timer, render tracker and the command contract of the view benchmark                                 |
+| `src/vscode/`                      | VS Code wiring: language features, environments, secrets, requests, response panel and documents, log                        |
+| `test/support/`                    | Local HTTP, HTTPS, raw and stream servers, stream fixtures, a chunk splitter, a test certificate                             |
+| `test/benchmark/`                  | Throughput, soak and VS Code response view benchmarks, run with `npm run bench`                                              |
+| `test/unit/`                       | Vitest tests for pure modules and the manifest                                                                               |
+| `test/integration/`                | Mocha tests run by `@vscode/test-cli` inside the Extension Development Host, on VS Code stable and 1.101.0                   |
+| `test/restricted/`                 | Checks run in a real restricted (untrusted) workspace built from `test/fixtures/restricted`                                  |
+| `test/vsix/`                       | Check that the packaged VSIX installs and activates in an isolated profile                                                   |
+| `scripts/verify-vsix.mjs`          | Installs the VSIX into a temporary profile and runs `test/vsix`                                                              |
+| `scripts/run-restricted-tests.mjs` | Launches VS Code on a fresh copy of the restricted fixture without `--disable-workspace-trust`                               |
+| `.claude/`                         | Project plugins, subagents, hooks and security-review rules                                                                  |
+| `.github/`                         | CI on Linux, macOS and Windows; Dependabot                                                                                   |
 
 ## Architecture conventions
 

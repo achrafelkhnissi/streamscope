@@ -3,8 +3,8 @@ import type { HttpRequest } from '../../http-file/model';
 import { describeOutcome } from '../../response/labels';
 import type { RunRegistry } from '../../runs/registry';
 import { requestKey, type RunSnapshot } from '../../runs/run';
+import { LiveTicker } from '../../runs/ticker';
 import type { ParseCache } from '../language/parse-cache';
-import { preferredView, type ResponsePresenter } from '../response/presenter';
 
 function toRange(request: HttpRequest): vscode.Range {
   const { start, end } = request.requestLine.range;
@@ -18,30 +18,26 @@ function isActive(run: RunSnapshot): boolean {
 export class RequestCodeLenses implements vscode.CodeLensProvider, vscode.Disposable {
   private readonly changed = new vscode.EventEmitter<void>();
   readonly onDidChangeCodeLenses = this.changed.event;
-  private ticker: NodeJS.Timeout | undefined;
+  private readonly ticker: LiveTicker;
   private readonly unsubscribe: () => void;
 
   constructor(
     private readonly cache: ParseCache,
     private readonly registry: RunRegistry,
-    private readonly presenter: ResponsePresenter,
   ) {
+    this.ticker = new LiveTicker(
+      () => registry.isRunning(),
+      () => {
+        this.changed.fire();
+      },
+    );
     this.unsubscribe = registry.onDidChange(() => {
       this.refresh();
     });
   }
 
   refresh(): void {
-    this.changed.fire();
-    if (this.ticker === undefined && this.registry.isRunning()) {
-      this.ticker = setInterval(() => {
-        if (!this.registry.isRunning()) {
-          clearInterval(this.ticker);
-          this.ticker = undefined;
-        }
-        this.changed.fire();
-      }, 1000);
-    }
+    this.ticker.poke();
   }
 
   provideCodeLenses(document: vscode.TextDocument): vscode.CodeLens[] {
@@ -72,17 +68,22 @@ export class RequestCodeLenses implements vscode.CodeLensProvider, vscode.Dispos
         command: 'streamscope.sendRequest',
         arguments: [document.uri, line],
       });
-      return run ? [send, this.outcome(range, run, document.uri)] : [send];
+      return run ? [send, this.outcome(range, run, document.uri, line)] : [send];
     });
   }
 
   dispose(): void {
-    clearInterval(this.ticker);
+    this.ticker.dispose();
     this.unsubscribe();
     this.changed.dispose();
   }
 
-  private outcome(range: vscode.Range, run: RunSnapshot, documentUri: vscode.Uri): vscode.CodeLens {
+  private outcome(
+    range: vscode.Range,
+    run: RunSnapshot,
+    documentUri: vscode.Uri,
+    line: number,
+  ): vscode.CodeLens {
     const title = describeOutcome(run);
     const problem = run.problems[0];
     if (run.status === 'blocked' && problem) {
@@ -96,17 +97,10 @@ export class RequestCodeLenses implements vscode.CodeLensProvider, vscode.Dispos
         ],
       });
     }
-    const slot = this.presenter.slotForKey(run.key);
-    if (!slot || slot.run.id !== run.id) {
-      return new vscode.CodeLens(range, { title, command: '' });
-    }
     return new vscode.CodeLens(range, {
       title,
-      command: 'vscode.open',
-      arguments: [
-        preferredView(slot),
-        { viewColumn: vscode.ViewColumn.Beside, preserveFocus: true, preview: false },
-      ],
+      command: 'streamscope.showResponse',
+      arguments: [documentUri, line],
     });
   }
 }

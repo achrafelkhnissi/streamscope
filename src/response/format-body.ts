@@ -55,11 +55,13 @@ function looksLikeJson(text: string): boolean {
   return first === '{' || first === '[';
 }
 
-function prettyJson(text: string): string | undefined {
-  try {
-    JSON.parse(text);
-  } catch {
-    return undefined;
+function prettyJson(text: string, complete: boolean): string | undefined {
+  if (complete) {
+    try {
+      JSON.parse(text);
+    } catch {
+      return undefined;
+    }
   }
   return reindentJson(text);
 }
@@ -80,7 +82,11 @@ function language(type: string | undefined): BodyLanguage {
   return type === 'text/css' ? 'css' : 'plaintext';
 }
 
-export function formatBody(bytes: Uint8Array, contentType: string | undefined): FormattedBody {
+export function formatBody(
+  bytes: Uint8Array,
+  contentType: string | undefined,
+  beginning?: { totalBytes: number },
+): FormattedBody {
   if (bytes.length === 0) {
     return { languageId: 'plaintext', text: '', binary: false };
   }
@@ -88,7 +94,7 @@ export function formatBody(bytes: Uint8Array, contentType: string | undefined): 
   if (isBinary(type, bytes)) {
     return {
       languageId: 'plaintext',
-      text: `Binary body (${formatBytes(bytes.length)}). Use Save Response to keep it.`,
+      text: `Binary body (${formatBytes(beginning?.totalBytes ?? bytes.length)}). Use Save Response to keep it.`,
       binary: true,
     };
   }
@@ -96,7 +102,7 @@ export function formatBody(bytes: Uint8Array, contentType: string | undefined): 
   const declaredJson = type === 'application/json' || type?.endsWith('+json') === true;
   const sniffedJson = (type === undefined || type === 'text/plain') && looksLikeJson(text);
   if (declaredJson || sniffedJson) {
-    const pretty = prettyJson(text);
+    const pretty = prettyJson(text, beginning === undefined);
     return pretty === undefined
       ? { languageId: 'plaintext', text, binary: false }
       : { languageId: 'json', text: pretty, binary: false };

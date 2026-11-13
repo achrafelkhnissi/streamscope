@@ -6,7 +6,7 @@ import {
   type RunSnapshot,
 } from './run';
 
-function isActive(handle: RunHandle): boolean {
+export function isActive(handle: RunHandle): boolean {
   const { status } = handle.snapshot();
   return status === 'sending' || status === 'receiving';
 }
@@ -43,6 +43,10 @@ export class RunRegistry {
 
   isRunning(): boolean {
     return [...this.runs.values()].some(isActive);
+  }
+
+  running(): RunHandle[] {
+    return [...this.runs.values()].filter(isActive);
   }
 
   onDidChange(listener: (snapshot: RunSnapshot) => void): () => void {

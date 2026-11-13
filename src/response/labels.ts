@@ -1,6 +1,7 @@
 import type { HttpRequest } from '../http-file/model';
 import { maskUrl, maskValues } from '../masking/masking';
 import type { RunSnapshot } from '../runs/run';
+import type { StreamFormat } from '../streaming/detect';
 import type { BodyLanguage } from './format-body';
 
 const units = ['KB', 'MB', 'GB'];
@@ -51,6 +52,13 @@ export function formatDuration(ms: number): string {
   return ms < 1000 ? `${String(Math.round(ms))} ms` : `${(ms / 1000).toFixed(1)} s`;
 }
 
+export function formatTimeOfDay(epochMs: number): string {
+  const time = new Date(epochMs);
+  return [time.getHours(), time.getMinutes(), time.getSeconds()]
+    .map((part) => String(part).padStart(2, '0'))
+    .join(':');
+}
+
 export function requestLabel(request: HttpRequest): string {
   return (
     request.name ??
@@ -67,19 +75,43 @@ export function bodyExtension(languageId: BodyLanguage): string {
   return bodyExtensions[languageId];
 }
 
-export function saveExtension(contentType: string | undefined): string {
+export function saveExtension(contentType: string | undefined, format?: StreamFormat): string {
+  if (format === 'ndjson' || format === 'sse') {
+    return `.${format}`;
+  }
   const type = contentType?.split(';')[0]?.trim().toLowerCase() ?? '';
   return saveExtensions[type] ?? (type.endsWith('+json') ? '.json' : '.bin');
+}
+
+export function noBodyMessage(run: RunSnapshot): string {
+  if (!run.bodyKept) {
+    return 'This response is a stream: see its events in the response panel, or save it.';
+  }
+  if (run.status === 'sending' || run.status === 'receiving') {
+    return 'The response body is still arriving.';
+  }
+  return run.bodyLength > 0
+    ? 'This body is no longer available.'
+    : 'This response has no body to open.';
 }
 
 export function describeOutcome(run: RunSnapshot): string {
   return maskValues(outcomeText(run), run.sensitiveValues);
 }
 
+export function eventCount(run: RunSnapshot): string | undefined {
+  if (run.bodyKept || run.stream === undefined) {
+    return undefined;
+  }
+  const count = run.stream.store.count;
+  return `${String(count)} ${count === 1 ? 'event' : 'events'}`;
+}
+
 function outcomeText(run: RunSnapshot): string {
+  const events = eventCount(run);
   switch (run.status) {
     case 'completed':
-      return `${String(run.head?.status ?? '')} ${run.head?.statusText ?? ''} · ${formatBytes(run.body.length)} · ${formatDuration(run.elapsedMs)}`;
+      return `${String(run.head?.status ?? '')} ${run.head?.statusText ?? ''} · ${events ?? formatBytes(run.bodyLength)} · ${formatDuration(run.elapsedMs)}`;
     case 'failed':
       return `Failed: ${run.failure?.message ?? ''}`;
     case 'cancelled':
@@ -87,6 +119,8 @@ function outcomeText(run: RunSnapshot): string {
     case 'blocked':
       return `Not sent: ${run.problems[0]?.message ?? ''}`;
     default:
-      return `Running · ${formatDuration(run.elapsedMs)}`;
+      return events === undefined
+        ? `Running · ${formatDuration(run.elapsedMs)}`
+        : `Running · ${events} · ${formatDuration(run.elapsedMs)}`;
   }
 }

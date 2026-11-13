@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 
 interface Manifest {
   scripts: Record<string, string>;
+  activationEvents?: string[];
   capabilities: unknown;
   name: string;
   publisher: string;
@@ -21,7 +22,22 @@ interface Manifest {
     languages: unknown[];
     grammars: unknown[];
     keybindings: unknown[];
-    configuration: { properties: Record<string, { default: unknown; type: string }> };
+    configuration: {
+      properties: Record<
+        string,
+        {
+          default: unknown;
+          type: string;
+          pattern?: string;
+          minimum?: number;
+          maximum?: number;
+          scope?: string;
+          enum?: string[];
+          items?: { type: string };
+          markdownDescription?: string;
+        }
+      >;
+    };
     menus: Record<string, { command: string; when?: string }[]>;
   };
 }
@@ -48,6 +64,10 @@ describe('extension manifest', () => {
     expect(manifest.extensionKind).toEqual(['workspace', 'ui']);
   });
 
+  it('activates for a restored response document so its tab can be closed', () => {
+    expect(manifest.activationEvents).toEqual(['onFileSystem:streamscope-response']);
+  });
+
   it('pins @types/vscode to the minimum supported VS Code version', () => {
     expect(manifest.engines.vscode).toMatch(/^\^\d+\.\d+\.\d+$/);
     expect(manifest.devDependencies['@types/vscode']).toBe(manifest.engines.vscode.slice(1));
@@ -67,10 +87,11 @@ describe('extension manifest', () => {
     expect(manifest.files).toContain('dist/extension.js');
   });
 
-  it('ships the bundle, format worker, language files, changelog and license', () => {
+  it('ships the bundle, format worker, response page, language files, changelog and license', () => {
     expect(manifest.files).toEqual([
       'dist/extension.js',
       'dist/format-worker.js',
+      'dist/response-view.js',
       'syntaxes/http.tmLanguage.json',
       'language-configuration.json',
       'CHANGELOG.md',
@@ -104,12 +125,15 @@ describe('extension manifest', () => {
       'streamscope.saveResponse',
       'streamscope.showResponseHeaders',
       'streamscope.showResponseBody',
+      'streamscope.showResponse',
+      'streamscope.showResponseView',
       'streamscope.selectEnvironment',
       'streamscope.setSecret',
       'streamscope.clearSecret',
       'streamscope.listSecrets',
       'streamscope.moveToSecretStorage',
       'streamscope.showLog',
+      'streamscope.showHistory',
     ]);
   });
 
@@ -129,7 +153,9 @@ describe('extension manifest', () => {
 
     expect(
       Object.fromEntries(
-        Object.entries(properties).map(([name, property]) => [name, property.default]),
+        Object.entries(properties)
+          .filter(([name]) => !/^streamscope\.(stream|view)\./.test(name))
+          .map(([name, property]) => [name, property.default]),
       ),
     ).toEqual({
       'streamscope.request.connectTimeout': '30s',
@@ -141,22 +167,145 @@ describe('extension manifest', () => {
     });
   });
 
+  it('contributes stream and view settings with their defaults', () => {
+    const properties = manifest.contributes.configuration.properties;
+    const names = [
+      'streamscope.stream.maxEventSize',
+      'streamscope.stream.memoryEvents',
+      'streamscope.stream.maxSpillSize',
+      'streamscope.stream.maxTotalSpillSize',
+      'streamscope.stream.typeFields',
+      'streamscope.view.default',
+    ];
+
+    expect(
+      Object.keys(properties).filter((name) => /^streamscope\.(stream|view)\./.test(name)),
+    ).toEqual(names);
+    expect(Object.fromEntries(names.map((name) => [name, properties[name]?.default]))).toEqual({
+      'streamscope.stream.maxEventSize': '16MiB',
+      'streamscope.stream.memoryEvents': 10_000,
+      'streamscope.stream.maxSpillSize': '512MiB',
+      'streamscope.stream.maxTotalSpillSize': '2GiB',
+      'streamscope.stream.typeFields': ['type', 'event', 'object'],
+      'streamscope.view.default': 'events',
+    });
+
+    for (const name of [
+      'streamscope.stream.maxEventSize',
+      'streamscope.stream.maxSpillSize',
+      'streamscope.stream.maxTotalSpillSize',
+    ]) {
+      const property = properties[name];
+      expect(property?.type).toBe('string');
+      expect(property?.pattern).toBe('^\\d+(KiB|MiB|GiB)$');
+      const pattern = new RegExp(property?.pattern ?? '');
+      expect(pattern.test('512KiB')).toBe(true);
+      expect(pattern.test('16MiB')).toBe(true);
+      expect(pattern.test('2GiB')).toBe(true);
+      expect(pattern.test('16 MiB')).toBe(false);
+      expect(pattern.test('16mb')).toBe(false);
+    }
+
+    expect(properties['streamscope.stream.memoryEvents']).toMatchObject({
+      type: 'integer',
+      minimum: 100,
+      maximum: 1_000_000,
+    });
+    expect(properties['streamscope.stream.typeFields']).toMatchObject({
+      type: 'array',
+      items: { type: 'string' },
+    });
+    expect(properties['streamscope.view.default']).toMatchObject({
+      type: 'string',
+      enum: ['events', 'reply', 'raw'],
+    });
+    for (const name of names) {
+      expect(properties[name]?.markdownDescription?.trim()).toBeTruthy();
+    }
+  });
+
+  it('keeps a workspace from lifting the limits on memory and disk', () => {
+    const properties = manifest.contributes.configuration.properties;
+
+    expect(
+      Object.fromEntries(
+        Object.entries(properties)
+          .filter(([name]) => name.startsWith('streamscope.stream.'))
+          .map(([name, property]) => [name, property.scope]),
+      ),
+    ).toEqual({
+      'streamscope.stream.maxEventSize': 'resource',
+      'streamscope.stream.memoryEvents': 'resource',
+      'streamscope.stream.maxSpillSize': 'machine',
+      'streamscope.stream.maxTotalSpillSize': 'machine',
+      'streamscope.stream.typeFields': 'resource',
+    });
+  });
+
+  it('says that the spill size settings apply after a reload', () => {
+    const properties = manifest.contributes.configuration.properties;
+
+    expect(properties['streamscope.stream.maxSpillSize']?.markdownDescription).toMatch(/reload/i);
+    expect(properties['streamscope.stream.maxTotalSpillSize']?.markdownDescription).toMatch(
+      /reload/i,
+    );
+  });
+
   it('only offers response commands where they apply', () => {
     const palette = Object.fromEntries(
       manifest.contributes.menus.commandPalette?.map(({ command, when }) => [command, when]) ?? [],
     );
+    const anywhere =
+      "editorLangId == http || resourceScheme == streamscope-response || activeWebviewPanelId == 'streamscope.response'";
 
     expect(palette['streamscope.sendRequest']).toBe(
       'editorLangId == http && resourceScheme != streamscope-response',
     );
     expect(palette['streamscope.moveToSecretStorage']).toBe('false');
-    expect(palette['streamscope.saveResponse']).toBe(
-      'editorLangId == http || resourceScheme == streamscope-response',
-    );
-    expect(manifest.contributes.menus['editor/title']?.map(({ command }) => command)).toEqual([
+    for (const command of [
+      'streamscope.stopRequest',
+      'streamscope.saveResponse',
       'streamscope.showResponseHeaders',
       'streamscope.showResponseBody',
-      'streamscope.saveResponse',
+      'streamscope.showResponse',
+      'streamscope.showResponseView',
+    ]) {
+      expect(palette[command]).toBe(anywhere);
+    }
+  });
+
+  it('names the response commands after what they open', () => {
+    const titles = Object.fromEntries(
+      manifest.contributes.commands.map(({ command, title }) => [command, title]),
+    );
+
+    expect(titles['streamscope.showResponse']).toBe('Show Response');
+    expect(titles['streamscope.showResponseView']).toBe('Switch Response View…');
+    expect(titles['streamscope.showHistory']).toBe('Show History');
+    expect(titles['streamscope.showResponseBody']).toBe('Open Response Body in Editor');
+    expect(titles['streamscope.showResponseHeaders']).toBe('Open Response Headers in Editor');
+  });
+
+  it('puts Show Response on response documents and the run actions on the response panel', () => {
+    expect(
+      manifest.contributes.menus['editor/title']?.map(({ command, when }) => [command, when]),
+    ).toEqual([
+      ['streamscope.showResponse', 'resourceScheme == streamscope-response'],
+      [
+        'streamscope.showResponseHeaders',
+        'resourceScheme == streamscope-response && !(resourceFilename =~ /\\.headers\\.http$/)',
+      ],
+      [
+        'streamscope.showResponseBody',
+        'resourceScheme == streamscope-response && resourceFilename =~ /\\.headers\\.http$/',
+      ],
+      ['streamscope.saveResponse', 'resourceScheme == streamscope-response'],
+      [
+        'streamscope.stopRequest',
+        "activeWebviewPanelId == 'streamscope.response' && !streamscope.responseReadOnly",
+      ],
+      ['streamscope.saveResponse', "activeWebviewPanelId == 'streamscope.response'"],
+      ['streamscope.showResponseBody', "activeWebviewPanelId == 'streamscope.response'"],
     ]);
   });
 
@@ -165,7 +314,12 @@ describe('extension manifest', () => {
       untrustedWorkspaces: {
         supported: 'limited',
         description: expect.stringMatching(/\S/) as unknown,
-        restrictedConfigurations: ['streamscope.request.caFile'],
+        restrictedConfigurations: [
+          'streamscope.request.caFile',
+          'streamscope.stream.maxEventSize',
+          'streamscope.stream.memoryEvents',
+          'streamscope.stream.typeFields',
+        ],
       },
       virtualWorkspaces: {
         supported: 'limited',

@@ -1,7 +1,36 @@
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import * as path from 'node:path';
+import { afterEach, beforeEach } from 'vitest';
+import { SpillArea } from '../../../src/events/spill';
 import { parseHttpFile } from '../../../src/http-file/parse';
 import type { RequestSettings, RunDependencies, RunInput } from '../../../src/runs/run';
+import { defaultStreamLimits } from '../../../src/streaming/limits';
 import type { VariableSources } from '../../../src/variables/sources';
 import { NodeTransport } from '../../../src/transport/node-transport';
+
+let currentSpillArea: SpillArea | undefined;
+
+export function useSpillArea(): () => SpillArea {
+  let root = '';
+  beforeEach(async () => {
+    root = mkdtempSync(path.join(tmpdir(), 'streamscope-runs-'));
+    currentSpillArea = await SpillArea.open(root);
+  });
+  afterEach(async () => {
+    await currentSpillArea?.dispose();
+    currentSpillArea = undefined;
+    rmSync(root, { recursive: true, force: true });
+  });
+  return spillArea;
+}
+
+function spillArea(): SpillArea {
+  if (currentSpillArea === undefined) {
+    throw new Error('call useSpillArea() in the test file first');
+  }
+  return currentSpillArea;
+}
 
 export const defaultSettings: RequestSettings = {
   connectTimeoutMs: 5000,
@@ -59,5 +88,7 @@ export function runInput(
     variables: { ...emptyVariables, ...options.variables },
     restricted: options.restricted ?? false,
     confirmSend: options.confirmSend,
+    spill: spillArea(),
+    limits: defaultStreamLimits,
   };
 }

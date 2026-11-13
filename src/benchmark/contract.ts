@@ -14,6 +14,21 @@ export const benchmarkEnvironment = {
   out: 'STREAMSCOPE_BENCH_OUT',
 } as const;
 
+const loopbackUrl = /^http:\/\/127\.0\.0\.1:(\d{1,5})\/\S*$/;
+const refusedUrlMessage = 'The benchmark commands accept only http://127.0.0.1:<port>/… URLs.';
+
+export function benchmarkEnabled(
+  environment: Readonly<Record<string, string | undefined>>,
+  production: boolean,
+): boolean {
+  return !production && environment[benchmarkEnvironment.enabled] === '1';
+}
+
+export function checkBenchmarkUrl(url: string): string | undefined {
+  const port = Number(loopbackUrl.exec(url)?.[1]);
+  return port >= 1 && port <= 65_535 ? undefined : refusedUrlMessage;
+}
+
 export interface StreamBenchmarkRequest {
   url: string;
   surface: string;
@@ -24,6 +39,8 @@ export interface StreamBenchmarkResult {
   events: number;
   visible: number;
   latency: LatencySummary;
+  longestTaskMs: number;
+  tasksOverBudget: number;
   endedBy: 'completed' | 'failed' | 'cancelled';
 }
 
@@ -39,7 +56,6 @@ export const walkthroughSteps = [
   'raw-live',
   'headers',
   'detail',
-  'capture-entry',
   'stopped',
   'checks',
 ] as const;

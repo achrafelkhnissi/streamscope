@@ -7,6 +7,7 @@ import { SpillArea, type SpillFile } from '../../../src/events/spill';
 import { EventStore, type EventStoreOptions } from '../../../src/events/store';
 import { defaultStreamLimits, maxIndexedEvents, maxLabels } from '../../../src/streaming/limits';
 import { parseEventBytes } from '../../../src/streaming/parser';
+import { collect } from '../../support/memory';
 
 const encoder = new TextEncoder();
 
@@ -146,6 +147,130 @@ describe('EventStore', () => {
 
     expect(await capped.read(3)).toBeUndefined();
     await area.dispose();
+  });
+
+  it('compacts away in-memory events but keeps the index', async () => {
+    const area = await SpillArea.open(root);
+    const file = await area.create();
+    const events = store({ spill: file });
+    const appended = spillLines(file, 3);
+    for (const event of appended) {
+      events.append(event);
+    }
+    const summaries = [1, 2, 3].map((index) => events.summary(index));
+
+    events.compact();
+
+    expect(events.inMemory(1)).toBeUndefined();
+    expect(events.inMemory(2)).toBeUndefined();
+    expect(events.inMemory(3)).toBeUndefined();
+    expect(events.count).toBe(3);
+    expect([1, 2, 3].map((index) => events.summary(index))).toEqual(summaries);
+    expect(await events.read(1)).toEqual(appended[0]);
+    expect(await events.read(3)).toEqual(appended[2]);
+    await area.dispose();
+  });
+
+  it('counts only the events kept after compacting against the byte budget', () => {
+    const events = store({ memoryEvents: 100, memoryBytes: 20 });
+    for (let index = 1; index <= 3; index += 1) {
+      events.append(event(index));
+    }
+
+    events.compact();
+    for (let index = 4; index <= 6; index += 1) {
+      events.append(event(index));
+    }
+
+    expect(events.inMemory(3)).toBeUndefined();
+    expect(events.inMemory(4)).toEqual(event(4));
+    expect(events.inMemory(5)).toEqual(event(5));
+    expect(events.inMemory(6)).toEqual(event(6));
+    expect(events.count).toBe(6);
+  });
+
+  it('keeps holding the newest events by count after compacting', () => {
+    const events = store({ memoryEvents: 2 });
+    events.append(event(1));
+    events.append(event(2));
+
+    events.compact();
+    for (let index = 3; index <= 6; index += 1) {
+      events.append(event(index));
+    }
+
+    expect(events.inMemory(4)).toBeUndefined();
+    expect(events.inMemory(5)).toEqual(event(5));
+    expect(events.inMemory(6)).toEqual(event(6));
+  });
+
+  it('compacts a store without a spill file and an empty store', async () => {
+    const empty = store();
+    empty.compact();
+    empty.append(event(1));
+
+    expect(empty.inMemory(1)).toEqual(event(1));
+
+    const withoutSpill = store();
+    withoutSpill.append(event(1));
+    withoutSpill.append(event(2));
+    withoutSpill.compact();
+    withoutSpill.compact();
+
+    expect(withoutSpill.count).toBe(2);
+    expect(withoutSpill.summary(2)?.label).toBe('t-2');
+    expect(await withoutSpill.read(1)).toBeUndefined();
+  });
+
+  it('release() frees the ring and the index, and nothing can be read afterwards', async () => {
+    const area = await SpillArea.open(root);
+    const file = await area.create();
+    const memoryEvents = 1_000_000;
+    const events = store({ memoryEvents, memoryBytes: 1024 * 1024 * 1024, spill: file });
+    for (const appended of spillLines(file, 70_000)) {
+      events.append(appended);
+    }
+    const indexBytes = events.indexBytes;
+    collect();
+    const heapBefore = process.memoryUsage().heapUsed;
+    const buffersBefore = process.memoryUsage().arrayBuffers;
+
+    events.release();
+    collect();
+
+    expect(indexBytes).toBe((65_536 + 65_536) * 27);
+    expect(events.indexBytes).toBe(0);
+    expect(buffersBefore - process.memoryUsage().arrayBuffers).toBeGreaterThanOrEqual(indexBytes);
+    expect(heapBefore - process.memoryUsage().heapUsed).toBeGreaterThan(memoryEvents * 8);
+    expect(events.count).toBe(70_000);
+    expect(events.summary(1)).toBeUndefined();
+    expect(events.summary(70_000)).toBeUndefined();
+    expect(events.inMemory(70_000)).toBeUndefined();
+    expect(await events.read(1)).toBeUndefined();
+    expect(await events.read(70_000)).toBeUndefined();
+    await area.dispose();
+  });
+
+  it('reports the capacity of its index blocks as its index bytes', () => {
+    const events = store({ memoryEvents: 2, maxIndexedEvents: 65_536 });
+
+    expect(events.indexBytes).toBe(0);
+    events.append(event(1));
+    expect(events.indexBytes).toBe(1024 * 27);
+    for (let index = 2; index <= 1025; index += 1) {
+      events.append(event(index));
+    }
+    expect(events.indexBytes).toBe(2048 * 27);
+    for (let index = 1026; index <= 65_536; index += 1) {
+      events.append(event(index));
+    }
+    expect(events.indexBytes).toBe(65_536 * 27);
+    events.append(event(65_537));
+    expect(events.indexBytes).toBe(2 * 65_536 * 27);
+    for (let index = 65_538; index <= 140_000; index += 1) {
+      events.append(event(index));
+    }
+    expect(events.indexBytes).toBe(2 * 65_536 * 27);
   });
 
   it('stops interning labels after 4,096 distinct ones', async () => {

@@ -1,3 +1,5 @@
+import { StreamSession } from '../../../src/events/session';
+import { RawTail } from '../../../src/runs/raw-tail';
 import type { RunSnapshot } from '../../../src/runs/run';
 
 export function snapshot(overrides: Partial<RunSnapshot> = {}): RunSnapshot {
@@ -7,6 +9,7 @@ export function snapshot(overrides: Partial<RunSnapshot> = {}): RunSnapshot {
     label: 'items',
     status: 'completed',
     startedAt: 0,
+    wallStartedAt: new Date(2026, 10, 12, 9, 5, 7).getTime(),
     elapsedMs: 120,
     sent: {
       method: 'GET',
@@ -29,10 +32,35 @@ export function snapshot(overrides: Partial<RunSnapshot> = {}): RunSnapshot {
     hops: [],
     timing: { dnsMs: 3, connectMs: 12.4, tlsMs: 20, firstByteMs: 45, totalMs: 80 },
     wireBytes: 512,
+    receivedBytes: 1229,
     body: new Uint8Array(1229),
+    bodyKept: true,
+    bodyLength: overrides.body?.length ?? 1229,
+    bodySource: 'memory',
+    stream: undefined,
+    raw: new RawTail(1024),
+    rawSource: 'memory',
+    replySource: 'memory',
+    rawData: 'saved',
+    released: false,
     failure: undefined,
     problems: [],
     sensitiveValues: [],
     ...overrides,
   };
+}
+
+export function streamOf(count: number): StreamSession {
+  const session = new StreamSession({
+    contentType: 'application/x-ndjson',
+    directive: undefined,
+    spill: undefined,
+    now: () => 0,
+    onUpdate: () => undefined,
+    onText: () => undefined,
+  });
+  session.write(new TextEncoder().encode('{"type":"TEXT_MESSAGE_CONTENT"}\n'.repeat(count)));
+  session.end();
+  session.dispose();
+  return session;
 }

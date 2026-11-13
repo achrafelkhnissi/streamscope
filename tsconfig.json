@@ -14,5 +14,6 @@
     "skipLibCheck": true,
     "noEmit": true
   },
-  "include": ["src", "*.mts"]
+  "include": ["src", "*.mts"],
+  "exclude": ["src/webview"]
 }

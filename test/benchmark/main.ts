@@ -23,6 +23,7 @@ async function main(): Promise<void> {
       sample: { type: 'string', default: '5000' },
       surface: { type: 'string', default: 'webview' },
       walkthrough: { type: 'boolean', default: false },
+      theme: { type: 'string' },
       extension: { type: 'string', multiple: true, default: [] },
     },
   });
@@ -57,6 +58,7 @@ async function main(): Promise<void> {
       seconds: Number(values.minutes) * 60,
       eventBytes,
       walkthrough: values.walkthrough,
+      theme: values.theme,
       extensions: values.extension,
     });
     console.log(JSON.stringify(result, null, 2));

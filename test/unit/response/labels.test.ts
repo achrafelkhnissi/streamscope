@@ -6,10 +6,12 @@ import {
   fileSafeName,
   formatBytes,
   formatDuration,
+  formatTimeOfDay,
+  noBodyMessage,
   requestLabel,
   saveExtension,
 } from '../../../src/response/labels';
-import { snapshot } from './fixtures';
+import { snapshot, streamOf } from './fixtures';
 
 function requests(...lines: string[]) {
   return parseHttpFile(lines.join('\n')).requests;
@@ -61,6 +63,20 @@ describe('labels', () => {
     expect(saveExtension(undefined)).toBe('.bin');
   });
 
+  it('saves event streams as .ndjson or .sse whatever the content type says', () => {
+    expect(saveExtension('application/json', 'ndjson')).toBe('.ndjson');
+    expect(saveExtension('application/x-ndjson', 'ndjson')).toBe('.ndjson');
+    expect(saveExtension('text/event-stream', 'sse')).toBe('.sse');
+    expect(saveExtension(undefined, 'sse')).toBe('.sse');
+  });
+
+  it('keeps the content type extension for the other stream formats', () => {
+    expect(saveExtension('application/json', 'json')).toBe('.json');
+    expect(saveExtension('text/plain', 'text')).toBe('.txt');
+    expect(saveExtension('application/x-unknown', 'raw')).toBe('.bin');
+    expect(saveExtension('application/json', undefined)).toBe('.json');
+  });
+
   it('formats sizes 1024-based', () => {
     expect(formatBytes(512)).toBe('512 B');
     expect(formatBytes(1229)).toBe('1.2 KB');
@@ -71,6 +87,42 @@ describe('labels', () => {
     expect(formatDuration(120)).toBe('120 ms');
     expect(formatDuration(12.6)).toBe('13 ms');
     expect(formatDuration(2100)).toBe('2.1 s');
+  });
+
+  it('formats the time of day in local time with two digits per part', () => {
+    expect(formatTimeOfDay(new Date(2026, 10, 12, 9, 5, 7, 999).getTime())).toBe('09:05:07');
+    expect(formatTimeOfDay(new Date(2026, 10, 12, 0, 0, 0).getTime())).toBe('00:00:00');
+    expect(formatTimeOfDay(new Date(2026, 10, 12, 23, 59, 59).getTime())).toBe('23:59:59');
+  });
+
+  it('sizes a response by its body length even when the bytes were dropped', () => {
+    const dropped = snapshot({
+      body: new Uint8Array(),
+      bodyLength: 2048,
+      bodySource: 'spill',
+    });
+
+    expect(describeOutcome(dropped)).toBe('200 OK · 2.0 KB · 120 ms');
+  });
+
+  it('says why there is no body to open', () => {
+    const stream = { body: new Uint8Array(), bodyKept: false };
+
+    expect(noBodyMessage(snapshot({ ...stream }))).toBe(
+      'This response is a stream: see its events in the response panel, or save it.',
+    );
+    expect(noBodyMessage(snapshot({ status: 'receiving', head: undefined }))).toBe(
+      'The response body is still arriving.',
+    );
+    expect(noBodyMessage(snapshot({ body: new Uint8Array(), bodyLength: 0 }))).toBe(
+      'This response has no body to open.',
+    );
+    expect(
+      noBodyMessage(snapshot({ body: new Uint8Array(), bodyLength: 4096, bodySource: 'gone' })),
+    ).toBe('This body is no longer available.');
+    expect(
+      noBodyMessage(snapshot({ body: new Uint8Array(), bodyLength: 4096, bodySource: 'spill' })),
+    ).toBe('This body is no longer available.');
   });
 
   it('describes each outcome', () => {
@@ -103,6 +155,25 @@ describe('labels', () => {
     expect(describeOutcome(snapshot({ status: 'receiving', elapsedMs: 2100 }))).toBe(
       'Running · 2.1 s',
     );
+  });
+
+  it('counts events in the outcome of a stream', () => {
+    const stream = { body: new Uint8Array(), bodyKept: false };
+
+    expect(
+      describeOutcome(
+        snapshot({ ...stream, status: 'receiving', elapsedMs: 2100, stream: streamOf(34) }),
+      ),
+    ).toBe('Running · 34 events · 2.1 s');
+    expect(describeOutcome(snapshot({ ...stream, elapsedMs: 4300, stream: streamOf(120) }))).toBe(
+      '200 OK · 120 events · 4.3 s',
+    );
+    expect(describeOutcome(snapshot({ ...stream, elapsedMs: 900, stream: streamOf(1) }))).toBe(
+      '200 OK · 1 event · 900 ms',
+    );
+    expect(
+      describeOutcome(snapshot({ status: 'receiving', elapsedMs: 2100, stream: streamOf(0) })),
+    ).toBe('Running · 2.1 s');
   });
 
   it('masks sensitive values in the outcome text', () => {

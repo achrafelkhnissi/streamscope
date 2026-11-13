@@ -1,3 +1,5 @@
+import * as path from 'node:path';
+
 const surfaceNamePattern = /^[a-z0-9-]+$/;
 const devToolsListening = /DevTools listening on ws:\/\/127\.0\.0\.1:(\d+)\//;
 const passedVariables = [
@@ -19,6 +21,23 @@ const passedVariables = [
   'DBUS_SESSION_BUS_ADDRESS',
 ];
 
+export const colorThemes = [
+  'Default Dark Modern',
+  'Default Light Modern',
+  'Default High Contrast',
+  'Default High Contrast Light',
+] as const;
+
+const profileDefaults = {
+  'workbench.startupEditor': 'none',
+  'workbench.tips.enabled': false,
+  'telemetry.telemetryLevel': 'off',
+  'update.mode': 'none',
+  'extensions.autoCheckUpdates': false,
+  'chat.disableAIFeatures': true,
+  'workbench.secondarySideBar.defaultVisibility': 'hidden',
+};
+
 export interface VscodeLaunch {
   walkthrough: boolean;
   platform: NodeJS.Platform;
@@ -29,10 +48,33 @@ export interface VscodeLaunch {
   workspace: string;
 }
 
+export function profileSettings(theme?: string): Record<string, string | boolean> {
+  if (theme === undefined) {
+    return { ...profileDefaults };
+  }
+  if (!colorThemes.some((accepted) => accepted === theme)) {
+    throw new Error(`Use one of ${colorThemes.join(', ')} for --theme.`);
+  }
+  return { ...profileDefaults, 'workbench.colorTheme': theme };
+}
+
 export function checkSurfaceName(name: string): string | undefined {
   return surfaceNamePattern.test(name)
     ? undefined
     : 'Use lowercase letters, digits and hyphens for --surface.';
+}
+
+export function checkDevelopmentPaths(paths: readonly string[], executable: string): void {
+  for (const folder of paths) {
+    const relative = path.relative(folder, executable);
+    const outside =
+      relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative);
+    if (!outside) {
+      throw new Error(
+        `The development extension folder ${folder} contains VS Code at ${executable}, so VS Code would apply one of its built-in themes instead of the configured one. Load the extension from its own folder.`,
+      );
+    }
+  }
 }
 
 export function vscodeArguments(launch: VscodeLaunch): string[] {

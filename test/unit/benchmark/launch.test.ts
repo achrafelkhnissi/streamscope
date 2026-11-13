@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
+  checkDevelopmentPaths,
   checkSurfaceName,
+  colorThemes,
   devToolsPort,
+  profileSettings,
   screenshotName,
   vscodeArguments,
   vscodeEnvironment,
@@ -23,6 +26,49 @@ describe('checkSurfaceName', () => {
   it.each(['../x', 'Webview', 'a/b', ''])('rejects %j', (name) => {
     expect(checkSurfaceName(name)).toBe('Use lowercase letters, digits and hyphens for --surface.');
   });
+});
+
+describe('profileSettings', () => {
+  it('keeps the settings that quiet the throwaway profile and sets no theme by default', () => {
+    const settings = profileSettings();
+
+    expect(settings).toMatchObject({
+      'workbench.startupEditor': 'none',
+      'telemetry.telemetryLevel': 'off',
+      'update.mode': 'none',
+    });
+    expect(settings).not.toHaveProperty('workbench.colorTheme');
+  });
+
+  it.each([
+    'Default Dark Modern',
+    'Default Light Modern',
+    'Default High Contrast',
+    'Default High Contrast Light',
+  ])('writes the requested theme into the profile settings: %s', (theme) => {
+    const settings = profileSettings(theme);
+
+    expect(settings['workbench.colorTheme']).toBe(theme);
+    expect(settings['telemetry.telemetryLevel']).toBe('off');
+  });
+
+  it('accepts exactly the four default themes', () => {
+    expect(colorThemes).toEqual([
+      'Default Dark Modern',
+      'Default Light Modern',
+      'Default High Contrast',
+      'Default High Contrast Light',
+    ]);
+  });
+
+  it.each(['Solarized Dark', 'default dark modern', '', 'Default Dark Modern\n'])(
+    'refuses the theme %j',
+    (theme) => {
+      expect(() => profileSettings(theme)).toThrow(
+        'Use one of Default Dark Modern, Default Light Modern, Default High Contrast, Default High Contrast Light for --theme.',
+      );
+    },
+  );
 });
 
 describe('vscodeArguments', () => {
@@ -57,6 +103,26 @@ describe('vscodeArguments', () => {
     expect(args).toContain('--user-data-dir=/tmp/ssv-1/ud');
     expect(args.at(-1)).toBe('/tmp/ssv-1/ws');
   });
+});
+
+describe('checkDevelopmentPaths', () => {
+  const executable =
+    '/repo/.vscode-test/vscode-darwin-arm64-1.146.0/Visual Studio Code.app/Contents/MacOS/Code';
+
+  it('accepts folders that do not contain VS Code', () => {
+    expect(() => {
+      checkDevelopmentPaths(['/tmp/ssv-1/streamscope', '/repo-spike', '/repo/spike'], executable);
+    }).not.toThrow();
+  });
+
+  it.each(['/repo', '/repo/.vscode-test', '/'])(
+    'refuses %s, which holds the built-in themes VS Code would then pick from',
+    (folder) => {
+      expect(() => {
+        checkDevelopmentPaths(['/tmp/ssv-1/streamscope', folder], executable);
+      }).toThrow(`The development extension folder ${folder} contains VS Code at ${executable}`);
+    },
+  );
 });
 
 describe('vscodeEnvironment', () => {

@@ -16,7 +16,11 @@ export class ResponseFileSystem implements vscode.FileSystemProvider, vscode.Dis
   write(uri: vscode.Uri, data: Uint8Array): void {
     const existing = this.files.get(uri.path);
     const now = Date.now();
-    this.files.set(uri.path, { data, ctime: existing?.ctime ?? now, mtime: now });
+    this.files.set(uri.path, {
+      data,
+      ctime: existing?.ctime ?? now,
+      mtime: Math.max(now, (existing?.mtime ?? 0) + 1),
+    });
     this.changed.fire([
       { type: existing ? vscode.FileChangeType.Changed : vscode.FileChangeType.Created, uri },
     ]);

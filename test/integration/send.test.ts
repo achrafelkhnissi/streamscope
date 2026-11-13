@@ -60,6 +60,10 @@ function send(): Thenable<unknown> {
   return vscode.commands.executeCommand('streamscope.sendRequest');
 }
 
+function showBody(): Thenable<unknown> {
+  return vscode.commands.executeCommand('streamscope.showResponseBody');
+}
+
 describe('sending requests', () => {
   let folder = '';
   const servers: LocalServer[] = [];
@@ -98,6 +102,8 @@ describe('sending requests', () => {
     await open('pretty.http', [`GET ${server.url}/items`]);
 
     await send();
+    assert.deepEqual(responseTabs(), []);
+    await showBody();
 
     const body = responseTabs().find((uri) => uri.path.endsWith('.json'));
     assert.ok(body, 'the body document is not open');
@@ -195,6 +201,7 @@ describe('sending requests', () => {
     await open('resend.http', [`GET ${server.url}/count`]);
 
     await send();
+    await showBody();
     await send();
 
     const bodies = responseTabs().filter((uri) => uri.path.endsWith('.json'));
@@ -202,6 +209,49 @@ describe('sending requests', () => {
     const [body] = bodies;
     assert.ok(body);
     assert.equal(await text(body), '{\n  "count": 2\n}');
+  });
+
+  it('moves the modified time of a rewritten response forward within one millisecond', async () => {
+    let count = 0;
+    const server = await serve((_request, response) => {
+      count += 1;
+      response.writeHead(200, { 'Content-Type': 'application/json' });
+      response.end(JSON.stringify({ count }));
+    });
+    await open('mtime.http', [`GET ${server.url}/count`]);
+    const realNow = Date.now;
+    const frozen = realNow();
+    Date.now = () => frozen;
+    try {
+      await send();
+      await showBody();
+      const body = responseTabs().find((uri) => uri.path.endsWith('.json'));
+      assert.ok(body);
+      const first = (await vscode.workspace.fs.stat(body)).mtime;
+      await send();
+      const second = (await vscode.workspace.fs.stat(body)).mtime;
+
+      assert.ok(second > first, `the modified time stayed at ${String(first)}`);
+      assert.equal(await text(body), '{\n  "count": 2\n}');
+    } finally {
+      Date.now = realNow;
+    }
+  });
+
+  it('closes response documents whose content is gone, as after a window reload', async () => {
+    const server = await serve((_request, response) => {
+      response.writeHead(200, { 'Content-Type': 'application/json' });
+      response.end('{"restored":false}');
+    });
+    await open('restored.http', [`GET ${server.url}/restored`]);
+    await send();
+    await showBody();
+    await vscode.commands.executeCommand('streamscope.showResponseHeaders');
+    assert.equal(responseTabs().length, 2);
+
+    await vscode.commands.executeCommand('streamscope.test.closeResponseTabs');
+
+    assert.deepEqual(responseTabs(), []);
   });
 
   it('saves the raw decoded body', async () => {
@@ -228,6 +278,7 @@ describe('sending requests', () => {
     const target = vscode.Uri.file(path.join(folder, 'from-title.json'));
 
     await send();
+    await showBody();
     const body = responseTabs().find((uri) => uri.path.endsWith('.json'));
     assert.ok(body);
     await vscode.commands.executeCommand('streamscope.saveResponse', body, target);
@@ -258,6 +309,7 @@ describe('sending requests', () => {
     }
     const second = send();
     await Promise.all([first, second]);
+    await showBody();
 
     const body = responseTabs().find((uri) => uri.path.endsWith('.json'));
     assert.ok(body);

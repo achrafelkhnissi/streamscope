@@ -82,12 +82,19 @@ describe('large responses', () => {
     const document = await vscode.workspace.openTextDocument(vscode.Uri.file(file));
 
     const sendMs: number[] = [];
+    const openMs: number[] = [];
     const baselineMs: number[] = [];
     for (let sample = 0; sample < samples; sample += 1) {
       await vscode.commands.executeCommand('workbench.action.closeAllEditors');
       await vscode.window.showTextDocument(document, vscode.ViewColumn.One);
       sendMs.push(
         await largestDelayDuring(() => vscode.commands.executeCommand('streamscope.sendRequest')),
+      );
+      assert.equal(openBodyUri(), undefined, 'the send opened the body document by itself');
+      openMs.push(
+        await largestDelayDuring(() =>
+          vscode.commands.executeCommand('streamscope.showResponseBody'),
+        ),
       );
       const bodyUri = openBodyUri();
       assert.ok(bodyUri, 'the body document is not open');
@@ -108,15 +115,20 @@ describe('large responses', () => {
     }
 
     const send = median(sendMs);
+    const open = median(openMs);
     const baseline = median(baselineMs);
     console.log(
-      `Largest event loop delay for 50 MB over ${String(samples)} runs: sending ${milliseconds(sendMs)} ms (median ${send.toFixed(1)}), VS Code opening the same document ${milliseconds(baselineMs)} ms (median ${baseline.toFixed(1)})`,
+      `Largest event loop delay for 50 MB over ${String(samples)} runs: sending ${milliseconds(sendMs)} ms (median ${send.toFixed(1)}), Open in Editor ${milliseconds(openMs)} ms (median ${open.toFixed(1)}), VS Code opening the same document ${milliseconds(baselineMs)} ms (median ${baseline.toFixed(1)})`,
     );
     assert.ok(
       send < baseline + 250,
-      `Streamscope blocked the extension host ${(send - baseline).toFixed(1)} ms longer than VS Code's own open (medians of ${String(samples)} runs)`,
+      `Sending blocked the extension host ${(send - baseline).toFixed(1)} ms longer than VS Code's own open (medians of ${String(samples)} runs)`,
     );
-    const worst = Math.max(...sendMs);
+    assert.ok(
+      open < baseline + 250,
+      `Open in Editor blocked the extension host ${(open - baseline).toFixed(1)} ms longer than VS Code's own open (medians of ${String(samples)} runs)`,
+    );
+    const worst = Math.max(...sendMs, ...openMs);
     assert.ok(worst < 2_000, `the extension host froze for ${worst.toFixed(1)} ms`);
   });
 });

@@ -20,9 +20,12 @@ import { benchmarkEnvironment } from '../../../src/benchmark/contract';
 import { startHttpServer, type LocalServer } from '../../support/servers';
 import { startStreamServer } from '../../support/stream-server';
 import { captureScreenshot } from './devtools';
+import { copyExtension } from './extension-copy';
 import {
+  checkDevelopmentPaths,
   checkSurfaceName,
   devToolsPort,
+  profileSettings,
   screenshotName,
   vscodeArguments,
   vscodeEnvironment,
@@ -41,6 +44,7 @@ export interface ViewBenchmarkOptions {
   seconds: number;
   eventBytes: number;
   walkthrough: boolean;
+  theme?: string;
   extensions: readonly string[];
 }
 
@@ -48,16 +52,6 @@ const walkthroughStream = { rate: 20, seconds: 120, eventBytes: 256 };
 const walkthroughTimeoutSeconds = 300;
 const extraSeconds = 180;
 const sampleMs = 5000;
-
-const settings = {
-  'workbench.startupEditor': 'none',
-  'workbench.tips.enabled': false,
-  'telemetry.telemetryLevel': 'off',
-  'update.mode': 'none',
-  'extensions.autoCheckUpdates': false,
-  'chat.disableAIFeatures': true,
-  'workbench.secondarySideBar.defaultVisibility': 'hidden',
-};
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -111,6 +105,7 @@ export async function runViewBenchmark(
   if (surfaceError !== undefined) {
     throw new Error(surfaceError);
   }
+  const settings = profileSettings(options.theme);
   const root = process.cwd();
   const stream = options.walkthrough
     ? walkthroughStream
@@ -165,12 +160,19 @@ export async function runViewBenchmark(
       );
     }
     const executable = await downloadAndUnzipVSCode('stable');
+    const extensionFolder = path.join(sandbox, 'streamscope');
+    copyExtension(root, extensionFolder);
+    const developmentPaths = [
+      extensionFolder,
+      ...options.extensions.map((folder) => path.resolve(root, folder)),
+    ];
+    checkDevelopmentPaths(developmentPaths, executable);
     const args = vscodeArguments({
       walkthrough: options.walkthrough,
       platform: process.platform,
       userDataDir,
       extensionsDir,
-      developmentPaths: [root, ...options.extensions.map((folder) => path.resolve(root, folder))],
+      developmentPaths,
       driver: path.join(outDirectory, 'view-driver.js'),
       workspace,
     });
