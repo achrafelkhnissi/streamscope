@@ -6,7 +6,15 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { SpillFile } from '../../../src/events/spill';
 import { parseHttpFile } from '../../../src/http-file/parse';
 import { describeOutcome, formatBytes } from '../../../src/response/labels';
-import { requestKey, requestKeyDocument, startRun, type RunStatus } from '../../../src/runs/run';
+import type { RunEnd, RunObserver } from '../../../src/runs/observer';
+import {
+  requestKey,
+  requestKeyDocument,
+  startRun,
+  type RunInput,
+  type RunSnapshot,
+  type RunStatus,
+} from '../../../src/runs/run';
 import type { Transport } from '../../../src/transport/model';
 import { createSelfSignedCertificate } from '../../support/certificate';
 import { startHttpServer, startHttpsServer, type LocalServer } from '../../support/servers';
@@ -1218,6 +1226,218 @@ describe('wall-clock start', () => {
 
     expect(snapshot.wallStartedAt).toBe(new Date('2026-11-11T10:20:30.456Z').getTime());
     expect(snapshot.startedAt).not.toBe(snapshot.wallStartedAt);
+  });
+});
+
+describe('the observer sees head, events and exactly one end on every exit path', () => {
+  interface Recording {
+    observer: RunObserver;
+    heads: number[];
+    events: number[];
+    ends: RunEnd[];
+  }
+
+  function recording(): Recording {
+    const recorded: Recording = {
+      observer: {
+        head: (head) => {
+          recorded.heads.push(head.status);
+        },
+        event: (event) => {
+          recorded.events.push(event.index);
+        },
+        end: (end) => {
+          recorded.ends.push(end);
+        },
+      },
+      heads: [],
+      events: [],
+      ends: [],
+    };
+    return recorded;
+  }
+
+  function settle(): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, 20));
+  }
+
+  async function observed(
+    recorded: Recording,
+    input: RunInput,
+    transport?: Transport,
+  ): Promise<{ snapshot: RunSnapshot; run: ReturnType<typeof startRun> }> {
+    const run = startRun(
+      { ...input, observer: recorded.observer },
+      transport === undefined ? dependencies : { ...dependencies, transport },
+    );
+    const snapshot = await run.done;
+    expect(recorded.ends).toHaveLength(1);
+    await settle();
+    expect(recorded.ends).toHaveLength(1);
+    return { snapshot, run };
+  }
+
+  it('completed: an event stream, with its format, content type, body and reply', async () => {
+    const server = await track(startStreamServer());
+    const recorded = recording();
+
+    const { snapshot, run } = await observed(
+      recorded,
+      runInput([`GET ${server.url}/stream?rate=100&seconds=0.2&size=256`]),
+    );
+
+    expect(snapshot.status).toBe('completed');
+    expect(recorded.heads).toEqual([200]);
+    const count = snapshot.stream?.store.count ?? 0;
+    expect(count).toBeGreaterThan(2);
+    expect(recorded.events).toEqual(Array.from({ length: count }, (_, at) => at + 1));
+    const end = recorded.ends[0];
+    if (end?.kind !== 'completed') {
+      throw new Error(`expected a completed end, got ${String(end?.kind)}`);
+    }
+    expect(end.format).toBe('ndjson');
+    expect(end.contentType).toBe('application/x-ndjson');
+    expect(await end.readReply()).toBe(await run.readReply());
+    expect((await end.readBody(1024))?.length).toBe(0);
+  });
+
+  it('completed: a JSON body that readBody returns whole or cut', async () => {
+    const server = await track(
+      startHttpServer((_request, response) => {
+        response.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+        response.end('{"token":"token-1"}');
+      }),
+    );
+    const recorded = recording();
+
+    await observed(recorded, runInput([`GET ${server.url}`]));
+
+    expect(recorded.heads).toEqual([200]);
+    expect(recorded.events).toEqual([]);
+    const end = recorded.ends[0];
+    if (end?.kind !== 'completed') {
+      throw new Error(`expected a completed end, got ${String(end?.kind)}`);
+    }
+    expect(end.format).toBe('json');
+    expect(end.contentType).toBe('application/json; charset=utf-8');
+    expect(Buffer.from((await end.readBody(Number.MAX_SAFE_INTEGER)) ?? []).toString()).toBe(
+      '{"token":"token-1"}',
+    );
+    expect(Buffer.from((await end.readBody(4)) ?? []).toString()).toBe('{"to');
+  });
+
+  it('failed: a run that never reached headers', async () => {
+    const server = await startHttpServer((_request, response) => response.end());
+    await server.close();
+    const recorded = recording();
+
+    const { snapshot } = await observed(recorded, runInput([`GET ${server.url}/gone`]));
+
+    expect(snapshot.status).toBe('failed');
+    expect(recorded.heads).toEqual([]);
+    expect(recorded.events).toEqual([]);
+    expect(recorded.ends).toEqual([{ kind: 'failed', message: snapshot.failure?.message }]);
+  });
+
+  it('failed: a transport that rejects', async () => {
+    const recorded = recording();
+
+    await observed(recorded, runInput(['GET https://api.example.test/items']), {
+      send: () => Promise.reject(new Error('synthetic transport failure')),
+    });
+
+    expect(recorded.ends).toEqual([
+      { kind: 'failed', message: 'The request could not be sent: synthetic transport failure.' },
+    ]);
+  });
+
+  it('failed: a body too large', async () => {
+    const server = await track(
+      startHttpServer((_request, response) => {
+        response.end(Buffer.alloc(4096, 'x'));
+      }),
+    );
+    const recorded = recording();
+
+    const { snapshot } = await observed(
+      recorded,
+      runInput([`GET ${server.url}`], { settings: { maxBodyBytes: 1024 } }),
+    );
+
+    expect(snapshot.failure?.kind).toBe('body-too-large');
+    expect(recorded.heads).toEqual([200]);
+    expect(recorded.ends).toEqual([{ kind: 'failed', message: snapshot.failure?.message }]);
+  });
+
+  it('cancelled: while receiving', async () => {
+    const server = await track(
+      startHttpServer((_request, response) => {
+        response.writeHead(200, { 'Content-Type': 'application/x-ndjson' });
+        response.write('{"type":"RUN_STARTED","threadId":"thread-1"}\n');
+      }),
+    );
+    const recorded = recording();
+    const run = startRun(
+      { ...runInput([`GET ${server.url}`]), observer: recorded.observer },
+      dependencies,
+    );
+    await waitFor(() => recorded.events.length === 1, 2000);
+
+    run.cancel();
+    await run.done;
+    await settle();
+
+    expect(recorded.heads).toEqual([200]);
+    expect(recorded.events).toEqual([1]);
+    expect(recorded.ends).toEqual([{ kind: 'cancelled' }]);
+  });
+
+  it('cancelled: before sending', async () => {
+    const server = await track(startHttpServer((_request, response) => response.end()));
+    const recorded = recording();
+    const run = startRun(
+      { ...runInput([`GET ${server.url}`]), observer: recorded.observer },
+      dependencies,
+    );
+
+    run.cancel();
+    await run.done;
+    await settle();
+
+    expect(recorded.heads).toEqual([]);
+    expect(recorded.ends).toEqual([{ kind: 'cancelled' }]);
+  });
+
+  it('cancelled: a send the user declined', async () => {
+    const recorded = recording();
+
+    await observed(
+      recorded,
+      runInput(['GET https://api.example.test/items'], {
+        confirmSend: () => Promise.resolve(false),
+      }),
+    );
+
+    expect(recorded.ends).toEqual([{ kind: 'cancelled' }]);
+  });
+
+  it('blocked: with the problems that stopped it', async () => {
+    const recorded = recording();
+
+    const { snapshot } = await observed(
+      recorded,
+      runInput(['GET https://api.example.test/{{missing}}/{{other}}']),
+    );
+
+    expect(snapshot.status).toBe('blocked');
+    expect(recorded.heads).toEqual([]);
+    expect(recorded.ends).toEqual([
+      {
+        kind: 'blocked',
+        message: snapshot.problems.map((problem) => problem.message).join(' '),
+      },
+    ]);
+    expect(snapshot.problems).toHaveLength(2);
   });
 });
 

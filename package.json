@@ -48,6 +48,7 @@
   "files": [
     "dist/extension.js",
     "dist/format-worker.js",
+    "dist/capture-worker.js",
     "dist/response-view.js",
     "syntaxes/http.tmLanguage.json",
     "language-configuration.json",

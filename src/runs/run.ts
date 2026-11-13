@@ -22,6 +22,7 @@ import type { BodyFileContext } from './body-files';
 import { buildOutgoingRequest, type BuildResult } from './build-request';
 import { parseDuration } from './duration';
 import { bodySourceOf, readBodyFromSpill, type DataSource } from './body-spill';
+import type { RunEnd, RunObserver } from './observer';
 import { readRawTail } from './raw-read';
 import { RawTail } from './raw-tail';
 
@@ -85,6 +86,7 @@ export interface RunInput {
   confirmSend: (() => Promise<boolean>) | undefined;
   spill: SpillArea | undefined;
   limits: StreamLimits;
+  observer?: RunObserver;
 }
 
 export interface RunDependencies {
@@ -203,7 +205,7 @@ export function startRun(
   dependencies: RunDependencies,
   onChange?: (snapshot: RunSnapshot) => void,
 ): RunHandle {
-  const { request, settings } = input;
+  const { request, settings, observer } = input;
   const id = nextRunId++;
   const controller = new AbortController();
   const chunks: Uint8Array[] = [];
@@ -303,12 +305,49 @@ export function startRun(
     cancelled = true;
     controller.abort();
   };
+  const readBody = (maxBytes: number): Promise<Uint8Array | undefined> =>
+    bodyDropped
+      ? readBodyFromSpill(spillFile, state.bodyLength, maxBytes)
+      : Promise.resolve(state.body.subarray(0, maxBytes));
+  const readReply = async (): Promise<string | undefined> => {
+    if (!replyDropped) {
+      return session?.reply.text() ?? '';
+    }
+    if (!(await replyWrite)) {
+      return undefined;
+    }
+    const bytes = await spillFile?.readSide();
+    return bytes === undefined ? undefined : decoder.decode(bytes);
+  };
+  const endOf = (): RunEnd => {
+    const { status, failure, head } = state;
+    if (status === 'completed') {
+      return {
+        kind: 'completed',
+        format: session?.format?.format,
+        contentType: head === undefined ? undefined : contentTypeOf(head),
+        readBody,
+        readReply,
+      };
+    }
+    if (failure !== undefined) {
+      return { kind: 'failed', message: failure.message };
+    }
+    if (status === 'blocked') {
+      return {
+        kind: 'blocked',
+        message: state.problems.map((problem) => problem.message).join(' '),
+      };
+    }
+    return { kind: 'cancelled' };
+  };
   const finish = (changes: Partial<RunState>): RunSnapshot => {
     Object.assign(state, changes, { body: Buffer.concat(chunks) });
     state.bodyLength = state.body.length;
     chunks.length = 0;
     endedAt = dependencies.clock();
     notify();
+    observer?.end(endOf());
     return snapshot();
   };
 
@@ -324,9 +363,16 @@ export function startRun(
         now: () => dependencies.clock() - state.startedAt,
         onUpdate: update,
         onText: () => undefined,
+        onEvent:
+          observer === undefined
+            ? undefined
+            : (event) => {
+                observer.event(event);
+              },
         limits: input.limits,
       });
       Object.assign(state, { head, sent, status: 'receiving', stream: session });
+      observer?.head(head);
       notify();
     },
     onData: (chunk) => {
@@ -489,21 +535,9 @@ export function startRun(
         );
       }
     },
-    readBody: (maxBytes) =>
-      bodyDropped
-        ? readBodyFromSpill(spillFile, state.bodyLength, maxBytes)
-        : Promise.resolve(state.body.subarray(0, maxBytes)),
+    readBody,
     readRaw: () => (rawDropped ? readRawTail(spillFile, released) : Promise.resolve(raw.text)),
-    readReply: async () => {
-      if (!replyDropped) {
-        return session?.reply.text() ?? '';
-      }
-      if (!(await replyWrite)) {
-        return undefined;
-      }
-      const bytes = await spillFile?.readSide();
-      return bytes === undefined ? undefined : decoder.decode(bytes);
-    },
+    readReply,
     indexBytes: () => session?.store.indexBytes ?? 0,
     release: async () => {
       released = true;

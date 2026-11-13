@@ -87,10 +87,11 @@ describe('extension manifest', () => {
     expect(manifest.files).toContain('dist/extension.js');
   });
 
-  it('ships the bundle, format worker, response page, language files, changelog, license and third-party notices', () => {
+  it('ships the bundle, format and capture workers, response page, language files, changelog, license and third-party notices', () => {
     expect(manifest.files).toEqual([
       'dist/extension.js',
       'dist/format-worker.js',
+      'dist/capture-worker.js',
       'dist/response-view.js',
       'syntaxes/http.tmLanguage.json',
       'language-configuration.json',

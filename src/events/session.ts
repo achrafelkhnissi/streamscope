@@ -2,6 +2,7 @@ import type { FormatDecision, StreamDirective } from '../streaming/detect';
 import { defaultStreamLimits, maxIndexedEvents, type StreamLimits } from '../streaming/limits';
 import { parseEventBytes, StreamParser, type StreamWarning } from '../streaming/parser';
 import { UpdateBatcher } from './batcher';
+import type { StreamEvent } from './model';
 import { ReplyAssembler } from './reply';
 import type { SpillCopy, SpillFile } from './spill';
 import { EventStore } from './store';
@@ -13,6 +14,7 @@ export interface StreamSessionOptions {
   now: () => number;
   onUpdate: () => void;
   onText: (text: string) => void;
+  onEvent?: (event: StreamEvent) => void;
   limits?: Partial<StreamLimits>;
 }
 
@@ -66,6 +68,7 @@ export class StreamSession {
         },
         event: (event) => {
           this.store.append(event);
+          options.onEvent?.(event);
           this.reply.push(event, this.decision?.format ?? 'text');
           this.batcher.schedule();
         },

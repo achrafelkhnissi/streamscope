@@ -83,6 +83,28 @@ describe('StreamSession', () => {
     state.session.dispose();
   });
 
+  it('calls onEvent once per stored event, in order', () => {
+    const { bytes } = fixture('ag-ui.ndjson');
+    const seen: { index: number; stored: number; type: unknown }[] = [];
+    const state = harness({
+      contentType: 'application/x-ndjson',
+      onEvent: (event) => {
+        const value = event.value as { type?: unknown };
+        seen.push({ index: event.index, stored: state.session.store.count, type: value.type });
+      },
+    });
+    for (const chunk of chunks(bytes, 5)) {
+      state.session.write(chunk);
+    }
+    state.session.end();
+
+    expect(seen.map(({ index }) => index)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+    expect(seen.map(({ stored }) => stored)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+    expect(seen[0]?.type).toBe('RUN_STARTED');
+    expect(seen.at(-1)?.type).toBe('RUN_FINISHED');
+    state.session.dispose();
+  });
+
   it('sends text bodies to onText', () => {
     const state = harness({ contentType: 'text/html' });
     state.session.write(encoder.encode('<p>synthetic</p>'));
