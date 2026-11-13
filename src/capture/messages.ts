@@ -164,6 +164,10 @@ export function xpathReason(name: string): string {
   return `XPath is not supported in \`{{${name}.response.body…}}\`; use a JSONPath starting with \`$\`.`;
 }
 
+export function bodySelectorReason(name: string): string {
+  return `A body reference needs \`*\` or a JSONPath, such as \`{{${name}.response.body.*}}\` or \`{{${name}.response.body.$.id}}\`.`;
+}
+
 export function headerNameReason(name: string): string {
   return `A header reference needs a header name, such as \`{{${name}.response.headers.Content-Type}}\`.`;
 }

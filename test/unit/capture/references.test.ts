@@ -234,8 +234,6 @@ describe('evaluateResponseReference', () => {
       });
     }
     for (const reference of [
-      'response.body',
-      'response.body.',
       'response.body.//token',
       'response.body.token',
       'response.body.*.token',
@@ -243,6 +241,18 @@ describe('evaluateResponseReference', () => {
       await expect(evaluateResponseReference(run, reference)).resolves.toStrictEqual({
         ok: false,
         reason: xpath,
+      });
+    }
+  });
+
+  it('says a body reference with nothing after it needs * or a JSONPath', async () => {
+    const run = referenced({ body: '{}', workerFile: missingWorker });
+
+    for (const reference of ['response.body', 'response.body.']) {
+      await expect(evaluateResponseReference(run, reference)).resolves.toStrictEqual({
+        ok: false,
+        reason:
+          'A body reference needs `*` or a JSONPath, such as `{{login.response.body.*}}` or `{{login.response.body.$.id}}`.',
       });
     }
   });

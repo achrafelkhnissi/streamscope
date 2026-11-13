@@ -5,6 +5,7 @@ import { parseExpression, sourcesOf } from '../expressions/parse';
 import type { ResponseHead } from '../transport/model';
 import { evaluateJobs, fileBodyBytes, sourceKey, type BodySubject } from './body';
 import {
+  bodySelectorReason,
   bodyUnavailableReason,
   cancelledReason,
   failedReason,
@@ -62,6 +63,9 @@ function translate(name: string, reference: string): Translation {
   if (selector !== undefined) {
     if (selector === '*') {
       return parsed('body', 'body');
+    }
+    if (selector === '') {
+      return { ok: false, reason: bodySelectorReason(name) };
     }
     if (!selector.startsWith('$')) {
       return { ok: false, reason: xpathReason(name) };
