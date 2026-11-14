@@ -218,6 +218,11 @@ async function capturesWaitForConfirmedSends(folder: string): Promise<void> {
   }
 }
 
+async function listsNoTests(): Promise<void> {
+  const items = await vscode.commands.executeCommand<unknown[]>('streamscope.test.testItems');
+  assert.deepEqual(items, [], 'a restricted workspace listed tests');
+}
+
 export async function run(): Promise<void> {
   const extension = vscode.extensions.getExtension(extensionId);
   assert.ok(extension, `${extensionId} is not loaded`);
@@ -229,6 +234,7 @@ export async function run(): Promise<void> {
 
   assert.equal(vscode.workspace.getConfiguration('streamscope.request').get('caFile'), '');
   await blocksEverythingRestricted(folder);
+  await listsNoTests();
   await usesOnlyTheFolderForItsOwnFiles(folder);
   await refusesARelativeUserCaFile(folder);
   await capturesWaitForConfirmedSends(folder);

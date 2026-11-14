@@ -1,0 +1,12 @@
+@baseUrl = https://api.example.test
+
+### Start
+# @name start
+POST {{baseUrl}}/agent/run
+
+### Continue
+# @name continue
+POST {{baseUrl}}/agent/continue
+
+###
+GET {{baseUrl}}/status

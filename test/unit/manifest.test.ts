@@ -65,7 +65,16 @@ describe('extension manifest', () => {
   });
 
   it('activates for a restored response document so its tab can be closed', () => {
-    expect(manifest.activationEvents).toEqual(['onFileSystem:streamscope-response']);
+    expect(manifest.activationEvents).toEqual([
+      'onFileSystem:streamscope-response',
+      'workspaceContains:**/*.http',
+      'workspaceContains:**/*.rest',
+    ]);
+  });
+
+  it('activates in workspaces with .http or .rest files', () => {
+    expect(manifest.activationEvents).toContain('workspaceContains:**/*.http');
+    expect(manifest.activationEvents).toContain('workspaceContains:**/*.rest');
   });
 
   it('pins @types/vscode to the minimum supported VS Code version', () => {
