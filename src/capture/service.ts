@@ -151,6 +151,7 @@ function within<T>(
   signal: AbortSignal,
   label: string,
   name: string,
+  runId: number,
 ): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const cancelled = (): void => {
@@ -159,7 +160,7 @@ function within<T>(
     };
     const timer = setTimeout(() => {
       end();
-      reject(new CaptureWaitError('timeout', waitTimeoutReason(label, name, timeoutMs)));
+      reject(new CaptureWaitError('timeout', waitTimeoutReason(label, name, timeoutMs), runId));
     }, timeoutMs);
     const end = (): void => {
       clearTimeout(timer);
@@ -325,7 +326,7 @@ export class CaptureService implements RunCaptures {
             if (!(error instanceof CaptureWaitError)) {
               throw error;
             }
-            problems.push(this.problem(wait, error.message));
+            problems.push(this.problem(wait, error.message, error.runId));
             stop.abort();
           }),
         ),
@@ -425,6 +426,7 @@ export class CaptureService implements RunCaptures {
         signal,
         wait.requestName,
         wait.reference,
+        producer.id,
       ),
     );
   }
@@ -448,7 +450,11 @@ export class CaptureService implements RunCaptures {
       return undefined;
     }
     if (!result.ok) {
-      return { kind: 'failed', message: captureFailedMessage(label, reference, result.reason) };
+      return {
+        kind: 'failed',
+        message: captureFailedMessage(label, reference, result.reason),
+        runId: producer.id,
+      };
     }
     const snapshot = producer.snapshot();
     const { wallStartedAt, elapsedMs } = snapshot;
@@ -480,7 +486,7 @@ export class CaptureService implements RunCaptures {
     );
   }
 
-  private problem(wait: CaptureWait, message: string): ResolutionProblem {
+  private problem(wait: CaptureWait, message: string, producerRun?: number): ResolutionProblem {
     const { request } = this.options;
     const expressions =
       wait.kind === 'capture'
@@ -489,6 +495,7 @@ export class CaptureService implements RunCaptures {
     const reference = request.variableReferences.find((candidate) =>
       expressions.includes(candidate.expression),
     );
-    return { message, range: wait.range ?? reference?.range ?? request.requestLine.range };
+    const range = wait.range ?? reference?.range ?? request.requestLine.range;
+    return producerRun === undefined ? { message, range } : { message, range, producerRun };
   }
 }

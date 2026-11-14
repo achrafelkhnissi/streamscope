@@ -10,6 +10,7 @@ import { registerLanguageFeatures } from './vscode/language/register';
 import { createLanguageVariables, registerVariableFeatures } from './vscode/language/variables';
 import { ParseCache } from './vscode/language/parse-cache';
 import { registerRequestFeatures } from './vscode/requests/register';
+import { registerTesting } from './vscode/testing/register';
 
 let shutdown: (() => Promise<void>) | undefined;
 
@@ -54,6 +55,7 @@ export function activate(context: vscode.ExtensionContext): void {
   );
   registerVariableFeatures(context, cache, variables, secrets);
   registerLanguageFeatures(context, cache, variables, captures, checks);
+  registerTesting(context, cache, requests, checks, captures);
   void offerToHideOtherSendLenses(context);
   log.info('Extension activated');
 }

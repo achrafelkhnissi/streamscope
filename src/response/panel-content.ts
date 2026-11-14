@@ -74,7 +74,9 @@ export function panelStatus(run: RunSnapshot, checks?: CheckSummary): PanelStatu
         ? run.problems[0]?.message
         : run.status === 'waiting'
           ? waitingText(run)
-          : undefined;
+          : run.untilEvent === undefined
+            ? undefined
+            : `ended by # @until at event ${String(run.untilEvent)}`;
   if (reason !== undefined && reason !== '') {
     parts.push(reason);
   }

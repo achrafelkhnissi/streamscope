@@ -80,3 +80,86 @@ describe('CheckRegistry', () => {
     });
   });
 });
+
+describe('CheckRegistry.settled', () => {
+  const passed = { state: 'passed', settledAt: undefined } as const;
+  const failed = { state: 'failed', detail: 'got 0', settledAt: undefined } as const;
+
+  it('resolves settled once every check of the run has settled', async () => {
+    const registry = new CheckRegistry();
+    registry.begin({ id: 1, key: 'k', startedAt: 1 }, two);
+    const results: unknown[] = [];
+    const settled = registry.settled('k', 1).then((entries) => {
+      results.push(entries);
+    });
+
+    registry.update(1, 0, passed);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(results).toEqual([]);
+
+    registry.update(1, 1, failed);
+    await settled;
+    expect(results).toEqual([
+      [
+        { runId: 1, text: 'status == 200', line: 2, result: passed },
+        { runId: 1, text: 'count() > 1', line: 3, result: failed },
+      ],
+    ]);
+    expect(registry.waiterCount).toBe(0);
+  });
+
+  it('resolves settled at once for a run that has settled already', async () => {
+    const registry = new CheckRegistry();
+    registry.begin({ id: 1, key: 'k', startedAt: 1 }, two);
+    registry.update(1, 0, passed);
+    registry.update(1, 1, passed);
+
+    expect(await registry.settled('k', 1)).toHaveLength(2);
+    expect(registry.waiterCount).toBe(0);
+  });
+
+  it('resolves settled with no entries for a request without checks', async () => {
+    const registry = new CheckRegistry();
+    registry.begin({ id: 1, key: 'k', startedAt: 1 }, []);
+
+    expect(await registry.settled('k', 1)).toEqual([]);
+    expect(await registry.settled('unknown', 9)).toEqual([]);
+    expect(registry.waiterCount).toBe(0);
+  });
+
+  it('resolves undefined when a newer run of the request begins', async () => {
+    const registry = new CheckRegistry();
+    registry.begin({ id: 1, key: 'k', startedAt: 1 }, two);
+    const settled = registry.settled('k', 1);
+
+    registry.begin({ id: 2, key: 'k', startedAt: 2 }, two);
+
+    expect(await settled).toBeUndefined();
+    expect(await registry.settled('k', 1)).toBeUndefined();
+    expect(registry.waiterCount).toBe(0);
+  });
+
+  it('resolves undefined when the request is evicted', async () => {
+    const registry = new CheckRegistry(1);
+    registry.begin({ id: 1, key: 'k', startedAt: 1 }, two);
+    const settled = registry.settled('k', 1);
+
+    registry.begin({ id: 2, key: 'other', startedAt: 2 }, two);
+
+    expect(await settled).toBeUndefined();
+    expect(registry.waiterCount).toBe(0);
+  });
+
+  it('keeps no waiter once settled', async () => {
+    const registry = new CheckRegistry();
+    registry.begin({ id: 1, key: 'k', startedAt: 1 }, two);
+    const waits = [registry.settled('k', 1), registry.settled('k', 1)];
+    expect(registry.waiterCount).toBe(2);
+
+    registry.update(1, 0, passed);
+    registry.update(1, 1, passed);
+    await Promise.all(waits);
+
+    expect(registry.waiterCount).toBe(0);
+  });
+});

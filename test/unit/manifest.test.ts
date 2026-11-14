@@ -65,7 +65,16 @@ describe('extension manifest', () => {
   });
 
   it('activates for a restored response document so its tab can be closed', () => {
-    expect(manifest.activationEvents).toEqual(['onFileSystem:streamscope-response']);
+    expect(manifest.activationEvents).toEqual([
+      'onFileSystem:streamscope-response',
+      'workspaceContains:**/*.http',
+      'workspaceContains:**/*.rest',
+    ]);
+  });
+
+  it('activates in workspaces with .http or .rest files', () => {
+    expect(manifest.activationEvents).toContain('workspaceContains:**/*.http');
+    expect(manifest.activationEvents).toContain('workspaceContains:**/*.rest');
   });
 
   it('pins @types/vscode to the minimum supported VS Code version', () => {
@@ -137,7 +146,24 @@ describe('extension manifest', () => {
       'streamscope.showLog',
       'streamscope.showHistory',
       'streamscope.captureValue',
+      'streamscope.runFile',
     ]);
+  });
+
+  it('contributes Run File for http editors', () => {
+    expect(
+      manifest.contributes.commands.find(({ command }) => command === 'streamscope.runFile'),
+    ).toEqual({
+      command: 'streamscope.runFile',
+      title: 'Run File',
+      category: 'Streamscope',
+      icon: '$(run-all)',
+    });
+    expect(
+      manifest.contributes.menus.commandPalette?.find(
+        ({ command }) => command === 'streamscope.runFile',
+      ),
+    ).toEqual({ command: 'streamscope.runFile', when: 'editorLangId == http' });
   });
 
   it('binds Send Request to cmd+alt+enter and ctrl+alt+enter in http editors', () => {

@@ -168,6 +168,10 @@ export class ResponsePanels implements vscode.Disposable {
     this.updateContext();
   }
 
+  isOpen(key: string): boolean {
+    return this.entries.get(key)?.panel !== undefined;
+  }
+
   keepsOpenedRun(run: RunHandle): boolean {
     const entry = this.entries.get(run.snapshot().key);
     return entry?.panel !== undefined && entry.run !== run && (entry.openedAfter ?? 0) >= run.id;

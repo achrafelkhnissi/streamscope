@@ -81,7 +81,11 @@ export function lookupResult(entry: CaptureEntry, secretUnresolved: boolean): Ca
         ...(secretUnresolved ? { secretUnresolved: true } : {}),
       };
     case 'failed':
-      return { kind: 'failed', message: captureFailedMessage(label, name, result.reason) };
+      return {
+        kind: 'failed',
+        message: captureFailedMessage(label, name, result.reason),
+        runId: entry.runId,
+      };
   }
 }
 

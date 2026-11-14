@@ -108,6 +108,11 @@ JavaScript scripts, GraphQL helpers, WebSocket and gRPC, cURL import and export,
 - **FR-R2** A file run executes requests in file order, one at a time. A request passes when it receives a response and all its checks pass.
 - **FR-R3** A request whose inputs depend on a capture that failed in this run is skipped with the reason.
 - **FR-R4** `# @timeout <duration>` limits the whole request; `# @until <condition>` ends a stream when an event matches.
+- M10 settles the details of runs:
+  - **Tests:** one test item per `.http` or `.rest` file, labelled with its workspace-relative path, and one per request, labelled with its name, title or method and URL, kept in file order and placed on the request's range for the gutter button. Request items use the request key; a duplicate `# @name` gets its own item and errors when run. Open documents follow every edit; workspace files come from `findFiles` (respecting `files.exclude`, at most 1,000) and a file watcher, and are parsed when the Testing view expands them.
+  - **Running:** the Run profile and **Streamscope: Run File** run requests in file order, files in path order, each after the previous one's checks settle (`CheckRegistry.settled`). A run uses the file's text at its start and starts each request like Send Request, without opening panels or showing notifications.
+  - **Results:** completed with every check passing is passed (any HTTP status); a failed check is a `TestMessage` `` `TEXT` DETAIL `` at its `# @expect` line; a failed request or one blocked by its own problems is errored; a request blocked by a capture or response of a run started in the same file run (`ResolutionProblem.producerRun`) is skipped with the problem as the reason in the output; a cancelled request is skipped ("The file run was stopped." or "The request was stopped."). Each request adds one masked outcome line to the output.
+  - **`# @until`:** the last `# @until` line is an event condition tested on every `json` and `text` event, after captures and checks see it, within 500,000 work units. The first match stops the stream session and closes the connection; the run is `Completed` with `untilEvent`, and later events, even in the same chunk, reach nothing. A condition past the work limit fails the run ("# @until needs too much work for event N, so Streamscope stopped the request."). An empty `# @until` blocks the request.
 
 ### Environments and secrets
 
@@ -531,6 +536,7 @@ stateDiagram-v2
 - Failure kinds are distinguished: DNS, connection refused, TLS, timeout (which one), premature close, invalid chunked encoding, decompression error.
 - Different requests can run at the same time. Re-sending a running request stops the earlier run first.
 - File runs: requests run in file order; each must reach a terminal state before the next starts; requests needing a capture that failed in this run are skipped; stopping the run cancels the current request and marks the rest as not run.
+- A run ended by `# @until` is `Completed` and records the matching event (`untilEvent`); the panel status line shows "ended by # @until at event N". A `# @until` condition past its work limit makes the run `Failed`.
 
 ## 12. Cancellation and resource management
 
@@ -699,6 +705,7 @@ Fixtures are synthetic streams in the shapes of AG-UI, OpenAI, Anthropic and Oll
 - Commands under the `Streamscope:` category: Send Request, Stop Request, Run File, Select Environment, Set Secret, Clear Secret, List Secrets, Show Log, Show History, Save Response, Capture This Value.
 - Keybinding `Cmd+Alt+Enter` / `Ctrl+Alt+Enter` for Send Request when an `http` editor has focus **(builder's call; REST Client keeps `Cmd+Alt+R`)**.
 - Test controller, status bar items, CodeLens, inlay hints, hovers, completion, code actions.
+- Activation: `workspaceContains:**/*.http` and `workspaceContains:**/*.rest`, so the Testing view lists files before one is opened, besides the implied `http` language and command events. Run File is in the Command Palette for `http` editors.
 
 ### Settings (`streamscope.*`)
 

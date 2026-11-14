@@ -17,7 +17,7 @@ export type CaptureLookupResult =
       secretUnresolved?: true;
     }
   | { kind: 'pending'; request: string; label: string; name: string }
-  | { kind: 'failed'; message: string }
+  | { kind: 'failed'; message: string; runId?: number }
   | { kind: 'not-run'; label: string; producerName: string | undefined };
 
 export interface CaptureLookup {

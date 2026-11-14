@@ -1,3 +1,4 @@
+import type { StreamEvent } from '../events/model';
 import { StreamSession } from '../events/session';
 import type { SpillArea, SpillFile } from '../events/spill';
 import type {
@@ -33,6 +34,7 @@ import { combineObservers } from './combine-observers';
 import type { CaptureWaitOutcome, RunCaptures, RunChecks, RunEnd, RunObserver } from './observer';
 import { readRawTail } from './raw-read';
 import { RawTail } from './raw-tail';
+import { untilCondition, UntilWatch } from './until';
 
 export type RunStatus =
   'waiting' | 'sending' | 'receiving' | 'completed' | 'failed' | 'cancelled' | 'blocked';
@@ -40,7 +42,7 @@ export type RunStatus =
 export type RawData = 'saved' | 'stopped' | 'removed' | 'unsaved';
 
 export interface RunFailure {
-  kind: FailureKind | 'body-too-large';
+  kind: FailureKind | 'body-too-large' | 'until-work';
   message: string;
 }
 
@@ -72,6 +74,7 @@ export interface RunSnapshot {
   failure: RunFailure | undefined;
   problems: readonly ResolutionProblem[];
   sensitiveValues: readonly string[];
+  untilEvent: number | undefined;
 }
 
 export interface RequestSettings {
@@ -146,6 +149,7 @@ const blockingCodes: ReadonlySet<DiagnosticCode> = new Set([
   'invalid-expression',
   'duplicate-capture',
   'too-many-captures',
+  'empty-until',
 ]);
 const rawTailChars = 2_097_152;
 const streamDirectives: ReadonlySet<string> = new Set<StreamDirective>([
@@ -285,6 +289,10 @@ export function startRun(
   let spillFile: SpillFile | undefined;
   let observer: RunObserver | undefined;
   let observed = false;
+  let untilFailure: RunFailure | undefined;
+  const untilStop = new AbortController();
+  const until = untilCondition(request);
+  const untilWatch = until === undefined ? undefined : new UntilWatch(until);
   let markHead = (): void => undefined;
   const headArrived = new Promise<void>((resolve) => {
     markHead = resolve;
@@ -310,6 +318,7 @@ export function startRun(
     failure: undefined,
     problems: [],
     sensitiveValues: [],
+    untilEvent: undefined,
   };
 
   const rawSource = (): DataSource => {
@@ -445,6 +454,23 @@ export function startRun(
     return snapshot();
   };
 
+  const testUntil = (watch: UntilWatch, event: StreamEvent): void => {
+    const outcome = watch.test(event);
+    if (outcome === 'no-match') {
+      return;
+    }
+    if (outcome === 'match') {
+      state.untilEvent = event.index;
+    } else {
+      untilFailure = {
+        kind: 'until-work',
+        message: `# @until needs too much work for event ${String(event.index)}, so Streamscope stopped the request.`,
+      };
+    }
+    session?.stop();
+    untilStop.abort();
+  };
+
   const sink: ResponseSink = {
     onRequest: (sent) => {
       state.sent = sent;
@@ -459,10 +485,13 @@ export function startRun(
         onUpdate: update,
         onText: () => undefined,
         onEvent:
-          watcher === undefined
+          watcher === undefined && untilWatch === undefined
             ? undefined
             : (event) => {
-                watcher.event(event);
+                watcher?.event(event);
+                if (untilWatch !== undefined) {
+                  testUntil(untilWatch, event);
+                }
               },
         backpressure: watcher?.backpressure,
         limits: input.limits,
@@ -626,7 +655,7 @@ export function startRun(
         prepared.request,
         options,
         sink,
-        controller.signal,
+        AbortSignal.any([controller.signal, untilStop.signal]),
       );
     } catch (error) {
       await closeStream(false);
@@ -639,8 +668,14 @@ export function startRun(
         },
       });
     }
-    await closeStream(outcome.kind === 'completed');
+    await closeStream(outcome.kind === 'completed' || state.untilEvent !== undefined);
     const exchange = { hops: outcome.hops, timing: outcome.timing, wireBytes: outcome.wireBytes };
+    if (untilFailure !== undefined) {
+      return finish({ ...exchange, status: 'failed', failure: untilFailure });
+    }
+    if (state.untilEvent !== undefined) {
+      return finish({ ...exchange, status: 'completed' });
+    }
     if (outcome.kind === 'completed') {
       return finish({ ...exchange, status: 'completed' });
     }
