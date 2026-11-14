@@ -271,6 +271,10 @@ export class PanelFeed {
     return this.sentChecks;
   }
 
+  get status(): PanelStatus {
+    return this.statusOf(this.run.snapshot());
+  }
+
   start(): void {
     this.stopCaptures();
     this.stopListening = this.options.captures.onDidChange((request) => {

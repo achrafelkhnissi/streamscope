@@ -1,7 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import * as vscode from 'vscode';
 import type { TaskTimer } from '../../benchmark/task-timer';
-import { panelStatus } from '../../response/panel-content';
 import {
   PanelFeed,
   type PanelCaptureSource,
@@ -227,7 +226,7 @@ export class ResponsePanels implements vscode.Disposable {
       released: snapshot.released,
       title: entry.panel?.title,
       bodyText: bodyText(entry.feed.body),
-      statusText: panelStatus(snapshot).text,
+      statusText: entry.feed.status.text,
       captures: entry.feed.captures,
       checks: entry.feed.checks,
     };

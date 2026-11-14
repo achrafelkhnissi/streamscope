@@ -320,6 +320,59 @@ describe('CheckTracker', () => {
     }
   }, 60_000);
 
+  it('reports a count check while the stream is still arriving', async () => {
+    const server = await startHttpServer((_request, response) => {
+      response.writeHead(200, { 'Content-Type': 'application/x-ndjson' });
+      let sent = 0;
+      const timer = setInterval(() => {
+        sent += 1;
+        response.write(`${JSON.stringify({ type: 'CONTENT', n: sent })}\n`);
+        if (sent === 6) {
+          clearInterval(timer);
+          response.end();
+        }
+      }, 100);
+    });
+    servers.push(server);
+    const started = performance.now();
+    let reportedAt: number | undefined;
+    const tracker = new CheckTracker(
+      { id: 1, label: 'slow', wallStartedAt: 0, sensitiveValues: [] },
+      [{ index: 0, program: program('count(type == "CONTENT") > 1') }],
+      () => {
+        reportedAt = performance.now() - started;
+      },
+      workerFiles().worker,
+    );
+    const run = startRun(
+      {
+        ...runInput([`GET ${server.url}/slow`]),
+        checks: {
+          begin: () => undefined,
+          observer: () => ({
+            head: (head, access) => {
+              tracker.head(head, access);
+            },
+            event: (event) => {
+              tracker.event(event);
+            },
+            end: (end) => {
+              void tracker.end(end);
+            },
+            backpressure: tracker.backpressure,
+          }),
+        },
+      },
+      dependencies,
+    );
+    await run.done;
+    const doneAt = performance.now() - started;
+    await run.release();
+
+    expect(reportedAt).toBeDefined();
+    expect((reportedAt ?? doneAt) + 250).toBeLessThan(doneAt);
+  });
+
   it('keeps the stream going when a check fails', async () => {
     const url = await serve(agentStream);
 

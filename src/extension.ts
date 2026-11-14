@@ -53,7 +53,7 @@ export function activate(context: vscode.ExtensionContext): void {
     requests.hasRun,
   );
   registerVariableFeatures(context, cache, variables, secrets);
-  registerLanguageFeatures(context, cache, variables, captures);
+  registerLanguageFeatures(context, cache, variables, captures, checks);
   void offerToHideOtherSendLenses(context);
   log.info('Extension activated');
 }
