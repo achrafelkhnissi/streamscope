@@ -60,8 +60,11 @@ function failureText(snapshot: ProducerSnapshot): string | undefined {
     : snapshot.failure?.message;
 }
 
-function producerSensitiveValues(snapshot: ProducerSnapshot): string[] {
-  return [...snapshot.sensitiveValues, ...sensitiveHeaderValues(snapshot.head?.headers ?? [])];
+function producerSensitiveValues(snapshot: ProducerSnapshot, readsHead: boolean): string[] {
+  return [
+    ...snapshot.sensitiveValues,
+    ...sensitiveHeaderValues(snapshot.head?.headers ?? [], readsHead),
+  ];
 }
 
 function referencedRun(run: ProducerRun, workerFile: string): ReferencedRun {
@@ -82,7 +85,7 @@ function referencedRun(run: ProducerRun, workerFile: string): ReferencedRun {
     headArrived: run.headArrived,
     failure: () => failureText(run.snapshot()),
     get sensitiveValues() {
-      return producerSensitiveValues(run.snapshot());
+      return producerSensitiveValues(run.snapshot(), false);
     },
     readBody: (maxBytes) => run.readBody(maxBytes),
     bodyFile: () => run.bodyFile(),
@@ -419,7 +422,7 @@ export class CaptureService implements RunCaptures {
       kind: 'value',
       text: result.text,
       secret: sensitiveName(wait) || this.secretOf(wait, producer.id, result.text),
-      sensitive: sensitiveValuesIn(result.text, producerSensitiveValues(snapshot)),
+      sensitive: sensitiveValuesIn(result.text, producerSensitiveValues(snapshot, readsHead(wait))),
       label,
       provenance: {
         runId: producer.id,

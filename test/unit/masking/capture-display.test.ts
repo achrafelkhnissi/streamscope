@@ -59,20 +59,20 @@ describe('captureDisplayText', () => {
 });
 
 describe('sensitive values of a response', () => {
-  it('takes sensitive header values and the cookie values of Set-Cookie of 8 characters or more', () => {
-    expect(
-      sensitiveHeaderValues([
-        ['Content-Type', 'application/json'],
-        ['Set-Cookie', 'session=synthetic-cookie; Path=/; HttpOnly'],
-        ['set-cookie', 'theme=dark'],
-        ['X-Api-Key', 'synthetic-key'],
-        ['X-Trace', 'trace-1'],
-        ['Authorization', ''],
-        ['X-Session-Token', 'token-08'],
-        ['X-Auth-Token', 'tok-007'],
-        ['Set-Cookie', 'consent=1'],
-      ]),
-    ).toEqual([
+  it('takes sensitive header values of 8 characters or more, or of any length for a capture that reads the head', () => {
+    const headers: [string, string][] = [
+      ['Content-Type', 'application/json'],
+      ['Set-Cookie', 'session=synthetic-cookie; Path=/; HttpOnly'],
+      ['set-cookie', 'theme=dark'],
+      ['X-Api-Key', 'synthetic-key'],
+      ['X-Trace', 'trace-1'],
+      ['Authorization', ''],
+      ['X-Session-Token', 'token-08'],
+      ['X-Auth-Token', 'tok-007'],
+      ['Set-Cookie', 'consent=1'],
+    ];
+
+    expect(sensitiveHeaderValues(headers, false)).toEqual([
       'session=synthetic-cookie; Path=/; HttpOnly',
       'synthetic-cookie',
       'theme=dark',
@@ -80,18 +80,48 @@ describe('sensitive values of a response', () => {
       'token-08',
       'consent=1',
     ]);
+    expect(sensitiveHeaderValues(headers, true)).toEqual([
+      'session=synthetic-cookie; Path=/; HttpOnly',
+      'synthetic-cookie',
+      'theme=dark',
+      'synthetic-key',
+      'token-08',
+      'tok-007',
+      'consent=1',
+    ]);
   });
 
-  it('takes a cookie value of any length when the cookie is named like a credential or a session', () => {
-    expect(
-      sensitiveHeaderValues([
-        ['Set-Cookie', 'session=q7x9z'],
-        ['Set-Cookie', 'auth_token=a1'],
-        ['Set-Cookie', 'theme=dark'],
-        ['Set-Cookie', 'consent=1'],
-        ['Set-Cookie', 'token='],
-      ]),
-    ).toEqual(['session=q7x9z', 'q7x9z', 'auth_token=a1', 'a1', 'theme=dark', 'consent=1']);
+  it('takes a credential cookie value of any length only for a capture that reads the head, and other cookie values from 8 characters on', () => {
+    const headers: [string, string][] = [
+      ['Set-Cookie', 'sid=q7Z'],
+      ['Set-Cookie', 'auth_token=a1'],
+      ['Set-Cookie', 'cookie_consent=1'],
+      ['Set-Cookie', 'viewed_cookie_policy=yes'],
+      ['Set-Cookie', 'theme=dark'],
+      ['Set-Cookie', 'tracking=visitor-0001'],
+      ['Set-Cookie', 'token='],
+    ];
+
+    expect(sensitiveHeaderValues(headers, true)).toEqual([
+      'sid=q7Z',
+      'q7Z',
+      'auth_token=a1',
+      'a1',
+      'cookie_consent=1',
+      'viewed_cookie_policy=yes',
+      'theme=dark',
+      'tracking=visitor-0001',
+      'visitor-0001',
+      'token=',
+    ]);
+    expect(sensitiveHeaderValues(headers, false)).toEqual([
+      'auth_token=a1',
+      'cookie_consent=1',
+      'viewed_cookie_policy=yes',
+      'theme=dark',
+      'tracking=visitor-0001',
+      'visitor-0001',
+    ]);
   });
 
   it('keeps only the values that occur in a text, in any encoded form', () => {

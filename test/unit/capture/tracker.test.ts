@@ -13,6 +13,7 @@ import type { EventKind, JsonValue, SseFields, StreamEvent } from '../../../src/
 import { StreamSession } from '../../../src/events/session';
 import { SpillArea, type SpillFile } from '../../../src/events/spill';
 import { defaultSpillLimits } from '../../../src/streaming/limits';
+import { maskedValue } from '../../../src/masking/masking';
 import { parseExpression } from '../../../src/expressions/parse';
 import type { RunAccess, RunEnd } from '../../../src/runs/observer';
 import type { ResponseHead } from '../../../src/transport/model';
@@ -299,7 +300,7 @@ describe('CaptureTracker', () => {
 
     expect(run.results.get('code')).toEqual(resolved('200', undefined, ''));
     expect(run.results.get('token')).toEqual(
-      resolved('token-1', undefined, '["x-session-token"]', true),
+      resolved('token-1', undefined, '["x-session-token"]', true, ['token-1']),
     );
     expect(run.results.get('trace')).toEqual(resolved('a, b', undefined, '["x-trace"]'));
     expect(run.results.get('session')).toEqual(
@@ -316,13 +317,70 @@ describe('CaptureTracker', () => {
         undefined,
         '',
         false,
-        ['session=abc; Path=/', 'abc', 'theme=dark', 'session=def; HttpOnly', 'def'],
+        [
+          'token-1',
+          'session=abc; Path=/',
+          'abc',
+          'theme=dark',
+          'session=def; HttpOnly',
+          'def',
+          'flag',
+        ],
       ),
     );
     expect(run.results.get('allCookies')).toEqual(
       resolved('{"session":"def","theme":"dark"}', undefined, '', false, ['def']),
     );
     expect(run.results.get('constant')).toEqual(resolved('fixed', undefined, ''));
+  });
+
+  it('carries short sensitive header and credential cookie values only into captures that read the headers or the cookies', async () => {
+    const run = harness([
+      capture('note', 'body.note'),
+      capture('jar', 'cookies'),
+      capture('keys', 'headers[?(@ == "k3y-06")]'),
+      capture('noteReason', 'body.note | match(/q7Z-x/)'),
+      capture('cookieReason', 'cookies.tracking | match(/q7Z-x/)'),
+    ]);
+
+    run.tracker.head(
+      head('application/json', [
+        ['X-Api-Key', 'k3y-06'],
+        ['Set-Cookie', 'sid=q7Z'],
+        ['Set-Cookie', 'cookie_consent=1'],
+        ['Set-Cookie', 'tracking=visitor-0001'],
+      ]),
+    );
+    await run.tracker.end(
+      completed('json', {
+        body: JSON.stringify({ note: 'q7Z k3y-06 1 visitor-0001' }),
+        contentType: 'application/json',
+      }),
+    );
+
+    expect(run.results.get('note')).toEqual(
+      resolved('q7Z k3y-06 1 visitor-0001', undefined, 'note', false, ['visitor-0001']),
+    );
+    expect(run.results.get('jar')).toEqual(
+      resolved(
+        '{"sid":"q7Z","cookie_consent":"1","tracking":"visitor-0001"}',
+        undefined,
+        '',
+        false,
+        ['q7Z', 'visitor-0001'],
+      ),
+    );
+    expect(run.results.get('keys')).toMatchObject({
+      state: 'resolved',
+      text: '["k3y-06"]',
+      sensitive: ['k3y-06'],
+    });
+    const noteReason = run.results.get('noteReason');
+    const cookieReason = run.results.get('cookieReason');
+    expect(noteReason?.state === 'failed' ? noteReason.reason : '').toContain('/q7Z-x/');
+    expect(cookieReason?.state === 'failed' ? cookieReason.reason : '').toContain(
+      `/${maskedValue}-x/`,
+    );
   });
 
   it('keeps a header named like an Object.prototype member as an own field', () => {
@@ -2169,29 +2227,43 @@ describe('readsSensitiveHead', () => {
     return readsSensitiveHead(capture('value', text).expression);
   }
 
-  it('is true for a sensitive header or any cookie, wherever the expression reads it', () => {
+  it('is true for a sensitive header or a credential cookie read by literal name, wherever the expression reads it', () => {
     for (const text of [
       'headers["Authorization"]',
       'headers["set-cookie"]',
       'headers["X-Api-Key"]',
       'headers["x-session-token"] == "synthetic"',
       'headers.authorization | match(/Bearer (.+)/)',
+      '(headers | default("x"))["x-api-key"]',
+      '(headers | default(null))["x-session-token"]',
+      '(headers | default("x")).authorization',
+      '((headers) | default("x") | default(null))["X-Api-Key"] | default("none")',
       'cookies.session',
       'cookies["sid"]',
-      'cookies[*]',
-      'cookies',
-      'status == 200 && cookies.theme == "dark"',
+      'cookies["XSRF-TOKEN"]',
+      '(cookies | default(null)).sid',
+      'status == 200 && cookies.session == "synthetic"',
     ]) {
       expect(reads(text), text).toBe(true);
     }
   });
 
-  it('is false for other headers, all headers, the body and events', () => {
+  it('is false for other headers and cookies, all headers or cookies, filters, the body and events', () => {
     for (const text of [
       'headers["X-Trace"]',
       'headers',
+      'headers[*]',
+      'headers[?(@ == "k3y-06")]',
+      '(headers | json)["x-api-key"]',
+      'cookies',
+      'cookies[*]',
+      'cookies.consent',
+      'cookies.theme',
+      'cookies["cookie_consent"]',
+      'status == 200 && cookies.theme == "dark"',
       'status',
       'body.token',
+      'body.headers.authorization',
       'first(type == "RUN_STARTED").threadId',
       'jsonpath("$.session")',
     ]) {

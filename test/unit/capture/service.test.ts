@@ -387,6 +387,48 @@ describe('CaptureService', () => {
     });
   });
 
+  it('a header reference carries short sensitive header and credential cookie values, a body reference only from 8 characters on', async () => {
+    const registry = new CaptureRegistry();
+    const producer = producerRun(22);
+    const captures = service(registry, 1, (key) => (key === startKey ? producer : undefined));
+    captures.begin({ id: 23, key: continueKey, label: 'continue', startedAt: 23 });
+    const trace: CaptureWait = {
+      kind: 'response',
+      requestName: 'startRun',
+      reference: 'response.headers.X-Trace',
+    };
+    const body: CaptureWait = {
+      kind: 'response',
+      requestName: 'startRun',
+      reference: 'response.body.*',
+    };
+    producer.arrive(
+      head([
+        ['Content-Type', 'application/json'],
+        ['X-Api-Key', 'k3y-06'],
+        ['Set-Cookie', 'session=q7Z'],
+        ['X-Trace', 'trace k3y-06 q7Z'],
+      ]),
+    );
+    producer.end('completed', '{"note":"k3y-06 q7Z"}');
+
+    expect(await captures.wait([trace, body], 23, { timeoutMs: 30_000, signal: signal() })).toEqual(
+      { ok: true },
+    );
+    expect(captures.lookup.response('startRun', 'response.headers.X-Trace')).toMatchObject({
+      kind: 'value',
+      text: 'trace k3y-06 q7Z',
+      secret: false,
+      sensitive: ['k3y-06', 'q7Z'],
+    });
+    expect(captures.lookup.response('startRun', 'response.body.*')).toMatchObject({
+      kind: 'value',
+      text: '{"note":"k3y-06 q7Z"}',
+      secret: false,
+      sensitive: [],
+    });
+  });
+
   it('a response reference to a request that never ran is not run, with its producer', async () => {
     const captures = service(new CaptureRegistry(), 1);
     captures.begin({ id: 18, key: continueKey, label: 'continue', startedAt: 18 });

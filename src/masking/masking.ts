@@ -66,9 +66,36 @@ export function looksLikeCredential(name: string): boolean {
   return credentialWords.some((word) => normalized.includes(word));
 }
 
+const cookieCredentialWords: ReadonlySet<string> = new Set([
+  'session',
+  'sess',
+  'sid',
+  'token',
+  'auth',
+  'jwt',
+  'csrf',
+  'xsrf',
+  'secret',
+  'password',
+  'passwd',
+  'login',
+  'remember',
+  'credential',
+]);
+const cookieNameWords = /[-_.]+|(?<=[a-z\d])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])/;
+
+export function isCredentialCookie(name: string): boolean {
+  return name.split(cookieNameWords).some((word) => cookieCredentialWords.has(word.toLowerCase()));
+}
+
 function encodedForms(value: string): string[] {
   const component = encodeURIComponent(value);
-  return [value, component, component.replace(/%20/g, '+'), encodeURI(value)];
+  const forms = [value, component, component.replace(/%20/g, '+'), encodeURI(value)];
+  const escaped = JSON.stringify(value).slice(1, -1);
+  if (escaped !== value) {
+    forms.push(escaped);
+  }
+  return forms;
 }
 
 export function maskValues(text: string, values: readonly string[]): string {
@@ -86,7 +113,7 @@ export function sensitiveValuesIn(text: string, values: readonly string[]): stri
 
 const minimumHeaderValueLength = 8;
 
-function cookieValue(setCookie: string): string | undefined {
+function cookieValue(setCookie: string, shortest: number): string | undefined {
   const pair = setCookie.split(';', 1)[0] ?? '';
   const equals = pair.indexOf('=');
   if (equals === -1) {
@@ -94,22 +121,21 @@ function cookieValue(setCookie: string): string | undefined {
   }
   const name = pair.slice(0, equals).trim();
   const value = pair.slice(equals + 1).trim();
-  const credential = looksLikeCredential(name) || isSensitiveHeader(name);
-  return value.length >= minimumHeaderValueLength || (credential && value !== '')
-    ? value
-    : undefined;
+  const carried = isCredentialCookie(name) ? shortest : minimumHeaderValueLength;
+  return value.length >= carried ? value : undefined;
 }
 
-export function sensitiveHeaderValues(headers: Headers): string[] {
+export function sensitiveHeaderValues(headers: Headers, readsHead: boolean): string[] {
+  const shortest = readsHead ? 1 : minimumHeaderValueLength;
   const values: string[] = [];
   for (const [name, value] of headers) {
     if (!isSensitiveHeader(name)) {
       continue;
     }
-    if (value.length >= minimumHeaderValueLength) {
+    if (value.length >= shortest) {
       values.push(value);
     }
-    const cookie = name.toLowerCase() === 'set-cookie' ? cookieValue(value) : undefined;
+    const cookie = name.toLowerCase() === 'set-cookie' ? cookieValue(value, shortest) : undefined;
     if (cookie !== undefined) {
       values.push(cookie);
     }

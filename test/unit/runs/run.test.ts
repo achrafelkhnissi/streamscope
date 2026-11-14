@@ -11,6 +11,7 @@ import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import * as zlib from 'node:zlib';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { captureCompletions } from '../../../src/capture/completions';
 import { captureHint } from '../../../src/capture/hints';
 import { captureLookup } from '../../../src/capture/lookup';
 import { CaptureRegistry } from '../../../src/capture/registry';
@@ -2501,17 +2502,16 @@ describe('waiting for captured values', () => {
         expect(shown.logged).not.toContain('token-08');
       });
 
-      it('a short session cookie value inside a body capture is masked, while consent=1 still does not blank the 1s', async () => {
+      it('a session cookie value under 8 characters is not carried into a body capture, and consent=1 still does not blank the 1s', async () => {
         const shown = await shownAndLogged(
           { 'Set-Cookie': ['session=q7x9z', 'consent=1'] },
           'thread-1 q7x9z',
         );
 
-        expect(shown.strip).toBe(`thread-1 ${maskedValue}`);
-        expect(shown.hint).toBe(`= thread-1 ${maskedValue}`);
-        expect(shown.logged).toContain(`X-Thread: thread-1 ${maskedValue}`);
+        expect(shown.strip).toBe('thread-1 q7x9z');
+        expect(shown.hint).toBe('= thread-1 q7x9z');
+        expect(shown.logged).toContain('X-Thread: thread-1 q7x9z');
         expect(shown.logged).toContain('127.0.0.1');
-        expect(shown.logged).not.toContain('q7x9z');
       });
     });
 
@@ -2594,7 +2594,7 @@ describe('waiting for captured values', () => {
         expect(registry.get(loginKey, 'apiValue')?.secret).toBe(true);
       });
 
-      it('cookies.theme = dark also resolves secret by provenance', async () => {
+      it('cookies.theme = dark is not secret by provenance and shows dark', async () => {
         const { registry } = await produced({ 'Set-Cookie': 'theme=dark' }, [
           'theme = cookies.theme',
         ]);
@@ -2602,8 +2602,318 @@ describe('waiting for captured values', () => {
         expect(registry.get(loginKey, 'theme')?.result).toMatchObject({
           state: 'resolved',
           text: 'dark',
-          secret: true,
+          secret: false,
         });
+        expect(registry.get(loginKey, 'theme')?.secret).toBe(false);
+        expect(captureHint(registry.get(loginKey, 'theme'))?.label).toBe('= dark');
+      });
+    });
+
+    describe('header and cookie values by source and cookie name', () => {
+      interface Displays {
+        strip: string;
+        hint: string;
+        tooltip: string;
+        hover: string;
+        completion: string;
+      }
+
+      interface Exchanged {
+        registry: CaptureRegistry;
+        strip: ReadonlyMap<string, string>;
+        shown: (name: string) => Displays;
+        logged: string;
+        sent: RunSnapshot;
+      }
+
+      async function exchanged(options: {
+        headers: Record<string, string | string[]>;
+        body?: Record<string, unknown>;
+        captures: string[];
+        consumer: string[];
+        variables?: Partial<RunInput['variables']>;
+      }): Promise<Exchanged> {
+        const api = await track(
+          startHttpServer((request, response) => {
+            if (request.url !== '/login') {
+              response.writeHead(200, { 'Content-Type': 'text/plain' });
+              response.end('done');
+              return;
+            }
+            response.writeHead(200, { 'Content-Type': 'application/json', ...options.headers });
+            response.end(
+              JSON.stringify(
+                options.body ?? { echo: `received ${request.headers.authorization ?? ''}` },
+              ),
+            );
+          }),
+        );
+        const registry = new CaptureRegistry();
+        const lines = [
+          '# @name login',
+          ...options.captures.map((capture) => `# @capture ${capture}`),
+          `POST ${api.url}/login`,
+          'Authorization: Bearer {{$secret token}}',
+          '',
+          '###',
+          '# @name continue',
+          `GET ${api.url}/continue`,
+          ...options.consumer,
+        ];
+        const variables = options.variables ?? { secrets: new Map([['token', 'tok']]) };
+        const login = startRun(capturing(registry, lines, 0, undefined, variables), dependencies);
+        await login.done;
+        await waitFor(() =>
+          registry.forRequest(loginKey).every((entry) => entry.result.state !== 'pending'),
+        );
+        const posted: ToPanel[] = [];
+        const feed = new PanelFeed(login, {
+          readOnly: false,
+          streamView: 'events',
+          post: (message) => posted.push(message),
+          captures: registry,
+          timed: (work) => {
+            work();
+          },
+        });
+        feed.start();
+        feed.pause();
+        const file = parseHttpFile(lines.join('\n'));
+        const lookup = captureLookup(registry, documentUri, file, new Map());
+        const sources: VariableSources = {
+          ...emptyVariables,
+          system: dependencies.system,
+          restricted: false,
+          captures: lookup,
+        };
+        const completions = new Map(
+          captureCompletions(file, lookup).map(({ label, detail }) => [label, detail]),
+        );
+        const sent = await startRun(
+          capturing(registry, lines, 1, (key) => (key === loginKey ? login : undefined)),
+          dependencies,
+        ).done;
+        const logged: string[] = [];
+        const record = (line: string): void => {
+          logged.push(line);
+        };
+        logRunEnd(
+          { info: record, warn: record, debug: record } as unknown as Parameters<
+            typeof logRunEnd
+          >[0],
+          sent,
+        );
+        const strip = new Map(
+          (posted.find((message) => message.type === 'reset')?.captures ?? []).map(
+            (capture) => [capture.name, capture.text] as const,
+          ),
+        );
+        return {
+          registry,
+          strip,
+          logged: logged.join('\n'),
+          sent,
+          shown: (name) => {
+            const hint = captureHint(registry.get(loginKey, name));
+            const hover = describeReference(file, `login.${name}`, sources);
+            return {
+              strip: strip.get(name) ?? '',
+              hint: hint?.label ?? '',
+              tooltip: hint?.tooltip ?? '',
+              hover: hover.kind === 'value' ? hover.value : '',
+              completion: completions.get(`login.${name}`) ?? '',
+            };
+          },
+        };
+      }
+
+      function failureOf(registry: CaptureRegistry, name: string): string {
+        const result = registry.get(loginKey, name)?.result;
+        return result?.state === 'failed' ? result.reason : '';
+      }
+
+      function dateOf(sent: RunSnapshot): string {
+        return sent.head?.headers.find(([name]) => name.toLowerCase() === 'date')?.[1] ?? '';
+      }
+
+      it('cookie_consent=1, viewed_cookie_policy=yes and cookie_notice_accepted=true blank no 1, yes or true in captures, failure reasons or a consumer log', async () => {
+        const { registry, strip, logged, sent } = await exchanged({
+          headers: {
+            'Set-Cookie': [
+              'cookie_consent=1',
+              'viewed_cookie_policy=yes',
+              'cookie_notice_accepted=true',
+            ],
+          },
+          body: { threadId: 'thread-1 yes true', items: [1] },
+          captures: [
+            'threadId = body.threadId',
+            'jar = cookies',
+            'consent = cookies.cookie_consent',
+            'itemReason = body.items[3]',
+            'patternReason = body.threadId | match(/yes-true-1/)',
+            'cookieReason = cookies.viewed_cookie_policy | match(/yes-true-1/)',
+          ],
+          consumer: ['X-Thread: {{login.threadId}}', 'X-Consent: {{login.consent}}'],
+        });
+
+        expect(strip.get('threadId')).toBe('thread-1 yes true');
+        expect(strip.get('jar')).toBe(
+          '{"cookie_consent":"1","viewed_cookie_policy":"yes","cookie_notice_accepted":"true"}',
+        );
+        expect(strip.get('consent')).toBe('1');
+        expect(registry.get(loginKey, 'jar')?.secret).toBe(false);
+        expect(registry.get(loginKey, 'consent')?.secret).toBe(false);
+        expect(captureHint(registry.get(loginKey, 'threadId'))?.label).toBe('= thread-1 yes true');
+        expect(failureOf(registry, 'itemReason')).toContain('(the list has 1 item)');
+        expect(failureOf(registry, 'patternReason')).toContain('/yes-true-1/');
+        expect(failureOf(registry, 'cookieReason')).toContain('/yes-true-1/');
+        expect(strip.get('itemReason')).toContain('(the list has 1 item)');
+        expect(strip.get('cookieReason')).toContain('/yes-true-1/');
+        expect(sent.status).toBe('completed');
+        expect(logged).toContain('X-Thread: thread-1 yes true');
+        expect(logged).toContain('X-Consent: 1');
+        expect(logged).toContain(`Host: ${new URL(sent.sent?.url ?? '').host}`);
+        expect(dateOf(sent)).not.toBe('');
+        expect(logged).toContain(`Date: ${dateOf(sent)}`);
+        expect(logged).not.toContain(maskedValue);
+      });
+
+      it('cookies.consent with value 1 is not secret, shows 1 and leaves a consumer’s 1s alone', async () => {
+        const { registry, shown, logged, sent } = await exchanged({
+          headers: { 'Set-Cookie': ['consent=1', 'theme=dark'] },
+          captures: ['consent = cookies.consent', 'theme = cookies.theme'],
+          consumer: ['X-Consent: {{login.consent}}', 'X-Theme: {{login.theme}}'],
+        });
+
+        expect(registry.get(loginKey, 'consent')?.result).toMatchObject({
+          state: 'resolved',
+          text: '1',
+          secret: false,
+        });
+        expect(shown('consent')).toMatchObject({
+          strip: '1',
+          hint: '= 1',
+          hover: '1',
+          completion: 'login › consent = 1',
+        });
+        expect(shown('theme')).toMatchObject({ strip: 'dark', hint: '= dark', hover: 'dark' });
+        expect(sent.sensitiveValues).toEqual([]);
+        expect(logged).toContain('X-Consent: 1');
+        expect(logged).toContain('X-Theme: dark');
+        expect(logged).toContain(`Host: ${new URL(sent.sent?.url ?? '').host}`);
+      });
+
+      it('cookies.sid with value q7Z and cookies["session"] resolve secret', async () => {
+        const { registry, strip } = await exchanged({
+          headers: { 'Set-Cookie': ['sid=q7Z', 'session=s3s'] },
+          captures: ['sidValue = cookies.sid', 'sessionValue = cookies["session"]'],
+          consumer: [],
+        });
+
+        for (const [name, text] of [
+          ['sidValue', 'q7Z'],
+          ['sessionValue', 's3s'],
+        ] as const) {
+          expect(registry.get(loginKey, name)?.secret, name).toBe(true);
+          expect(registry.get(loginKey, name)?.result, name).toMatchObject({
+            state: 'resolved',
+            text,
+            secret: true,
+          });
+          expect(strip.get(name), name).toBe(maskedValue);
+        }
+      });
+
+      it('sid=q7Z is not carried into a body.note capture, but is carried and masked inside a bare cookies capture', async () => {
+        const { registry, strip, logged } = await exchanged({
+          headers: { 'Set-Cookie': 'sid=q7Z' },
+          body: { note: 'note q7Z' },
+          captures: ['note = body.note', 'jar = cookies'],
+          consumer: ['X-Note: {{login.note}}'],
+        });
+
+        expect(registry.get(loginKey, 'note')?.result).toMatchObject({ sensitive: [] });
+        expect(strip.get('note')).toBe('note q7Z');
+        expect(logged).toContain('X-Note: note q7Z');
+        expect(registry.get(loginKey, 'jar')?.result).toMatchObject({
+          state: 'resolved',
+          text: '{"sid":"q7Z"}',
+          secret: false,
+          sensitive: ['q7Z'],
+        });
+        expect(strip.get('jar')).toBe(`{"sid":"${maskedValue}"}`);
+        expect(captureHint(registry.get(loginKey, 'jar'))?.label).toBe(
+          `= {"sid":"${maskedValue}"}`,
+        );
+      });
+
+      it('short sensitive header values read through default(…) or a where filter are masked in every display and in the consumer log', async () => {
+        const values = ['k3y-06', 't0k-05', 'a7h-04'];
+        const { shown, logged } = await exchanged({
+          headers: { 'X-Api-Key': 'k3y-06', 'X-Session-Token': 't0k-05', Authorization: 'a7h-04' },
+          captures: [
+            'viaDefault = (headers | default("x"))["x-api-key"]',
+            'viaNull = (headers | default(null))["x-session-token"]',
+            'viaMember = (headers | default("x")).authorization',
+            'viaWhere = headers[?(@ == "k3y-06")]',
+          ],
+          consumer: [
+            'X-Via-Default: {{login.viaDefault}}',
+            'X-Via-Null: {{login.viaNull}}',
+            'X-Via-Member: {{login.viaMember}}',
+            'X-Via-Where: {{login.viaWhere}}',
+          ],
+        });
+
+        for (const name of ['viaDefault', 'viaNull', 'viaMember', 'viaWhere']) {
+          for (const [surface, display] of Object.entries(shown(name))) {
+            expect(display, `${name} ${surface}`).toContain(maskedValue);
+            for (const value of values) {
+              expect(display, `${name} ${surface}`).not.toContain(value);
+            }
+          }
+        }
+        expect(logged).toContain(`X-Via-Default: ${maskedValue}`);
+        expect(logged).toContain(`X-Via-Null: ${maskedValue}`);
+        expect(logged).toContain(`X-Via-Member: ${maskedValue}`);
+        expect(logged).toContain(`X-Via-Where: ["${maskedValue}"]`);
+        for (const value of values) {
+          expect(logged).not.toContain(value);
+        }
+      });
+
+      it('a sensitive header value with a quote is masked inside a bare headers capture and in the consumer log', async () => {
+        const { strip, logged, sent } = await exchanged({
+          headers: { 'X-Api-Key': 'k3y"quoted-08' },
+          captures: ['all = headers'],
+          consumer: ['X-All: {{login.all}}'],
+        });
+
+        expect(sent.sent?.headers.find(([name]) => name === 'X-All')?.[1]).toContain(
+          '"x-api-key":"k3y\\"quoted-08"',
+        );
+        expect(strip.get('all')).toContain(`"x-api-key":"${maskedValue}"`);
+        expect(strip.get('all')).not.toContain('quoted-08');
+        expect(logged).toContain(`"x-api-key":"${maskedValue}"`);
+        expect(logged).not.toContain('quoted-08');
+      });
+
+      it('consent=1 still blanks nothing, and the request’s sensitive values keep masking at any length', async () => {
+        const { strip, logged, sent } = await exchanged({
+          headers: { 'Set-Cookie': 'consent=1' },
+          captures: ['echo = body.echo', 'jar = cookies', 'consent = cookies.consent'],
+          consumer: ['X-Echo: {{login.echo}} thread-1', 'X-Consent: {{login.consent}}'],
+        });
+
+        expect(strip.get('echo')).toBe(`received Bearer ${maskedValue}`);
+        expect(strip.get('jar')).toBe('{"consent":"1"}');
+        expect(strip.get('consent')).toBe('1');
+        expect(sent.sensitiveValues).toEqual(['tok']);
+        expect(logged).toContain(`X-Echo: received Bearer ${maskedValue} thread-1`);
+        expect(logged).toContain('X-Consent: 1');
+        expect(logged).toContain(`Host: ${new URL(sent.sent?.url ?? '').host}`);
+        expect(logged).not.toContain('Bearer tok');
       });
     });
   });

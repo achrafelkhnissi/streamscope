@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  isCredentialCookie,
   isSensitiveHeader,
   looksLikeCredential,
   maskedPreview,
@@ -7,6 +8,7 @@ import {
   maskHeaders,
   maskUrl,
   maskValues,
+  sensitiveValuesIn,
 } from '../../../src/masking/masking';
 import { fastest } from '../timing';
 
@@ -233,5 +235,49 @@ describe('masking', () => {
 
   it('ignores empty values', () => {
     expect(maskValues('abc', [''])).toBe('abc');
+  });
+
+  it('masks the JSON-escaped form of a value with a quote or a backslash', () => {
+    const value = 'k3y"quoted\\08';
+    const json = JSON.stringify({ key: value, other: 'plain' });
+
+    expect(maskValues(json, [value])).toBe('{"key":"••••••","other":"plain"}');
+    expect(sensitiveValuesIn(json, [value, 'absent"value'])).toEqual([value]);
+  });
+
+  it('recognises credential cookie names by whole words split on separators and case changes', () => {
+    for (const name of [
+      'session',
+      'sess',
+      'sid',
+      'connect.sid',
+      '__Host-session',
+      'ASP.NET_SessionId',
+      'XSRF-TOKEN',
+      'csrf_token',
+      'authToken',
+      'myJWT',
+      'app-secret',
+      'db_password',
+      'passwd',
+      'login',
+      'remember_me',
+      'user.credential',
+    ]) {
+      expect(isCredentialCookie(name), name).toBe(true);
+    }
+    for (const name of [
+      'cookie_consent',
+      'viewed_cookie_policy',
+      'cookie_notice_accepted',
+      'consent',
+      'theme',
+      'api_key',
+      'sidebar_state',
+      'assessment',
+      'tokenizer',
+    ]) {
+      expect(isCredentialCookie(name), name).toBe(false);
+    }
   });
 });

@@ -4,6 +4,7 @@ import { holds, type ConditionItem, type Outcome } from '../expressions/evaluate
 import { sourcesOf } from '../expressions/parse';
 import { unitsPerCheck, type WorkBudget } from '../expressions/work';
 import {
+  isCredentialCookie,
   isSensitiveHeader,
   maskValues,
   sensitiveHeaderValues,
@@ -127,6 +128,7 @@ interface Tracked {
   readonly sources: readonly SourceNode[];
   readonly timing: Timing;
   readonly queries: boolean;
+  readonly readsHead: boolean;
   readonly budget: Budget;
   watches: Watch[];
   settled: boolean;
@@ -224,22 +226,31 @@ function watchOf(node: EventNode): Watch {
   }
 }
 
+function withoutDefaults(target: Expr): Expr {
+  let node = target;
+  while (node.kind === 'filter' && node.filter.kind === 'default') {
+    node = node.target;
+  }
+  return node;
+}
+
+function namesSensitiveField(target: Expr, name: string): boolean {
+  const source = withoutDefaults(target);
+  if (source.kind !== 'source') {
+    return false;
+  }
+  if (source.name === 'headers') {
+    return isSensitiveHeader(name);
+  }
+  return source.name === 'cookies' && isCredentialCookie(name);
+}
+
 export function readsSensitiveHead(expression: Expr): boolean {
   const pending: Expr[] = [expression];
   for (let node = pending.pop(); node !== undefined; node = pending.pop()) {
     switch (node.kind) {
-      case 'source':
-        if (node.name === 'cookies') {
-          return true;
-        }
-        break;
       case 'access':
-        if (
-          node.target.kind === 'source' &&
-          node.target.name === 'headers' &&
-          node.step.kind === 'name' &&
-          isSensitiveHeader(node.step.name)
-        ) {
+        if (node.step.kind === 'name' && namesSensitiveField(node.target, node.step.name)) {
           return true;
         }
         pending.push(node.target);
@@ -260,6 +271,7 @@ export function readsSensitiveHead(expression: Expr): boolean {
       case 'compare':
         pending.push(node.left, node.right);
         break;
+      case 'source':
       case 'events':
       case 'nth':
       case 'jsonpath':
@@ -272,6 +284,12 @@ export function readsSensitiveHead(expression: Expr): boolean {
     }
   }
   return false;
+}
+
+function readsHeadSource(sources: readonly SourceNode[]): boolean {
+  return sources.some(
+    (node) => node.kind === 'source' && (node.name === 'headers' || node.name === 'cookies'),
+  );
 }
 
 export function headValues(head: ResponseHead): HeadValues {
@@ -414,7 +432,7 @@ export class CaptureTracker {
   private dropped = false;
   private idle: (() => void) | undefined;
   private readonly drainListeners = new Set<() => void>();
-  private sensitive: readonly string[];
+  private sensitive: { head: readonly string[]; other: readonly string[] };
 
   constructor(
     private readonly run: {
@@ -435,6 +453,7 @@ export class CaptureTracker {
         sources,
         timing: timingOf(sources),
         queries: sources.some((node) => node.kind === 'jsonpath'),
+        readsHead: readsHeadSource(sources),
         budget: newBudget(),
         watches: sources.filter(isEventNode).map(watchOf),
         settled: false,
@@ -445,7 +464,7 @@ export class CaptureTracker {
     this.query = this.tracked.some((tracked) => tracked.queries)
       ? { matches: { ranges: [], values: [] }, budget: newBudget() }
       : undefined;
-    this.sensitive = run.sensitiveValues;
+    this.sensitive = { head: run.sensitiveValues, other: run.sensitiveValues };
   }
 
   get retainedValues(): number {
@@ -485,7 +504,10 @@ export class CaptureTracker {
 
   head(head: ResponseHead, access?: RunAccess): void {
     this.response = headValues(head);
-    this.sensitive = [...this.run.sensitiveValues, ...sensitiveHeaderValues(head.headers)];
+    this.sensitive = {
+      head: [...this.run.sensitiveValues, ...sensitiveHeaderValues(head.headers, true)],
+      other: [...this.run.sensitiveValues, ...sensitiveHeaderValues(head.headers, false)],
+    };
     this.access = access;
     for (const tracked of this.tracked) {
       if (!tracked.settled && tracked.timing === 'head') {
@@ -1084,7 +1106,7 @@ export class CaptureTracker {
       state: 'resolved',
       text: result.text,
       secret: tracked.definition.secret,
-      sensitive: sensitiveValuesIn(result.text, this.sensitive),
+      sensitive: sensitiveValuesIn(result.text, this.sensitiveOf(tracked)),
       provenance: {
         runId: this.run.id,
         event: result.event,
@@ -1101,8 +1123,15 @@ export class CaptureTracker {
     return match === undefined ? Date.now() : this.run.wallStartedAt + match.time;
   }
 
+  private sensitiveOf(tracked: Tracked): readonly string[] {
+    return tracked.readsHead ? this.sensitive.head : this.sensitive.other;
+  }
+
   private fail(tracked: Tracked, reason: string): void {
-    this.report(tracked, { state: 'failed', reason: maskValues(reason, this.sensitive) });
+    this.report(tracked, {
+      state: 'failed',
+      reason: maskValues(reason, this.sensitiveOf(tracked)),
+    });
   }
 
   private report(tracked: Tracked, result: CaptureResult): void {
