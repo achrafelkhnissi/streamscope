@@ -42,7 +42,7 @@ interface Wait {
   readonly request: string;
   readonly name: string;
   readonly waiter: number;
-  settle(entry: CaptureEntry): void;
+  settle(entry: CaptureEntry | undefined): void;
 }
 
 const pendingResult: CaptureResult = { state: 'pending' };
@@ -178,7 +178,7 @@ export class CaptureRegistry {
     name: string,
     waiter: number,
     options: { timeoutMs: number; signal: AbortSignal },
-  ): Promise<CaptureEntry> {
+  ): Promise<CaptureEntry | undefined> {
     const { timeoutMs, signal } = options;
     const producer = this.requests.get(request);
     const label = producer?.label ?? request;
@@ -222,6 +222,17 @@ export class CaptureRegistry {
       signal.addEventListener('abort', cancel, { once: true });
       this.remember(wait);
     });
+  }
+
+  clear(): void {
+    for (const captures of [...this.requests.values()]) {
+      this.remove(captures);
+    }
+    for (const waits of [...this.waitsByCapture.values()]) {
+      for (const wait of [...waits]) {
+        wait.settle(undefined);
+      }
+    }
   }
 
   onDidChange(listener: (request: string, name: string) => void): () => void {

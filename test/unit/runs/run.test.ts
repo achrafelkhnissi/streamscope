@@ -1803,6 +1803,26 @@ describe('waiting for captured values', () => {
     expect(registry.waitCount).toBe(0);
   });
 
+  it('a consumer waiting when the captures are cleared resolves again as if its producer had not run', async () => {
+    const registry = new CaptureRegistry();
+    pendingProducer(registry, -1);
+
+    const consumer = startRun(capturing(registry, followUp, 1), dependencies);
+    await waitFor(() => registry.waitCount === 1);
+    registry.clear();
+    const blocked = await consumer.done;
+
+    expect(blocked.status).toBe('blocked');
+    expect(blocked.problems).toEqual([
+      {
+        message: '`{{startRun.threadId}}` comes from startRun, which has not run in this session.',
+        range: at(6, 37, 58),
+        producer: 'startRun',
+      },
+    ]);
+    expect(registry.waitCount).toBe(0);
+  });
+
   it("begin resets the producer's captures before it resolves", async () => {
     const registry = new CaptureRegistry();
     pendingProducer(registry, -1);

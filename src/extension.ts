@@ -27,6 +27,11 @@ export function activate(context: vscode.ExtensionContext): void {
   const secrets = new SecretStore(context.secrets, context.workspaceState, workspaceIdentity());
   registerSecretCommands(context, secrets);
   const captures = new CaptureRegistry();
+  context.subscriptions.push(
+    vscode.workspace.onDidGrantWorkspaceTrust(() => {
+      captures.clear();
+    }),
+  );
   const requests = registerRequestFeatures(context, log, cache, environments, secrets, captures);
   shutdown = requests.shutdown;
   const variables = createLanguageVariables(

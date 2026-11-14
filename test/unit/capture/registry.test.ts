@@ -211,6 +211,73 @@ describe('CaptureRegistry', () => {
     expect(registry.get(startKey, 'threadId')?.result).toStrictEqual(resolved('thread-1', 1));
   });
 
+  it('clear drops every value, failure and pending entry and tells listeners', () => {
+    const registry = new CaptureRegistry();
+    registry.begin(run(1, startKey, 'startRun'), threadId);
+    registry.begin(run(2, continueKey, 'continue'), [...threadId, ...messageId]);
+    registry.begin(run(3, summaryKey, 'summary'), messageId);
+    registry.update(1, 'threadId', resolved('thread-1', 1));
+    registry.update(2, 'threadId', failed('the body has no threadId'));
+    const changes: string[] = [];
+    registry.onDidChange((request, name) => {
+      changes.push(`${name} ${request} ${registry.get(request, name)?.result.state ?? 'removed'}`);
+    });
+
+    registry.clear();
+
+    expect(registry.size).toBe(0);
+    for (const key of [startKey, continueKey, summaryKey]) {
+      expect(registry.forRequest(key)).toStrictEqual([]);
+    }
+    expect(registry.latest('threadId', everyRequest)).toBeUndefined();
+    expect(registry.latest('messageId', everyRequest)).toBeUndefined();
+    expect(changes.sort()).toEqual(
+      [
+        `threadId ${startKey} removed`,
+        `threadId ${continueKey} removed`,
+        `messageId ${continueKey} removed`,
+        `messageId ${summaryKey} removed`,
+      ].sort(),
+    );
+  });
+
+  it('clear ignores later results of runs that began before it', () => {
+    const registry = new CaptureRegistry();
+    registry.begin(run(1, startKey, 'startRun'), threadId);
+    registry.clear();
+    const changes: string[] = [];
+    registry.onDidChange((request, name) => {
+      changes.push(`${name} ${request}`);
+    });
+
+    registry.update(1, 'threadId', resolved('thread-restricted', 1));
+
+    expect(registry.get(startKey, 'threadId')).toBeUndefined();
+    expect(registry.latest('threadId', everyRequest)).toBeUndefined();
+    expect(changes).toEqual([]);
+
+    registry.begin(run(2, startKey, 'startRun'), threadId);
+    registry.update(2, 'threadId', resolved('thread-trusted', 2));
+    expect(registry.get(startKey, 'threadId')?.result).toStrictEqual(resolved('thread-trusted', 2));
+  });
+
+  it('clear releases every wait without a value, and leaves no timer or listener', async () => {
+    const registry = new CaptureRegistry();
+    registry.begin(run(1, startKey, 'startRun'), threadId);
+    const signal = new AbortController().signal;
+    const waiting = registry.wait(startKey, 'threadId', 9, waitOptions(signal));
+    const early = registry.wait(summaryKey, 'summaryId', 9, waitOptions(signal));
+    expect(registry.waitCount).toBe(2);
+
+    registry.clear();
+
+    await expect(waiting).resolves.toBeUndefined();
+    await expect(early).resolves.toBeUndefined();
+    expect(registry.waitCount).toBe(0);
+    expect(vi.getTimerCount()).toBe(0);
+    expect(getEventListeners(signal, 'abort')).toHaveLength(0);
+  });
+
   it('wait resolves when the capture resolves, and at once when it already has', async () => {
     const registry = new CaptureRegistry();
     registry.begin(run(1, startKey, 'startRun'), threadId);

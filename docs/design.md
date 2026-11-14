@@ -606,7 +606,9 @@ Nothing is written to the workspace except files the user asks to save.
 | `# @insecure`, custom CA settings from the workspace                 | Yes     | Ignored; a relative user `caFile` blocks the request                |
 | File runs from the Testing view                                      | Yes     | No                                                                  |
 
-The confirmation comes only for a request that would otherwise be sent, just before connecting, so a blocked request never asks; declining cancels it. Restricted mode is tested by `npm run test:restricted`, which opens a real untrusted folder because the standard test runner always disables Workspace Trust.
+The confirmation comes only for a request that would otherwise be sent, just before connecting, so a blocked request never asks; declining cancels it.
+
+Granting trust clears every capture of the session: values, failures and pending captures. Values a server sent while the workspace was restricted must not steer requests that now carry secrets. Later results of runs that started before the grant are dropped, and a request waiting on a cleared capture resolves again as if its producer had not run. Restricted mode is tested by `npm run test:restricted`, which opens a real untrusted folder because the standard test runner always disables Workspace Trust.
 
 ### Masking
 
