@@ -3,6 +3,7 @@ import type { CheckEntry, CheckRegistry } from '../../checks/registry';
 import type { ExpectDirective } from '../../http-file/model';
 import { requestKey } from '../../runs/run';
 import type { ParseCache } from './parse-cache';
+import { checkMarkColors } from '../../response/labels';
 
 type CheckState = CheckEntry['result']['state'];
 
@@ -83,9 +84,9 @@ export class CheckDecorations implements vscode.Disposable {
         after: { color: new vscode.ThemeColor(color), margin: '0 0 0 1em' },
       });
     this.types = {
-      passed: type('testing.iconPassed'),
-      failed: type('testing.iconFailed'),
-      pending: type('descriptionForeground'),
+      passed: type(checkMarkColors.passed),
+      failed: type(checkMarkColors.failed),
+      pending: type(checkMarkColors.pending),
     };
     this.stop = checks.onDidChange(() => {
       this.schedule();

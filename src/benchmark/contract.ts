@@ -3,6 +3,7 @@ import type { LatencySummary } from './latency';
 export const benchmarkCommands = {
   stream: 'streamscope.benchmark.stream',
   walkthrough: 'streamscope.benchmark.walkthrough',
+  activation: 'streamscope.benchmark.activation',
 } as const;
 
 export const benchmarkEnvironment = {
@@ -58,6 +59,7 @@ export const walkthroughSteps = [
   'detail',
   'stopped',
   'checks',
+  'testing',
 ] as const;
 
 export type WalkthroughStep = (typeof walkthroughSteps)[number];

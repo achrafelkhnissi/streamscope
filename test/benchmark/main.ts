@@ -1,5 +1,7 @@
 import { parseArgs } from 'node:util';
 import { startStreamServer } from '../support/stream-server';
+import { activationBudgetMs, runActivationBenchmark } from './activation';
+import { runRecording } from './record';
 import { runSoak } from './soak';
 import { measureThroughput } from './throughput';
 import { runViewBenchmark } from './view/runner';
@@ -27,6 +29,8 @@ async function main(): Promise<void> {
       walkthrough: { type: 'boolean', default: false },
       theme: { type: 'string' },
       extension: { type: 'string', multiple: true, default: [] },
+      files: { type: 'string', default: '1' },
+      scene: { type: 'string', default: 'stream' },
     },
   });
   const format = values.format === 'sse' ? 'sse' : 'ndjson';
@@ -71,12 +75,26 @@ async function main(): Promise<void> {
     }
     return;
   }
+  if (command === 'activation') {
+    const result = await runActivationBenchmark(Number(values.files));
+    console.log(JSON.stringify(result, null, 2));
+    if (!(result.medianMs < activationBudgetMs)) {
+      console.error(`The median activation is over the ${String(activationBudgetMs)} ms budget.`);
+      process.exitCode = 1;
+    }
+    return;
+  }
+  if (command === 'record') {
+    const result = await runRecording(values.scene === 'file-run' ? 'file-run' : 'stream');
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
   if (command === 'serve') {
     await serve();
     return;
   }
   throw new Error(
-    'Usage: npm run bench -- throughput|soak|view|serve [--format ndjson|sse] [options]',
+    'Usage: npm run bench -- throughput|soak|view|activation|record|serve [--format ndjson|sse] [options]',
   );
 }
 

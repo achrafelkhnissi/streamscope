@@ -100,10 +100,7 @@ export class CheckRegistry {
 
   settled(key: string, runId: number): Promise<readonly CheckEntry[] | undefined> {
     const request = this.requests.get(key);
-    if (request === undefined) {
-      return Promise.resolve([]);
-    }
-    if (request.runId !== runId) {
+    if (request?.runId !== runId) {
       return Promise.resolve(undefined);
     }
     if (isSettled(request)) {

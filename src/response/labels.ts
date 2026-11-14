@@ -109,6 +109,17 @@ export function checksText(checks: CheckSummary | undefined): string | undefined
     : `${String(checks.passed)}/${String(checks.total)} checks`;
 }
 
+export function blockedMessage(run: RunSnapshot): string | undefined {
+  const problem = run.problems[0];
+  if (problem === undefined) {
+    return undefined;
+  }
+  return maskValues(
+    `Not sent: ${problem.message} (line ${String(problem.range.start.line + 1)}).`,
+    run.sensitiveValues,
+  );
+}
+
 export function describeOutcome(run: RunSnapshot, checks?: CheckSummary): string {
   const text = outcomeText(run);
   const summary = checksText(checks);
@@ -146,3 +157,9 @@ function outcomeText(run: RunSnapshot): string {
         : `Running · ${events} · ${formatDuration(run.elapsedMs)}`;
   }
 }
+
+export const checkMarkColors = {
+  passed: 'testing.iconPassed',
+  failed: 'errorForeground',
+  pending: 'descriptionForeground',
+} as const;

@@ -2,20 +2,31 @@ import * as vscode from 'vscode';
 import type { CaptureRegistry } from '../../capture/registry';
 import type { CheckRegistry } from '../../checks/registry';
 import { parseHttpFile } from '../../http-file/parse';
+import { isTestedUri } from '../../runs/test-file';
 import type { ParseCache } from '../language/parse-cache';
 import type { RequestFeatures } from '../requests/register';
+import { closedFileProblem } from './file-check';
 import { HttpTestItems, maxTestFiles } from './items';
 import { runTests, type TestReport } from './run';
 
-const testedSchemes: ReadonlySet<string> = new Set(['file', 'untitled']);
 const testedFiles = '**/*.{http,rest}';
 const decoder = new TextDecoder();
 const untrustedMessage =
   'File runs need a trusted workspace. Trust it to run requests from the Testing view.';
 const noFileMessage = 'Open a .http file to run it.';
+const outsideMessage = 'Run File runs .http files in this workspace or untitled ones.';
 
 function isTested(document: vscode.TextDocument): boolean {
-  return document.languageId === 'http' && testedSchemes.has(document.uri.scheme);
+  return document.languageId === 'http' && isTestedUri(document.uri);
+}
+
+function isRunnable(uri: vscode.Uri, active: vscode.Uri | undefined): boolean {
+  return (
+    isTestedUri(uri) &&
+    (uri.scheme === 'untitled' ||
+      vscode.workspace.getWorkspaceFolder(uri) !== undefined ||
+      uri.toString() === active?.toString())
+  );
 }
 
 function isDependency(uri: vscode.Uri): boolean {
@@ -76,7 +87,7 @@ export class HttpTesting implements vscode.Disposable {
     this.watch();
     const uris = await vscode.workspace.findFiles(testedFiles, undefined, maxTestFiles);
     for (const uri of uris) {
-      if (!isDependency(uri)) {
+      if (isTestedUri(uri) && !isDependency(uri)) {
         this.discovered.add(uri.toString());
         this.items.fileItem(uri);
       }
@@ -91,13 +102,15 @@ export class HttpTesting implements vscode.Disposable {
     }
     let text: string;
     try {
+      const problem = await closedFileProblem(uri);
+      if (problem !== undefined) {
+        this.items.refuse(uri, problem);
+        return;
+      }
       text = decoder.decode(await vscode.workspace.fs.readFile(uri));
     } catch (error) {
-      const item = this.items.get(uri);
-      if (item !== undefined) {
-        const reason = error instanceof Error ? error.message : String(error);
-        item.error = `Streamscope could not read this file: ${reason}`;
-      }
+      const reason = error instanceof Error ? error.message : String(error);
+      this.items.refuse(uri, `Streamscope could not read this file: ${reason}`);
       return;
     }
     this.items.sync(uri, parseHttpFile(text));
@@ -123,15 +136,21 @@ export class HttpTesting implements vscode.Disposable {
     );
   }
 
-  async runFile(uri: vscode.Uri): Promise<void> {
-    await this.load(uri);
-    const item = this.items.get(uri);
-    if (item === undefined) {
+  async runFiles(uris: readonly vscode.Uri[]): Promise<void> {
+    const include: vscode.TestItem[] = [];
+    for (const uri of uris) {
+      await this.load(uri);
+      const item = this.items.get(uri);
+      if (item !== undefined) {
+        include.push(item);
+      }
+    }
+    if (include.length === 0) {
       return;
     }
     const source = new vscode.CancellationTokenSource();
     try {
-      await this.run(new vscode.TestRunRequest([item], undefined, this.profile), source.token);
+      await this.run(new vscode.TestRunRequest(include, undefined, this.profile), source.token);
     } finally {
       source.dispose();
     }
@@ -172,7 +191,7 @@ export class HttpTesting implements vscode.Disposable {
     this.subscriptions.push(
       watcher,
       watcher.onDidCreate((uri) => {
-        if (this.discovered.size < maxTestFiles && !isDependency(uri)) {
+        if (this.discovered.size < maxTestFiles && isTestedUri(uri) && !isDependency(uri)) {
           this.discovered.add(uri.toString());
           this.items.fileItem(uri);
         }
@@ -208,19 +227,42 @@ export function registerTesting(
     }
   };
   create();
+  const notices: string[] = [];
+  const notify = (message: string): void => {
+    if (testMode) {
+      notices.push(message);
+    }
+    void vscode.window.showInformationMessage(message);
+  };
   const runFileCommand = async (argument?: unknown): Promise<void> => {
     if (testing === undefined) {
-      void vscode.window.showInformationMessage(untrustedMessage);
+      notify(untrustedMessage);
       return;
     }
-    const uri =
-      argument instanceof vscode.Uri ? argument : vscode.window.activeTextEditor?.document.uri;
-    const document = uri === undefined ? undefined : await vscode.workspace.openTextDocument(uri);
-    if (document === undefined || !isTested(document)) {
-      void vscode.window.showInformationMessage(noFileMessage);
+    const active = vscode.window.activeTextEditor?.document.uri;
+    const uri = argument instanceof vscode.Uri ? argument : active;
+    if (uri === undefined) {
+      notify(noFileMessage);
       return;
     }
-    await testing.runFile(document.uri);
+    if (!isRunnable(uri, active)) {
+      notify(outsideMessage);
+      return;
+    }
+    const open = vscode.workspace.textDocuments.some(
+      (candidate) => candidate.uri.toString() === uri.toString(),
+    );
+    const problem = open || uri.scheme !== 'file' ? undefined : await closedFileProblem(uri);
+    if (problem !== undefined) {
+      notify(`Streamscope did not run ${vscode.workspace.asRelativePath(uri)}: ${problem}`);
+      return;
+    }
+    const document = await vscode.workspace.openTextDocument(uri);
+    if (!isTested(document)) {
+      notify(noFileMessage);
+      return;
+    }
+    await testing.runFiles([document.uri]);
   };
   context.subscriptions.push(
     vscode.workspace.onDidGrantWorkspaceTrust(create),
@@ -237,6 +279,12 @@ export function registerTesting(
         (uri?: unknown) =>
           testing?.items.describe(uri instanceof vscode.Uri ? uri : undefined) ?? [],
       ),
+      vscode.commands.registerCommand('streamscope.test.runFileNotices', () => notices.splice(0)),
+      vscode.commands.registerCommand('streamscope.test.runFiles', async (uris?: unknown) => {
+        if (testing !== undefined && Array.isArray(uris)) {
+          await testing.runFiles(uris.filter((uri) => uri instanceof vscode.Uri));
+        }
+      }),
       vscode.commands.registerCommand('streamscope.test.resolveTests', async (uri?: unknown) => {
         if (testing === undefined) {
           return;

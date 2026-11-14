@@ -8,7 +8,13 @@ import { CheckService } from '../../checks/service';
 import type { StreamSession } from '../../events/session';
 import { SpillArea } from '../../events/spill';
 import type { HttpFile, HttpRequest, Range } from '../../http-file/model';
-import { fileSafeName, formatBytes, requestLabel, saveExtension } from '../../response/labels';
+import {
+  blockedMessage,
+  fileSafeName,
+  formatBytes,
+  requestLabel,
+  saveExtension,
+} from '../../response/labels';
 import { historyItems, type HistoryItem } from '../../response/run-status';
 import type { BodyFileContext } from '../../runs/body-files';
 import type { StepStart } from '../../runs/file-run';
@@ -186,12 +192,13 @@ function blockedToast(
   run: RunSnapshot,
 ): BlockedToast | undefined {
   const problem = run.problems[0];
-  if (!problem) {
+  const message = blockedMessage(run);
+  if (!problem || message === undefined) {
     return undefined;
   }
   const action = producerAction(document, file, problem.producer);
   return {
-    message: `Not sent: ${problem.message} (line ${String(problem.range.start.line + 1)}).`,
+    message,
     actions: action === undefined ? ['Go to Line'] : [action.title, 'Go to Line'],
     run: action,
     range: problem.range,

@@ -27,6 +27,9 @@ npm run build
 caffeinate -d -i npm run bench -- view --surface m6 --rate 500 --size 1024 --minutes 30
 npm run bench -- view --walkthrough --surface m6-dark --theme "Default Dark Modern"
 npm run bench -- view --surface <name> --extension <path>
+npm run bench -- activation --files 300
+npm run bench -- record --scene stream
+npm run bench -- record --scene file-run
 npm run bench -- serve
 ```
 
@@ -39,9 +42,11 @@ Run `npm run build` first. `npm run bench` bundles the benchmark and its driver,
   - **Typing:** the round trip of inserting a character into an editor every 100 ms. A tick that comes while an edit is still outstanding is skipped, so a long stall counts as one sample.
   - **Extension host:** CPU time, and heap and resident size sampled every second without forced garbage collection, so they are upper bounds. Electron reports array buffers as 0 there, so the resident size is the figure that includes the event index.
   - **Other processes:** CPU and resident size of the renderer, GPU and main processes, read with `ps` every 5 s over the VS Code process tree. "Renderer" is the sum of every renderer process: the workbench window plus any webview frames.
-- **`--walkthrough`** streams 20 events/s for 2 minutes and runs `streamscope.benchmark.walkthrough`. The surface takes the screenshots listed in `src/benchmark/contract.ts` through the runner's control server, which saves them under `out/benchmark/screenshots/<surface>-<step>.jpeg`. Because the surface name is in the file name, give each theme its own surface name, such as `m6-dark`, `m6-light`, `m6-hc` and `m6-hclight`. A second run with the same name overwrites the first run's screenshots.
+- **`--walkthrough`** streams 20 events/s for 2 minutes and runs `streamscope.benchmark.walkthrough`. Its request captures `threadId` and has one passing and one failing `# @expect`, so the screenshots show the capture strip, the Checks tab and the ✓ / ✗ marks. Its last step runs a four-request file (passed, failed, errored, skipped) with **Run File** and shows the Testing view. The surface takes the screenshots listed in `src/benchmark/contract.ts` through the runner's control server, which saves them under `out/benchmark/screenshots/<surface>-<step>.jpeg`. Because the surface name is in the file name, give each theme its own surface name, such as `m6-dark`, `m6-light`, `m6-hc` and `m6-hclight`. A second run with the same name overwrites the first run's screenshots.
 - **`--surface`** names the run. Results, logs and screenshots are named by it. Use `m6` for Streamscope's response view.
 - **`--theme`** writes `workbench.colorTheme` into the throwaway profile. It accepts `Default Dark Modern`, `Default Light Modern`, `Default High Contrast` and `Default High Contrast Light`. Without it, VS Code's default theme applies.
+- **`activation`** starts VS Code stable 5 times, each time in a fresh throwaway profile on a folder with `--files` synthetic `.http` files (default 1), so `workspaceContains` activates Streamscope as it would for a user. The extension records how long its bundle took to load and `activate()` took to return, from a `performance.now()` stamp that esbuild places at the top of `dist/extension.js`, and the driver reads it with `streamscope.benchmark.activation`. The runner prints each run, the median and the slowest. Build with `npm run build:production` first to measure what users get.
+- **`record`** makes the README's recordings, `images/live-stream.gif` and `images/file-run.gif`. Run `npm run package` first: it installs the packaged VSIX into a throwaway profile, so the window looks as it does for a user, and opens a folder with a synthetic `.http` file. It drives the scene with key events over the DevTools protocol (Quick Open, Send Request, or Run File in the Testing view), keeps the frames of `Page.startScreencast` in `out/record/<scene>/`, and assembles them with `ffmpeg` at 10 frames/s and 1,200 px wide with a palette pass. A recording over 8 MB fails. The `stream` scene streams 500 events/s of 1 KiB for 12 s; the `file-run` scene runs three requests, one of which cannot connect and one skipped as its dependant. It needs `ffmpeg` on the `PATH` and, like `--walkthrough`, opens a DevTools port on 127.0.0.1 while it runs.
 - **`serve`** prints the URL of the synthetic stream server and keeps it running, for trying a surface by hand.
 
 Things to know:
@@ -53,7 +58,7 @@ Things to know:
 - For a walkthrough only, VS Code is started with `--remote-debugging-port=0` so the runner can take screenshots. The runner reads the port VS Code reports and talks only to the workbench on 127.0.0.1 at that port. While a walkthrough runs, any local process can connect to that port and drive the window, so don't run walkthroughs on a shared machine or in CI. The runner's control server takes requests only with a random per-run token.
 - Ctrl+C stops VS Code and removes the throwaway profile.
 - Results and the VS Code log go to `out/benchmark/view-<surface>-<time>.json` and `.log`.
-- A surface must register the two `streamscope.benchmark.*` commands. The M5 prototypes did, from a development-only extension that has since been deleted. Streamscope's response view registers them only in development and test mode and when `STREAMSCOPE_BENCHMARK=1`, which the runner sets. If no surface registered the command, `view` reports that.
+- A surface must register the `streamscope.benchmark.stream` and `streamscope.benchmark.walkthrough` commands. The M5 prototypes did, from a development-only extension that has since been deleted. Streamscope's response view registers them only in development and test mode and when `STREAMSCOPE_BENCHMARK=1`, which the runner sets. If no surface registered the command, `view` reports that.
 
 ## 2026-11-12: M4 streaming core
 
@@ -383,3 +388,40 @@ Raw results, the median throughput runs and the two soak runs after this change:
   }
 ]
 ```
+
+## 2026-11-14: M11 release candidate
+
+Branch `m11-release-preparation`, version 0.1.0. Apple M3 Pro, 18 GB, macOS 27.2.1, Node 24.18.0, VS Code 1.146.0.
+
+### Budgets
+
+| Budget (design section 3)                                    | Measured                                                                                                                  | Result |
+| ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------- | ------ |
+| Event visible within 100 ms (p95) at 500 events/s of 1 KiB   | 30-minute view run: 900,002 of 900,002 events visible, p50 / p95 / p99 / max 32 / 55 / 60 / 1,055 ms                      | Met    |
+| No synchronous task over 50 ms; typing smooth for 30 minutes | Same run: no Streamscope task over 50 ms (longest 41.9 ms); typing p50 / p95 / p99 / max 1 / 1 / 3 / 164 ms               | Met    |
+| Extension heap under 150 MB regardless of stream length      | 30-minute soak at 1,000 events/s: heap peak 20.7 MB, heap plus array buffers 80.1 MB                                      | Met    |
+| A 50 MB JSON body opens without freezing VS Code             | The 50 MB integration test passes on VS Code 1.101.0 and stable                                                           | Met    |
+| Activation under 50 ms                                       | Median of 5 starts on a production build: 7.7 ms with one `.http` file (slowest 8.0 ms), 7.7 ms with 300 (slowest 8.2 ms) | Met    |
+| Bundled extension under 400 KB                               | `streamscope-0.1.0.vsix` (pre-release): 208.84 KB, 14 files                                                               | Met    |
+
+Commands: `caffeinate -d -i npm run bench -- view --surface m11-quiet --rate 500 --size 1024 --minutes 30`, `npm run bench -- soak --format ndjson --rate 1000 --minutes 30`, `npm run bench -- activation` with and without `--files 300` on a production build, and `npm run verify:vsix`.
+
+- **The view run had to be repeated.** The first 30-minute run (`m11`) overlapped a code review that ran the unit tests, ESLint and the type checker on the same machine. It had one Streamscope task of 56.5 ms and five extension host pauses, the longest 111 ms, with the same latencies. The rerun on a quiet machine (`m11-quiet`) is the one in the table.
+- **Extension host pauses stay unattributed.** The quiet run saw three pauses of the extension host over 50 ms, the longest 135 ms and 256 ms in all, while Streamscope's own timed tasks stayed under 42 ms. As in M6, the pauses may come from VS Code, garbage collection or untimed code; the budget is judged on Streamscope's tasks and on typing, which stayed at 1 ms (p95).
+- **Memory in the view run:** extension host heap 48.2 → 88.4 MB, resident 185.3 → 233.7 MB, CPU 6.9%.
+- **Soak:** 1,800,002 events in 30 minutes, lag p95 49 ms and max 115 ms (including up to 50 ms of batching). The spill file stopped at its 512 MiB cap (536.9 MB) and the stream went on.
+
+### Decompression after the backpressure fix
+
+M11 made the decoder pause its last stage while its output is not read. Decoding 64 MiB of NDJSON, written in 16 KiB chunks and read at full speed, median of 5 interleaved rounds:
+
+| Coding | Before (MB/s)                         | After (MB/s)                            |
+| ------ | ------------------------------------- | --------------------------------------- |
+| gzip   | 1,105, 1,096, 1,134, 985, 797 → 1,096 | 817, 1,368, 1,191, 683, 1,142 → 1,142   |
+| br     | 1,013, 1,256, 967, 980, 1,277 → 1,013 | 1,239, 1,027, 841, 1,279, 1,296 → 1,239 |
+
+No regression; the spread between rounds is larger than the difference. A 64 MiB compression bomb whose output is not read now buffers under 1 MiB (`test/unit/transport/decompress-bomb.test.ts`) instead of 37 to 67 MB.
+
+### Timing tests
+
+The one M7 host-stall test that measured a single run (`64 captures over 16 MiB of 38-byte events …`, 102.7 ms on a Windows runner in PR #23) now takes the fastest of three rounds with the same 100 ms bound. `npm run check` then passed five times in a row (2,580 of 2,580 each). The other stall tests that failed on slow runners already took the fastest of three.

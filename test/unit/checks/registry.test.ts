@@ -118,12 +118,18 @@ describe('CheckRegistry.settled', () => {
     expect(registry.waiterCount).toBe(0);
   });
 
-  it('resolves settled with no entries for a request without checks', async () => {
-    const registry = new CheckRegistry();
-    registry.begin({ id: 1, key: 'k', startedAt: 1 }, []);
+  it('resolves undefined for a run whose checks were evicted or replaced by a run without checks', async () => {
+    const evicting = new CheckRegistry(1);
+    evicting.begin({ id: 1, key: 'a', startedAt: 1 }, two);
+    evicting.begin({ id: 2, key: 'b', startedAt: 2 }, two);
+    expect(await evicting.settled('a', 1)).toBeUndefined();
 
-    expect(await registry.settled('k', 1)).toEqual([]);
-    expect(await registry.settled('unknown', 9)).toEqual([]);
+    const registry = new CheckRegistry();
+    registry.begin({ id: 3, key: 'k', startedAt: 3 }, two);
+    registry.begin({ id: 4, key: 'k', startedAt: 4 }, []);
+    expect(await registry.settled('k', 3)).toBeUndefined();
+    expect(await registry.settled('k', 4)).toBeUndefined();
+    expect(await registry.settled('unknown', 9)).toBeUndefined();
     expect(registry.waiterCount).toBe(0);
   });
 

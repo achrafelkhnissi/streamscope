@@ -28,25 +28,33 @@ const problemMatcherPlugin = {
   },
 };
 
+const host = {
+  outdir: 'dist',
+  bundle: true,
+  format: 'cjs',
+  platform: 'node',
+  target: 'node22',
+  external: ['vscode'],
+  minify: production,
+  sourcemap: !production,
+  sourcesContent: false,
+  keepNames: true,
+  logLevel: 'silent',
+  plugins: [problemMatcherPlugin],
+};
+
 const contexts = await Promise.all([
   esbuild.context({
+    ...host,
+    entryPoints: { extension: 'src/extension.ts' },
+    banner: { js: '"use strict";\nconst streamscopeLoadedAt = performance.now();' },
+  }),
+  esbuild.context({
+    ...host,
     entryPoints: {
-      extension: 'src/extension.ts',
       'format-worker': 'src/response/format-worker.ts',
       'capture-worker': 'src/capture/body-worker.ts',
     },
-    outdir: 'dist',
-    bundle: true,
-    format: 'cjs',
-    platform: 'node',
-    target: 'node22',
-    external: ['vscode'],
-    minify: production,
-    sourcemap: !production,
-    sourcesContent: false,
-    keepNames: true,
-    logLevel: 'silent',
-    plugins: [problemMatcherPlugin],
   }),
   esbuild.context({
     entryPoints: { 'response-view': 'src/webview/main.ts' },

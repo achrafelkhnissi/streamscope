@@ -32,6 +32,7 @@ const transportOptions: TransportOptions = {
   totalTimeoutMs: undefined,
   followRedirects: false,
   maxRedirects: 0,
+  sensitiveValues: [],
 };
 
 export async function runSoak(options: {

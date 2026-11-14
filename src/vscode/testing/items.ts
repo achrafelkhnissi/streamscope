@@ -20,6 +20,7 @@ export interface TestItemState {
   description: string | undefined;
   sortText: string | undefined;
   range: [number, number] | undefined;
+  error: string | undefined;
   children: TestItemState[];
 }
 
@@ -29,6 +30,10 @@ function description(request: HttpRequest): string | undefined {
   }
   const { method, url } = request.requestLine;
   return `${method.toUpperCase()} ${maskUrl(url)}`;
+}
+
+function itemId(key: string): string {
+  return maskUrl(key).replaceAll('\0', '\ufffd');
 }
 
 function rangeOf(request: HttpRequest): vscode.Range {
@@ -47,6 +52,7 @@ function stateOf(item: vscode.TestItem): TestItemState {
     description: item.description,
     sortText: item.sortText,
     range: item.range === undefined ? undefined : [item.range.start.line, item.range.end.line],
+    error: typeof item.error === 'string' ? item.error : item.error?.value,
     children,
   };
 }
@@ -84,7 +90,7 @@ export class HttpTestItems {
       const key = requestKey(documentUri, request, index);
       const duplicate = seen.has(key);
       seen.add(key);
-      const id = duplicate ? `${key}\n#${String(index)}` : key;
+      const id = duplicate ? `${itemId(key)}\n#${String(index)}` : itemId(key);
       const item =
         fileItem.children.get(id) ?? this.controller.createTestItem(id, requestLabel(request), uri);
       item.label = requestLabel(request);
@@ -101,7 +107,16 @@ export class HttpTestItems {
     }
     fileItem.children.replace(tests.map(({ item }) => item));
     fileItem.canResolveChildren = false;
+    fileItem.error = undefined;
     this.tests.set(documentUri, tests);
+  }
+
+  refuse(uri: vscode.Uri, message: string): void {
+    const fileItem = this.fileItem(uri);
+    fileItem.children.replace([]);
+    fileItem.canResolveChildren = false;
+    fileItem.error = message;
+    this.tests.set(uri.toString(), []);
   }
 
   remove(uri: vscode.Uri): void {

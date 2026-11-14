@@ -24,6 +24,7 @@ describe('walkthroughSteps', () => {
       'detail',
       'stopped',
       'checks',
+      'testing',
     ]);
   });
 });

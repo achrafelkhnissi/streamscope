@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { locateBodyFile } from '../../../src/runs/body-files';
+import { locateBodyFile, resolvesInside } from '../../../src/runs/body-files';
 
 let base = '';
 let root = '';
@@ -102,5 +102,17 @@ describe('locateBodyFile', () => {
       ok: false,
       message: 'Body file `./requests` was not found.',
     });
+  });
+});
+
+describe('resolvesInside', () => {
+  it('follows links: a file reached through a linked folder outside the root is outside', async () => {
+    writeFileSync(path.join(documentDir, 'here.http'), 'GET https://api.example.test/\n');
+    writeFileSync(path.join(outside, 'away.http'), 'GET https://api.example.test/\n');
+    symlinkSync(outside, path.join(root, 'linked'), 'junction');
+
+    expect(await resolvesInside(path.join(documentDir, 'here.http'), root)).toBe(true);
+    expect(await resolvesInside(path.join(root, 'linked', 'away.http'), root)).toBe(false);
+    expect(await resolvesInside(path.join(root, 'missing.http'), root)).toBe(false);
   });
 });

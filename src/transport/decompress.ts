@@ -16,7 +16,27 @@ function isZlibWrapped(firstByte: number | undefined): boolean {
   return firstByte === undefined || (firstByte & 0x0f) === 0x08;
 }
 
-class Inflate extends Transform {
+class Relay extends Transform {
+  private paused: Transform | undefined;
+
+  override _read(size: number): void {
+    const paused = this.paused;
+    this.paused = undefined;
+    paused?.resume();
+    super._read(size);
+  }
+
+  protected relay(inner: Transform): void {
+    inner.on('data', (data: Buffer) => {
+      if (!this.push(data)) {
+        inner.pause();
+        this.paused = inner;
+      }
+    });
+  }
+}
+
+class Inflate extends Relay {
   private inner: Transform | undefined;
 
   override _transform(chunk: Buffer, _encoding: BufferEncoding, callback: TransformCallback): void {
@@ -46,9 +66,7 @@ class Inflate extends Transform {
     const inner = isZlibWrapped(firstByte)
       ? zlib.createInflate(zlibOptions)
       : zlib.createInflateRaw(zlibOptions);
-    inner.on('data', (data: Buffer) => {
-      this.push(data);
-    });
+    this.relay(inner);
     inner.on('error', (error) => {
       this.destroy(error);
     });
@@ -69,7 +87,7 @@ function stage(coding: string): Transform {
   }
 }
 
-class Decoder extends Transform {
+class Decoder extends Relay {
   private stages: Transform[] = [];
 
   constructor(private readonly codings: readonly string[]) {
@@ -113,9 +131,7 @@ class Decoder extends Transform {
       if (next) {
         inner.pipe(next);
       } else {
-        inner.on('data', (data: Buffer) => {
-          this.push(data);
-        });
+        this.relay(inner);
       }
     });
     return this.stages[0] as Transform;

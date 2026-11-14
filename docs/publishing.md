@@ -82,10 +82,23 @@ flowchart LR
 - The publish job has `id-token: write`, runs only in the `release` environment, and every action is pinned to a commit SHA.
 - No long-lived publishing tokens are stored. Global Azure DevOps PATs are retired on 2026-12-01; the Marketplace path is OIDC trusted publishing.
 
+The workflow, written in milestone M11:
+
+- **Triggers:** a tag `vMAJOR.MINOR.PATCH`, or **Run workflow** (`workflow_dispatch`) with a `version` input. Either way the version must equal `package.json`'s, or the `package` job stops (`scripts/release.mjs version`).
+- **Jobs:**
+  1. `check`: the CI checks on Linux, macOS and Windows;
+  2. `package`: packages once, with `--pre-release` on odd minors, installs that VSIX in a clean profile (`scripts/verify-vsix.mjs`), writes the version's changelog section as release notes, and uploads both as the `release` artifact;
+  3. `publish-marketplace`: in the `release` environment, `vsce publish --oidc --packagePath` with the artifact's VSIX;
+  4. `publish-open-vsx`: in the `release` environment, `ovsx publish --trusted-publishing --packagePath` with the same VSIX. It runs only when the repository variable `OPEN_VSX_TRUSTED` is `true`, which M12 sets after the first token publish (one-time setup, step 4);
+  5. `github-release`: after the Marketplace publish (and Open VSX, when it ran), creates the GitHub release `vVERSION` with the VSIX and the notes.
+- **Gate:** each publish job that runs waits for approval of the `release` environment, so once that environment exists with a required reviewer (one-time setup, step 1), a tag or a dispatch never publishes without it. Rejecting the approval ends the run there. The `package` job also refuses a commit that is not on `main`.
+- **Dry run:** dispatch the workflow with the current version and reject the approval: `check` and `package` run in full and the VSIX can be downloaded from the run.
+- `test/unit/release-workflow.test.ts` pins the triggers, the environment and permissions of each job, the pinned actions, the absence of stored tokens, the Open VSX switch and the single package. `actionlint` checks the file.
+
 ## One-time setup before the first release (milestone M12)
 
-1. **Marketplace trusted publishing:** publisher `achrafelkhnissi` → Trusted Publishing → Create. Policy name "Release workflow", repository owner `achrafelkhnissi`, repository `streamscope`, workflow `release.yml`, environment `release`.
-2. **GitHub environment:** create `release` in the repository settings with Achraf as required reviewer.
+1. **GitHub environment, first:** create `release` in the repository settings with Achraf as required reviewer, deployment limited to `main` and tags matching `v*.*.*`, and administrator bypass off. It must exist before any trust policy names it and before any release tag or dispatch: when a workflow names an environment that does not exist, GitHub creates it without protection, and the publish jobs would run unapproved. Done in M11 on 2026-11-14: reviewer `achrafelkhnissi`, administrator bypass off, deployments from branch `main` and tags `v*.*.*`.
+2. **Marketplace trusted publishing:** publisher `achrafelkhnissi` → Trusted Publishing → Create. Policy name "Release workflow", repository owner `achrafelkhnissi`, repository `streamscope`, workflow `release.yml`, environment `release`.
 3. **First Marketplace version:** publish through the workflow. If the Marketplace refuses OIDC for an extension that does not exist yet (unverified), upload the first VSIX on the publisher page (New extension → Visual Studio Code) by hand; later versions use the workflow.
 4. **First Open VSX version:** Achraf creates an Open VSX access token and publishes the same VSIX once from his own terminal, entering the token in a hidden prompt (never in chat or in files). Then: Open VSX Settings → Trusted Publishers → GitHub Actions, owner `achrafelkhnissi`, repository `streamscope`, workflow `release.yml`, environment `release`; then delete the token. Open VSX requires an owned namespace and an existing extension for trusted publishing.
 5. **Later, optional:** verified publisher badge, which needs a domain registered for at least 6 months and an extension on the Marketplace for at least 6 months.
@@ -101,6 +114,7 @@ flowchart LR
 ## Pre-publish checklist
 
 - [ ] All milestone gates green; benchmarks within budget
+- [ ] Environment `release` exists with a required reviewer and its deployment rule
 - [ ] Version, changelog and README updated
 - [ ] Display name still free on the Marketplace
 - [ ] `--skip-license` and `--allow-missing-repository` no longer used

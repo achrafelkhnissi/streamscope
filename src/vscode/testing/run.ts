@@ -4,6 +4,7 @@ import type { CheckRegistry } from '../../checks/registry';
 import type { HttpFile, Range } from '../../http-file/model';
 import { describeOutcome, requestLabel } from '../../response/labels';
 import {
+  expectsChecks,
   runFile,
   withoutControls,
   type FileRunHooks,
@@ -11,8 +12,10 @@ import {
   type RequestVerdict,
 } from '../../runs/file-run';
 import type { RunSnapshot } from '../../runs/run';
+import { isTestedUri } from '../../runs/test-file';
 import type { ParseCache } from '../language/parse-cache';
 import type { RequestFeatures } from '../requests/register';
+import { closedFileProblem } from './file-check';
 import type { HttpTestItems, RequestTest } from './items';
 
 export interface TestReport {
@@ -56,7 +59,7 @@ function planOf(request: vscode.TestRunRequest, items: HttpTestItems): PlannedFi
   const excluded = new Set((request.exclude ?? []).map(({ id }) => id));
   const planned = new Map<string, PlannedFile>();
   for (const item of request.include ?? items.files()) {
-    if (excluded.has(item.id) || item.uri === undefined) {
+    if (excluded.has(item.id) || item.uri === undefined || !isTestedUri(item.uri)) {
       continue;
     }
     const key = item.uri.toString();
@@ -168,7 +171,8 @@ export async function runTests(
             kind: 'not-started',
             message: `Another request in this file is also named ${step.test.duplicateOf}.`,
           }),
-    checks: (step, runId) => checks.settled(step.test.key, runId),
+    checks: (step, runId) =>
+      expectsChecks(step.test.request) ? checks.settled(step.test.key, runId) : Promise.resolve([]),
     secrets: async (_step, runId) => {
       await captures.settled(runId);
       return captures.secretsOf(runId);
@@ -178,8 +182,31 @@ export async function runTests(
 
   try {
     const batches: TestStep[][] = [];
+    const fileError = (uri: vscode.Uri, text: string): void => {
+      const fileItem = items.get(uri);
+      if (fileItem !== undefined) {
+        testRun.errored(fileItem, new vscode.TestMessage(text));
+        record?.({ kind: 'errored', id: fileItem.id, messages: [{ text, line: undefined }] });
+      }
+    };
     for (const { uri, ids } of planned) {
-      const document = await vscode.workspace.openTextDocument(uri);
+      const name = vscode.workspace.asRelativePath(uri);
+      let document: vscode.TextDocument;
+      try {
+        const open = vscode.workspace.textDocuments.some(
+          (candidate) => candidate.uri.toString() === uri.toString(),
+        );
+        const problem = open || uri.scheme !== 'file' ? undefined : await closedFileProblem(uri);
+        if (problem !== undefined) {
+          fileError(uri, `Streamscope did not run ${name}: ${problem}`);
+          continue;
+        }
+        document = await vscode.workspace.openTextDocument(uri);
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        fileError(uri, `Streamscope could not open ${name}: ${reason}`);
+        continue;
+      }
       const file = cache.get(document);
       items.sync(uri, file);
       const fileItem = items.get(uri);
