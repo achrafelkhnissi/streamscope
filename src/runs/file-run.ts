@@ -9,6 +9,7 @@ export interface FileRunStep {
 export interface FailedCheck {
   index: number;
   text: string;
+  line: number;
   detail: string;
 }
 
@@ -35,9 +36,9 @@ export const checksReplacedMessage = 'A newer run of this request replaced its c
 
 function failedChecks(checks: readonly CheckEntry[]): FailedCheck[] {
   const failed: FailedCheck[] = [];
-  for (const [index, { text, result }] of checks.entries()) {
+  for (const [index, { text, line, result }] of checks.entries()) {
     if (result.state === 'failed') {
-      failed.push({ index, text, detail: result.detail });
+      failed.push({ index, text, line, detail: result.detail });
     }
   }
   return failed;

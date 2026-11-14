@@ -223,6 +223,13 @@ async function listsNoTests(): Promise<void> {
   assert.deepEqual(items, [], 'a restricted workspace listed tests');
 }
 
+async function runsNoFiles(folder: string): Promise<void> {
+  const uri = vscode.Uri.file(path.join(folder, 'requests.http'));
+  await vscode.commands.executeCommand('streamscope.runFile', uri);
+  const reports = await vscode.commands.executeCommand<unknown[]>('streamscope.test.testReports');
+  assert.deepEqual(reports, [], 'a restricted workspace ran a file');
+}
+
 export async function run(): Promise<void> {
   const extension = vscode.extensions.getExtension(extensionId);
   assert.ok(extension, `${extensionId} is not loaded`);
@@ -235,6 +242,7 @@ export async function run(): Promise<void> {
   assert.equal(vscode.workspace.getConfiguration('streamscope.request').get('caFile'), '');
   await blocksEverythingRestricted(folder);
   await listsNoTests();
+  await runsNoFiles(folder);
   await usesOnlyTheFolderForItsOwnFiles(folder);
   await refusesARelativeUserCaFile(folder);
   await capturesWaitForConfirmedSends(folder);

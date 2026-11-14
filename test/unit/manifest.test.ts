@@ -146,7 +146,24 @@ describe('extension manifest', () => {
       'streamscope.showLog',
       'streamscope.showHistory',
       'streamscope.captureValue',
+      'streamscope.runFile',
     ]);
+  });
+
+  it('contributes Run File for http editors', () => {
+    expect(
+      manifest.contributes.commands.find(({ command }) => command === 'streamscope.runFile'),
+    ).toEqual({
+      command: 'streamscope.runFile',
+      title: 'Run File',
+      category: 'Streamscope',
+      icon: '$(run-all)',
+    });
+    expect(
+      manifest.contributes.menus.commandPalette?.find(
+        ({ command }) => command === 'streamscope.runFile',
+      ),
+    ).toEqual({ command: 'streamscope.runFile', when: 'editorLangId == http' });
   });
 
   it('binds Send Request to cmd+alt+enter and ctrl+alt+enter in http editors', () => {

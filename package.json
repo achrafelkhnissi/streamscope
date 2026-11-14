@@ -161,6 +161,12 @@
         "command": "streamscope.captureValue",
         "title": "Capture This Value…",
         "category": "Streamscope"
+      },
+      {
+        "command": "streamscope.runFile",
+        "title": "Run File",
+        "category": "Streamscope",
+        "icon": "$(run-all)"
       }
     ],
     "keybindings": [
@@ -208,6 +214,10 @@
         {
           "command": "streamscope.captureValue",
           "when": "resourceScheme == streamscope-response || activeWebviewPanelId == 'streamscope.response'"
+        },
+        {
+          "command": "streamscope.runFile",
+          "when": "editorLangId == http"
         }
       ],
       "editor/context": [

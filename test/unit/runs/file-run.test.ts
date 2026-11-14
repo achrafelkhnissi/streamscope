@@ -135,8 +135,8 @@ describe('requestVerdict', () => {
       kind: 'failed',
       durationMs: 90,
       checks: [
-        { index: 1, text: 'check 1', detail: 'got 500' },
-        { index: 2, text: 'check 2', detail: 'got 2' },
+        { index: 1, text: 'check 1', line: 1, detail: 'got 500' },
+        { index: 2, text: 'check 2', line: 2, detail: 'got 2' },
       ],
     });
   });
