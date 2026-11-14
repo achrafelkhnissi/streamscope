@@ -2604,3 +2604,79 @@ describe('readsSensitiveHead', () => {
     }
   });
 });
+
+describe('count progress', () => {
+  function progressOf(
+    definitions: CaptureDefinition[],
+    values: JsonValue[],
+  ): [string, number, number][] {
+    const calls: [string, number, number][] = [];
+    const tracker = new CaptureTracker(
+      { id: 7, label: 'startRun', wallStartedAt: 0, sensitiveValues: [] },
+      definitions,
+      () => undefined,
+      missingWorker,
+      frozenBudget(),
+      (name, index, count) => {
+        calls.push([name, index, count]);
+      },
+    );
+    tracker.head(ndjsonHead);
+    values.forEach((value, at) => {
+      tracker.event({
+        index: at + 1,
+        time: at,
+        offset: at * 64,
+        length: 64,
+        line: at + 1,
+        kind: 'json',
+        value,
+        label: undefined,
+        sse: undefined,
+        marker: undefined,
+        error: undefined,
+        unterminated: false,
+      });
+    });
+    return calls;
+  }
+
+  it('reports each counted event of a count capture with its index and count', () => {
+    expect(
+      progressOf(
+        [capture('n', 'count(type == "A")')],
+        [{ type: 'B' }, { type: 'A' }, { type: 'B' }, { type: 'A' }, { type: 'A' }],
+      ),
+    ).toEqual([
+      ['n', 2, 1],
+      ['n', 4, 2],
+      ['n', 5, 3],
+    ]);
+  });
+
+  it('reports progress in definition order within one event', () => {
+    expect(
+      progressOf(
+        [capture('second', 'count(type == "A")'), capture('first', 'count(n == 1)')],
+        [{ type: 'A', n: 1 }],
+      ),
+    ).toEqual([
+      ['second', 1, 1],
+      ['first', 1, 1],
+    ]);
+  });
+
+  it('reports nothing for first, last, nth and all watches', () => {
+    expect(
+      progressOf(
+        [
+          capture('a', 'first(type == "A")'),
+          capture('b', 'last(type == "A")'),
+          capture('c', 'nth(2, type == "A")'),
+          capture('d', 'all(type == "A")'),
+        ],
+        [{ type: 'A' }, { type: 'A' }, { type: 'A' }],
+      ),
+    ).toEqual([]);
+  });
+});

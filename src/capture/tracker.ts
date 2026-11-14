@@ -452,6 +452,7 @@ export class CaptureTracker {
     private readonly onResult: (name: string, result: CaptureResult) => void,
     private readonly workerFile: string,
     private readonly budget: TaskBudget = hostBudget,
+    private readonly onProgress?: (name: string, index: number, count: number) => void,
   ) {
     this.tracked = definitions.map((definition) => {
       const sources = sourcesOf(definition.expression);
@@ -996,6 +997,7 @@ export class CaptureTracker {
           break;
         case 'count':
           watch.count += 1;
+          this.onProgress?.(tracked.definition.name, event.index, watch.count);
           break;
         case 'all': {
           const overflow = collect(watch.matches, tracked.budget, event, () => {
