@@ -3,6 +3,7 @@ import { maskUrl } from '../masking/masking';
 import type { BodyPart, OutgoingRequest } from '../transport/model';
 import { decodeUserInfo } from '../transport/user-info';
 import type {
+  CaptureWait,
   ResolutionProblem,
   ResolvedBodyPart,
   ResolvedRequest,
@@ -11,12 +12,17 @@ import type {
 import { locateBodyFile, type BodyFileContext } from './body-files';
 
 export type BuildResult =
-  { ok: true; request: OutgoingRequest } | { ok: false; problems: ResolutionProblem[] };
+  | { ok: true; request: OutgoingRequest }
+  | { ok: false; problems: ResolutionProblem[]; waits?: readonly CaptureWait[] };
+
+type FileProblem = Omit<ResolutionProblem, 'range'>;
 
 type FilePart = Extract<ResolvedBodyPart, { kind: 'file' }>;
 
 const restrictedBodyFileMessage =
   'Body files are not read in a restricted workspace. Trust the workspace to send them.';
+const capturedBodyFileMessage =
+  'Body file paths cannot use captured values or response references. Write the path in the file or in a variable.';
 const securePorts: ReadonlySet<string> = new Set(['443', '8443']);
 const hostPortPattern = /:(\d+)$/;
 
@@ -66,14 +72,21 @@ async function filePart(
   part: FilePart,
   scope: VariableScope,
   context: BodyFileContext,
-): Promise<{ ok: true; part: BodyPart } | { ok: false; messages: string[] }> {
+): Promise<
+  | { ok: true; part: BodyPart }
+  | { ok: false; problems: FileProblem[]; waits: readonly CaptureWait[] }
+> {
   const encoding = part.encoding ?? 'utf8';
   if (part.processVariables && !Buffer.isEncoding(encoding)) {
-    return { ok: false, messages: [`Unsupported encoding \`${encoding}\`.`] };
+    return {
+      ok: false,
+      problems: [{ message: `Unsupported encoding \`${encoding}\`.` }],
+      waits: [],
+    };
   }
   const located = await locateBodyFile(part.path, context);
   if (!located.ok) {
-    return { ok: false, messages: [located.message] };
+    return { ok: false, problems: [{ message: located.message }], waits: [] };
   }
   if (!part.processVariables) {
     return { ok: true, part: { kind: 'file', path: located.path, size: located.size } };
@@ -82,20 +95,21 @@ async function filePart(
   const resolved = scope.resolveText(contents);
   return resolved.ok
     ? { ok: true, part: { kind: 'bytes', bytes: Buffer.from(resolved.text, 'utf8') } }
-    : { ok: false, messages: resolved.messages };
+    : resolved;
 }
 
 async function bodyParts(
   resolved: ResolvedRequest,
   scope: VariableScope,
   context: BodyFileContext,
-): Promise<{ parts: BodyPart[]; problems: ResolutionProblem[] }> {
+): Promise<{ parts: BodyPart[]; problems: ResolutionProblem[]; waits: CaptureWait[] }> {
   const type = mediaType(resolved);
   const lineEnding = type === 'multipart/form-data' ? '\r\n' : '\n';
   const form = type === 'application/x-www-form-urlencoded';
   const withFiles = resolved.body.some((part) => part.kind === 'file');
   const parts: BodyPart[] = [];
   const problems: ResolutionProblem[] = [];
+  const waits: CaptureWait[] = [];
   for (const part of resolved.body) {
     if (part.kind === 'text') {
       const text = withFiles
@@ -108,14 +122,19 @@ async function bodyParts(
       problems.push({ message: restrictedBodyFileMessage, range: part.pathRange });
       continue;
     }
+    if (part.usesCapture) {
+      problems.push({ message: capturedBodyFileMessage, range: part.pathRange });
+      continue;
+    }
     const built = await filePart(part, scope, context);
     if (built.ok) {
       parts.push(built.part, { kind: 'bytes', bytes: Buffer.from(lineEnding) });
     } else {
-      problems.push(...built.messages.map((message) => ({ message, range: part.pathRange })));
+      problems.push(...built.problems.map((problem) => ({ ...problem, range: part.pathRange })));
+      waits.push(...built.waits.map((wait) => ({ ...wait, range: part.pathRange })));
     }
   }
-  return { parts, problems };
+  return { parts, problems, waits };
 }
 
 export async function buildOutgoingRequest(
@@ -132,6 +151,9 @@ export async function buildOutgoingRequest(
   problems.push(...body.problems);
   if (!target.ok || problems.length > 0) {
     return { ok: false, problems };
+  }
+  if (body.waits.length > 0) {
+    return { ok: false, problems, waits: body.waits };
   }
   return {
     ok: true,

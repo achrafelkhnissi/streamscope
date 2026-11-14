@@ -83,6 +83,28 @@ describe('StreamSession', () => {
     state.session.dispose();
   });
 
+  it('calls onEvent once per stored event, in order', () => {
+    const { bytes } = fixture('ag-ui.ndjson');
+    const seen: { index: number; stored: number; type: unknown }[] = [];
+    const state = harness({
+      contentType: 'application/x-ndjson',
+      onEvent: (event) => {
+        const value = event.value as { type?: unknown };
+        seen.push({ index: event.index, stored: state.session.store.count, type: value.type });
+      },
+    });
+    for (const chunk of chunks(bytes, 5)) {
+      state.session.write(chunk);
+    }
+    state.session.end();
+
+    expect(seen.map(({ index }) => index)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+    expect(seen.map(({ stored }) => stored)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+    expect(seen[0]?.type).toBe('RUN_STARTED');
+    expect(seen.at(-1)?.type).toBe('RUN_FINISHED');
+    state.session.dispose();
+  });
+
   it('sends text bodies to onText', () => {
     const state = harness({ contentType: 'text/html' });
     state.session.write(encoder.encode('<p>synthetic</p>'));
@@ -163,6 +185,78 @@ describe('StreamSession', () => {
     const unspilled = harness({ contentType: 'application/x-ndjson' });
     expect(unspilled.session.write(encoder.encode('{"type":"A"}\n'))).toBe(true);
     unspilled.session.dispose();
+  });
+
+  it('reports an event consumer that falls behind through write and onDrain', () => {
+    const listeners = new Set<() => void>();
+    const consumer = {
+      congested: false,
+      onDrain(listener: () => void) {
+        listeners.add(listener);
+        return () => {
+          listeners.delete(listener);
+        };
+      },
+    };
+    const state = harness({ contentType: 'application/x-ndjson', backpressure: consumer });
+    let drains = 0;
+
+    expect(state.session.write(encoder.encode('{"type":"A"}\n'))).toBe(true);
+    consumer.congested = true;
+    expect(state.session.write(encoder.encode('{"type":"B"}\n'))).toBe(false);
+    const stop = state.session.onDrain(() => {
+      drains += 1;
+    });
+    for (const listener of [...listeners]) {
+      listener();
+    }
+    expect(drains).toBe(0);
+    consumer.congested = false;
+    for (const listener of [...listeners]) {
+      listener();
+    }
+    expect(drains).toBe(1);
+    stop();
+    expect(listeners.size).toBe(0);
+    expect(state.session.store.count).toBe(2);
+    state.session.dispose();
+  });
+
+  it('waits for both the spill file and the event consumer before draining', async () => {
+    vi.useRealTimers();
+    const area = await SpillArea.open(root, { ...defaultSpillLimits, writeBufferBytes: 4 });
+    const spill = await area.create();
+    const listeners = new Set<() => void>();
+    const consumer = {
+      congested: true,
+      onDrain(listener: () => void) {
+        listeners.add(listener);
+        return () => {
+          listeners.delete(listener);
+        };
+      },
+    };
+    const state = harness({ contentType: 'application/x-ndjson', spill, backpressure: consumer });
+    let drains = 0;
+
+    expect(state.session.write(encoder.encode('{"type":"A"}\n'))).toBe(false);
+    const spillDrained = new Promise<void>((resolve) => {
+      spill.onDrain(resolve);
+    });
+    state.session.onDrain(() => {
+      drains += 1;
+    });
+    await spillDrained;
+    expect(drains).toBe(0);
+    consumer.congested = false;
+    for (const listener of [...listeners]) {
+      listener();
+    }
+
+    expect(drains).toBe(1);
+    state.session.end();
+    state.session.dispose();
+    await area.dispose();
   });
 
   it('reads an evicted event back through the spill file', async () => {

@@ -3,6 +3,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
+import { startAgentServer } from '../support/agent-server';
 import { startHttpServer } from '../support/servers';
 
 const extensionId = 'achrafelkhnissi.streamscope';
@@ -21,6 +22,25 @@ async function outcomes(uri: vscode.Uri): Promise<Map<number, string>> {
       .filter((lens) => lens.command?.title !== 'Send Request')
       .map((lens) => [lens.range.start.line, lens.command?.title ?? '']),
   );
+}
+
+interface RestrictedSends {
+  checks: number;
+  questions: number;
+}
+
+async function until(condition: () => Promise<boolean>, what: string): Promise<void> {
+  const deadline = Date.now() + 10_000;
+  while (!(await condition())) {
+    if (Date.now() > deadline) {
+      throw new Error(`${what} within 10000 ms`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+}
+
+function restrictedSends(): Thenable<RestrictedSends> {
+  return vscode.commands.executeCommand<RestrictedSends>('streamscope.test.restrictedSends');
 }
 
 async function hoverText(uri: vscode.Uri, position: vscode.Position): Promise<string> {
@@ -141,6 +161,63 @@ async function usesOnlyTheFolderForItsOwnFiles(folder: string): Promise<void> {
   assert.ok((await hoverText(vscode.Uri.file(outside), position)).includes('is not defined'));
 }
 
+async function capturesWaitForConfirmedSends(folder: string): Promise<void> {
+  const server = await startAgentServer();
+  try {
+    const lines = [
+      `@baseUrl = ${server.url}`,
+      '',
+      '### Start agent run',
+      '# @name startRun',
+      '# @capture threadId = first(type == "RUN_STARTED").threadId',
+      '# @capture messageId = last(type == "RUN_FINISHED").result.messageId',
+      '# @capture secret sessionToken = headers["x-session-token"]',
+      'POST {{baseUrl}}/agent/run',
+      'Content-Type: application/json',
+      '',
+      '{"message": "hello"}',
+      '',
+      '### Continue',
+      'POST {{baseUrl}}/agent/continue',
+      'Content-Type: application/json',
+      '',
+      '{"threadId": "{{startRun.threadId}}", "messageId": "{{messageId}}"}',
+    ];
+    const file = path.join(folder, 'captures.http');
+    writeFileSync(file, lines.join('\n'));
+    const uri = vscode.Uri.file(file);
+    await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(uri));
+
+    const producing = vscode.commands.executeCommand('streamscope.sendRequest', uri, 7);
+    await until(
+      async () => (await restrictedSends()).questions === 1,
+      'startRun did not ask before sending',
+    );
+    const following = vscode.commands.executeCommand('streamscope.sendRequest', uri, 13);
+    await until(
+      async () => (await outcomes(uri)).get(13)?.startsWith('Waiting for startRun › ') === true,
+      'continue did not wait for startRun',
+    );
+    assert.equal(server.requests.length, 0, 'a request was sent before the confirmation');
+    await vscode.commands.executeCommand('streamscope.test.answerRestrictedSend', true);
+    await Promise.all([producing, following]);
+
+    assert.deepEqual(await restrictedSends(), { checks: 2, questions: 1 });
+    assert.deepEqual(
+      server.requests.map((request) => [request.url, request.body.toString()]),
+      [
+        ['/agent/run', '{"message": "hello"}'],
+        [
+          '/agent/continue',
+          '{"threadId": "synthetic-thread-1", "messageId": "synthetic-message-1"}',
+        ],
+      ],
+    );
+  } finally {
+    await server.close();
+  }
+}
+
 export async function run(): Promise<void> {
   const extension = vscode.extensions.getExtension(extensionId);
   assert.ok(extension, `${extensionId} is not loaded`);
@@ -154,4 +231,5 @@ export async function run(): Promise<void> {
   await blocksEverythingRestricted(folder);
   await usesOnlyTheFolderForItsOwnFiles(folder);
   await refusesARelativeUserCaFile(folder);
+  await capturesWaitForConfirmedSends(folder);
 }

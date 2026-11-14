@@ -29,6 +29,19 @@ describe('run status text', () => {
     expect(describeRunning(running({ stream: streamOf(0) }))).toBe('items · 2.1 s');
   });
 
+  it('says what a waiting run waits for', () => {
+    const waiting = running({
+      status: 'waiting',
+      head: undefined,
+      sent: undefined,
+      waitingFor: 'startRun › threadId',
+      elapsedMs: 3400,
+    });
+
+    expect(describeRunning(waiting)).toBe('items · waiting for startRun › threadId');
+    expect(runStatusTooltip([waiting])).toBe('Stop items (Waiting for startRun › threadId · 3 s)');
+  });
+
   it('masks the sensitive values of the run in the label', () => {
     const secret = running({
       label: 'GET https://synthetic-secret.example.test/items',

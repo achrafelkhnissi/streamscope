@@ -11,6 +11,7 @@ function fakeRun(id: number, release: () => Promise<void>): RunHandle {
   return {
     id,
     done: new Promise<RunSnapshot>(() => undefined),
+    headArrived: new Promise<void>(() => undefined),
     snapshot: () => {
       throw new Error('not used');
     },
@@ -19,6 +20,7 @@ function fakeRun(id: number, release: () => Promise<void>): RunHandle {
     release,
     compact: () => undefined,
     readBody: () => Promise.resolve(undefined),
+    bodyFile: () => Promise.resolve(undefined),
     readRaw: () => Promise.resolve(undefined),
     readReply: () => Promise.resolve(undefined),
     indexBytes: () => 0,

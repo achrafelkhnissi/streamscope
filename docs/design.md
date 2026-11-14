@@ -78,9 +78,9 @@ JavaScript scripts, GraphQL helpers, WebSocket and gRPC, cURL import and export,
 ### Capture
 
 - **FR-C1** `# @capture [secret] name = expression` on the producing request (grammar in section 10).
-- **FR-C2** `{{request.name}}` reads a capture of a specific request; `{{name}}` reads the most recent capture with that name from any request in the workspace session.
+- **FR-C2** `{{request.name}}` reads a capture of a specific request; `{{name}}` reads the most recent capture with that name from a request in the same file that still declares it, and any other capture, such as one from another file, in the workspace session only when no file variable, environment or `$shared` value has the name (section 10).
 - **FR-C3** `first`/`nth` captures resolve as soon as the matching event arrives; `last`, `all`, `count` and `text` resolve when the stream ends.
-- **FR-C4** A request that needs a pending capture waits for it (default 30 s, setting `streamscope.capture.waitTimeout`), showing "waiting for startRun › threadId" with a cancel action. If the value fails or times out, the request is blocked with an error.
+- **FR-C4** A request that needs a pending capture waits for it (default 30 s, setting `streamscope.capture.waitTimeout`) in the run status Waiting, its CodeLens showing "Waiting for startRun › threadId · 3 s" beside Stop. If the value fails or times out, the request is blocked with an error.
 - **FR-C5** A new run of the producer resets its captures to pending.
 - **FR-C6** Click-to-capture: in event detail and Body views, "Capture This Value…" on a JSON value writes a `# @capture` line on the producing request, with a suggested name, the event condition (`first(type == "…")` or the discriminator in use) and the path. The user can edit the name before it is written.
 - **FR-C7** After a run, an inlay hint after each `# @capture` line shows the value (masked if secret) or the failure.
@@ -103,7 +103,7 @@ JavaScript scripts, GraphQL helpers, WebSocket and gRPC, cURL import and export,
 - **FR-N1** Read environments from `rest-client.environmentVariables` (including `$shared`) and from `http-client.env.json` and `http-client.private.env.json` next to the file or at the workspace root. On name conflicts in the active environment, JetBrains files win over REST Client settings and the private file wins over the shared file **(builder's call)**.
 - **FR-N2** Status bar picker for the active environment, remembered per workspace.
 - **FR-N3** `{{$secret name}}` asks once in a masked input box, stores the value in SecretStorage scoped to the workspace, and masks it everywhere. Commands: Set Secret, Clear Secret, List Secrets.
-- **FR-N4** Variable precedence for a bare `{{name}}`: capture, file variable, active environment, `$shared`.
+- **FR-N4** Variable precedence for a bare `{{name}}`: capture from a request in the same file that still declares it, file variable, active environment, `$shared`, any other capture, such as one from another file (section 10).
 
 ### Coexistence
 
@@ -205,7 +205,7 @@ Verified in Phase 1: inside the extension host, VS Code patches `http`/`https` a
 Design:
 
 - **API.** `node:http`/`node:https` `request()`, called through the module object so VS Code's patch applies. A `Transport` interface keeps a future `fetch` implementation for VS Code for the Web possible.
-- **Request body.** Strings from the file, or a stream from a `< path` file resolved inside the workspace folder (section 15). `Content-Length` is set when the size is known; otherwise chunked.
+- **Request body.** Strings from the file, or a stream from a `< path` file resolved inside the workspace folder (section 15). A path that uses a captured value or a response reference, directly or through a variable, is refused, so server data never chooses which local file is sent. `Content-Length` is set when the size is known; otherwise chunked.
 - **Headers.** Sent as written, in order, with original casing. Response headers are kept raw (`rawHeaders`) for display; duplicates are preserved.
 - **Redirects.** Own loop (FR-S4) so every hop is visible and auth headers never cross origins.
 - **Decompression.** `zlib` streams for gzip, deflate, br and zstd (zstd verified in VS Code 1.101's Node 22.15.1). The raw compressed byte count is recorded; decompressed bytes feed the stream pipeline immediately.
@@ -240,12 +240,12 @@ flowchart LR
 
 Rules:
 
-- The socket is read at full speed. The UI never slows it down. The only backpressure is the spill-file write; if the disk cannot keep up, the socket pauses.
+- The socket is read at full speed. The UI never slows it down. Only bounded sinks pause the socket: the decompressor, the spill-file write when the disk cannot keep up, and the capture queue when captures cannot keep up (section 10, Limits).
 - The framer splits bytes on LF, CRLF and lone CR, carrying a pending CR across chunk boundaries. Each line records its exact byte offset and length in the decompressed stream. A leading BOM belongs to no line.
 - Each complete line is then decoded as UTF-8. CR and LF never occur inside a multi-byte sequence, so a character split across chunks is rebuilt as the line accumulates. Invalid bytes become U+FFFD and one warning per stream, carrying the byte offset of the first invalid byte. Bodies that are not parsed into events (text, single JSON, raw) go through one `TextDecoder` in streaming mode, flushed at end of stream.
 - The framer holds at most `maxEventSize` bytes of one line, and an undecided body at most 64 KiB plus one chunk. While the format is still being detected, lines up to 64 KiB are accepted whatever `maxEventSize` says, so a small limit never truncates a sniffed body.
 - Small chunks are gathered: a line arriving in many pieces is copied into one growing buffer, and the spill file stages writes smaller than 64 KiB.
-- Captures and checks evaluate on every event synchronously and cheaply; UI updates are batched: the first update goes out as soon as the current chunk has been parsed (in a microtask, never inside a parser callback), then at most every 50 ms, and immediately on end, error or cancel.
+- Captures evaluate events in arrival order: as each event arrives while the task's 10 ms slice of capture work lasts, then from the capture queue in later tasks (section 10, Limits). UI updates are batched: the first update goes out as soon as the current chunk has been parsed (in a microtask, never inside a parser callback), then at most every 50 ms, and immediately on end, error or cancel.
 - The format detector runs once, but may upgrade single JSON to NDJSON (section 8).
 
 ## 8. NDJSON and SSE parsing
@@ -368,13 +368,24 @@ source     = "status" | "headers" | "cookies" | "body" | "text"
            | "all" "(" [ expr ] ")" | "count" "(" [ expr ] ")"
            | "exists" "(" expr ")" | "before" "(" expr "," expr ")" | "unique" "(" expr ")"
            | "jsonpath" "(" string ")"
-filter     = "default" "(" literal ")" | "join" "(" string ")" | "json" | "match" "(" regex ")"
-literal    = string | number | "true" | "false" | "null" | "[" literal { "," literal } "]" | regex
+filter     = "default" "(" constant ")" | "join" "(" string ")" | "json" | "match" "(" regex ")"
+literal    = constant | regex
+constant   = string | number | "true" | "false" | "null" | "[" constant { "," constant } "]"
 regex      = "/" chars "/" [ flags ]
 index      = integer        (negative counts from the end)
 ```
 
 Inside an event condition, bare identifiers refer to the event's fields (`type`, `result.status`); `@` refers to the event itself; `@sse.event` and `@sse.id` refer to SSE fields. Inside `[?…]`, identifiers refer to the current array element.
+
+A regular expression is not a list item and not a `default(…)` value; both are syntax errors. The rest of the syntax:
+
+- Strings use double or single quotes with JSON escapes.
+- Identifiers are `[A-Za-z_$][A-Za-z0-9_$]*`.
+- Numbers use JSON number syntax with an optional `-`. Integers outside JavaScript's safe range keep every digit.
+- Regex flags are `i`, `m`, `s` and `u`.
+- `nth(k, …)` counts from 1, and `k` is a whole number from 1 to 2,147,483,647. A path index is a whole number, and a negative one counts from the end.
+- An expression is at most 4,096 characters and nests at most 64 levels.
+- A request has at most 64 `# @capture` lines, and a name captured twice on one request is an error.
 
 ### Sources
 
@@ -392,23 +403,66 @@ Inside an event condition, bare identifiers refer to the event's fields (`type`,
 
 Checks add `exists(x)` (true if `x` resolves), `before(a, b)` (first event matching `a` comes before the first matching `b`) and `unique(list)`.
 
+- `headers` alone is an object of lower-cased header names, with repeated headers joined by `, `. `cookies` alone is an object of the response's `Set-Cookie` pairs.
+- `jsonpath("…")` gives the value when exactly one node matches, a list when several match, and a missing value when none match, as REST Client's `{{x.response.body.$…}}` does.
+- On an event stream, `body` fails with "the response is an event stream; use first(…), last(…) or all(…)". On any other response, an event source fails with "the response is not an event stream".
+- `match(/…/)` gives the first group, or the whole match when the pattern has no group. `join(s)` joins a list's items as each would be inserted.
+
 ### Semantics
 
 | Rule             | Behaviour                                                                                                                                                                                                       |
 | ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | States           | Each capture is pending, resolved (value plus provenance: request, run, event index, path, time) or failed (reason)                                                                                             |
 | New run          | Resets the producer's captures to pending                                                                                                                                                                       |
-| Mid-stream       | `first`, `nth` and any `body`/`status`/`headers` expression resolve as soon as possible; `last`, `all`, `count`, `text` wait for the end                                                                        |
+| Mid-stream       | Expressions reading only `status`, `headers` and `cookies` resolve when the headers arrive, one whose only event source is one `first` or `nth` when that event arrives, the rest when the run ends             |
 | Missing          | A path that does not exist, an event that never arrives, a cancelled or failed stream: the capture fails with the request, event and path segment named. `default(…)` is the only way to accept a missing value |
 | Malformed events | Never match a condition; they are counted and reported                                                                                                                                                          |
-| Values           | Strings are inserted as-is; numbers keep their original digits; objects and lists are inserted as compact JSON; `json` forces JSON                                                                              |
+| Values           | Strings as they are; integers keep every digit; other numbers as JavaScript prints them (`1.50` becomes `1.5`); objects and lists as compact JSON; `json` forces JSON; over 1 MiB of text fails                 |
 | Multiple results | A path with `[*]` or `[?…]` yields a list; `join` makes a string; inserting a list without `join` inserts JSON                                                                                                  |
 | Errors           | Expression syntax errors are diagnostics with the exact column; the request will not send while one exists                                                                                                      |
-| Safety           | No `eval`, `Function` or `vm`; regex execution has a 100 ms time budget **(builder's call)**                                                                                                                    |
+| Safety           | No `eval`, `Function` or `vm`; regular expressions run on a linear-time matcher, never on JavaScript's backtracking engine (see Limits)                                                                         |
+
+### Limits
+
+Regular expressions. A JavaScript regex cannot be interrupted on the extension host, so no time budget can bound one without breaking the 50 ms responsiveness budget. Instead:
+
+- Every regular expression (`matches`, `match(…)`, and `match()`/`search()` inside `jsonpath()`) runs on Streamscope's own linear-time matcher (`src/expressions/regex.ts`), never on JavaScript's backtracking engine.
+- Backreferences, lookaround and inline modifier groups such as `(?i:…)` are rejected as unsupported, and so is a repeated group that can match the empty string.
+- A pattern has at most 500 characters and compiles to at most 2,000 instructions. One test does at most 1,000,000 units of work (subject length × program size).
+- Over the work limit, a condition is false, and a `match(…)` filter fails with "the text is too long for this regular expression".
+
+JSONPath:
+
+- `jsonpath()` and REST Client's `{{x.response.body.$…}}` references are evaluated in a child process, never on the extension host. The process has 5 s and a 1 GiB heap and is killed when it passes either; the capture then fails with "jsonpath() took too long or used too much memory".
+- The extension host only validates a query: at most 384 characters, at most 3 levels of parentheses, at most 32 levels of brackets, at most two arguments per function call (a third is rejected before the query is parsed), and no function other than `length`, `count`, `match`, `search` and `value`.
+- Inside a JSONPath filter, a large integer compared with a number compares false. Use the capture language for exact large-integer comparisons.
+
+Capture evaluation (`src/capture/tracker.ts`, `body.ts`, `task-budget.ts`):
+
+- Captures are evaluated on the extension host in slices of at most 10 ms of capture work per task, and the runs with pending captures take turns in each slice.
+- The capture queue applies backpressure to the socket, as the spill file does. It pauses the socket above 5,000 events or 8 MiB of event bytes and resumes it below 1,000 events and 2 MiB. A stream with more capture work than the host can do arrives more slowly than the server sends it.
+- A single evaluation on the extension host stops at 500,000 work units.
+- Bodies up to 256 KiB are evaluated on the extension host, or up to 64 KiB when the body has a run of 16 digits. Larger bodies, matched events over 256 KiB, `all(…)` and every `jsonpath()` go to the child process (`dist/capture-worker.js`), with the same 5 s and 1 GiB limits and 100,000,000 work units. At most two run at once.
+- A capture value or response reference that stops at the host limit goes to that child process and never back to the host. This covers a body, an event matched by `first(…)` or `nth(…)` whether evaluated on arrival or from the queue, and a value evaluated at the end of the run. The child evaluates it once more with the same inputs, and the result is the child's value or the child's failure. Without a spill file, an event handed off on arrival or from the queue is sent to the child as a value, within 1 MiB of event values per run. Once that 1 MiB is used up, no child starts and the capture fails on the host with "the event is no longer available for this capture". `default(…)` applies to the child's value and does not hide the host limit.
+- Two kinds of evaluation are not handed off and fail at the host limit with "the capture needs too much work for this stream": the condition of `first(…)`, `last(…)`, `nth(…)`, `count(…)` or `all(…)`, which the host tests on every event, and a capture that reads only the status, headers or cookies, which the host evaluates when the headers arrive.
+- `all(…)`, and `jsonpath()` over a stream, keep at most 10,000 events and 16 MiB of their bytes, then fail ("all(…) matched more than 10,000 events").
 
 ### Resolution order
 
-For `{{x}}` without a request prefix: latest capture named `x`, file variable `x`, active environment `x`, `$shared` `x`. For `{{name.x}}`: capture `x` of request `name`; if `name` is a request and `x` is `response`/`request`, the REST Client reference syntax applies. Hovering shows which one was used.
+For `{{x}}` without a request prefix, the first of these that applies:
+
+1. A capture named `x` from a request that the file, as it is now, has with a `# @capture x` line, the one whose run started most recently, including the request's own previous value when it re-captures the name it consumes. A resolved value is used, a pending one is waited for and a failed one blocks the request. A capture with no value yet, because its producer has not run or because the request captures `x` itself and has no earlier value, goes on to the next step.
+2. File variable `x`.
+3. Active environment `x`.
+4. `$shared` `x`.
+5. Any other capture named `x` in the workspace session, the newest, with the same rules as step 1: one from another file, or one left by a request of this file that was deleted, renamed, lost its `# @capture x` line, or whose position, method or URL changed since it ran.
+6. Nothing defines `x`. When a request in the file declares the capture, the request is blocked because that producer has not run, or, for a request that captures `x` itself, because it cannot use its own capture (see Waiting). Otherwise `x` is undefined.
+
+A value taken from another file's response therefore never replaces a value written in the file, the environment or `$shared`, and a file variable can seed a request that captures the name it consumes: with `@cursor = start` and `# @capture cursor = body.next`, the first send uses `start` and each later send uses the captured cursor.
+
+For `{{name.x}}`, when `name` is a request in the file: capture `x` of request `name`, then a variable literally named `name.x`, then an error that the request has no such capture ("startRun has no capture named threadI."). `{{name.response.…}}` is REST Client's response reference (a header, the whole body with `*`, or a JSONPath starting with `$`). `{{name.request.…}}` references and XPath are not supported; the request is blocked with a message that says so. Hovering shows which one was used.
+
+A `< path` or `<@ path` body file path may use variables, but not captured values or response references, directly or through a file, environment or `$shared` variable. Such a request is blocked with "Body file paths cannot use captured values or response references. Write the path in the file or in a variable."
 
 Environment and `.env` details, settled in M3:
 
@@ -420,7 +474,20 @@ Environment and `.env` details, settled in M3:
 
 ### Waiting
 
-`streamscope.capture.waitTimeout` (default 30 s). While waiting, the request shows "waiting for startRun › threadId" with a cancel action. If the producer has never run in this session, the request is blocked immediately with a quick fix "Run startRun".
+`streamscope.capture.waitTimeout` (default 30 s). A request that needs a pending capture, or a response reference to a request that is still running, waits in the status Waiting before it is sent (section 11). Its CodeLens shows "Waiting for startRun › threadId · 3 s" beside Stop, and the status bar shows "… · waiting for startRun › threadId". Stop, a re-send and closing VS Code cancel the wait. When the producer is sent again while a request waits, the wait moves to the new run, for captures and response references alike; stopping the producer blocks the waiting request. Waits inside `<@` body files behave like waits in the request.
+
+The request is blocked, with the message shown, when:
+
+- the producer has never run in this session and nothing else defines the name (Resolution order): "`{{threadId}}` comes from startRun, which has not run in this session." This happens at once. The error notification offers "Run startRun", which sends the producer only when clicked. The click finds the producer again in the file as it is then, by its name or, for an unnamed request, its position, method and URL, and sends nothing, with a message, when it is no longer there;
+- it would wait for its own capture, has no earlier value of it and nothing else defines the name: "startRun cannot use its own capture threadId.", at once;
+- two runs would wait for each other's captures: "startRun and continue wait for each other's captures.", at once;
+- the capture fails: "startRun › threadId failed: <reason>.";
+- the wait times out: "startRun › threadId did not arrive within 30 s.".
+
+### Known limitations
+
+- Two runs that wait on each other's responses (`{{b.response…}}` in request `a` and `{{a.response…}}` in request `b`) time out instead of being blocked at once. Capture cycles are blocked at once.
+- A hover preview can show the start of URL user info that is 1 KiB or longer.
 
 ## 11. Request execution lifecycle
 
@@ -504,14 +571,14 @@ The M5 spike chose the webview; [decisions/response-surface.md](decisions/respon
 
 ## 14. State management
 
-| State                 | Where                                                                                        | Lifetime                                                                                         |
-| --------------------- | -------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
-| Runs and their events | Memory (parsed events for open views, summaries for history) and spill files                 | The last 50 runs of the session stay in history **(builder's call)**; nothing survives a restart |
-| Captures              | Memory, per workspace session                                                                | Until VS Code closes or the producer runs again                                                  |
-| Active environment    | `workspaceState`                                                                             | Per workspace                                                                                    |
-| Last chosen view      | `globalState`                                                                                | Per user                                                                                         |
-| Secrets               | SecretStorage, key `streamscope:<workspace hash>:<name>`                                     | Until cleared                                                                                    |
-| Request identity      | `# @name` when present, otherwise file URI plus request order and a hash of the request line | Survives edits that do not reorder requests                                                      |
+| State                 | Where                                                                                                       | Lifetime                                                                                                         |
+| --------------------- | ----------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| Runs and their events | Memory (parsed events for open views, summaries for history) and spill files                                | The last 50 runs of the session stay in history **(builder's call)**; nothing survives a restart                 |
+| Captures              | Memory, per workspace session, for at most 500 requests (the least recently run is dropped)                 | Until VS Code closes, the producer runs again or the workspace is granted trust                                  |
+| Active environment    | `workspaceState`                                                                                            | Per workspace                                                                                                    |
+| Last chosen view      | `globalState`                                                                                               | Per user                                                                                                         |
+| Secrets               | SecretStorage, key `streamscope:<workspace hash>:<name>`                                                    | Until cleared                                                                                                    |
+| Request identity      | `# @name` when present, otherwise the file URI, the request's index in the file, its method and its raw URL | A named request survives any edit that keeps its name; an unnamed one, edits that keep its index, method and URL |
 
 Nothing is written to the workspace except files the user asks to save.
 
@@ -519,15 +586,15 @@ Nothing is written to the workspace except files the user asks to save.
 
 ### Threat model
 
-| Threat                                                                         | Control                                                                                                                                                                                                                                            |
-| ------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| A cloned repository's `.http` or env files run something or exfiltrate secrets | No code execution from files; Workspace Trust limited mode (below); requests are sent only by explicit user action                                                                                                                                 |
-| Secrets shown or stored in clear text                                          | SecretStorage only; masking registry used by every output the extension writes; the capture system never writes `secret` values to history or disk (response bytes that contain them stay only in the owner-only spill file, deleted with the run) |
-| Expression libraries executing code                                            | Own expression language without `eval`; `@swaggerexpert/jsonpath` (RFC 9535, no eval) only; JSONPath libraries with code-execution CVEs are banned                                                                                                 |
-| Response content attacking the UI                                              | Native views render text only; a webview, if chosen, follows the CSP rules in section 13                                                                                                                                                           |
-| Body files reading outside the project                                         | `< path` resolves inside the workspace folder; symlinks resolving outside are rejected; in restricted mode body files are not read                                                                                                                 |
-| TLS downgrade                                                                  | Verification on by default; opt-out per request or environment only, never global, never via `NODE_TLS_REJECT_UNAUTHORIZED`                                                                                                                        |
-| Supply chain                                                                   | One runtime dependency; npm `ignore-scripts`, exact versions, 7-day release cooldown; SHA-pinned CI actions; release from a protected environment with OIDC                                                                                        |
+| Threat                                                                         | Control                                                                                                                                                                                                                                                                           |
+| ------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A cloned repository's `.http` or env files run something or exfiltrate secrets | No code execution from files; Workspace Trust limited mode (below); requests are sent only by explicit user action                                                                                                                                                                |
+| Secrets shown or stored in clear text                                          | SecretStorage only; masking registry used by every output the extension writes; the capture system never writes `secret` values to history or disk (response bytes that contain them stay only in the owner-only spill file, deleted with the run)                                |
+| Expression libraries executing code                                            | Own expression language without `eval`; `@swaggerexpert/jsonpath` (RFC 9535, no eval) only; JSONPath libraries with code-execution CVEs are banned                                                                                                                                |
+| Response content attacking the UI                                              | Native views render text only; a webview, if chosen, follows the CSP rules in section 13                                                                                                                                                                                          |
+| Body files reading outside the project                                         | `< path` resolves inside the workspace folder; symlinks resolving outside are rejected; in restricted mode body files are not read; a path that uses a captured value or a response reference is refused                                                                          |
+| TLS downgrade                                                                  | Verification on by default; opt-out per request or environment only, never global, never via `NODE_TLS_REJECT_UNAUTHORIZED`                                                                                                                                                       |
+| Supply chain                                                                   | Runtime dependencies: `@swaggerexpert/jsonpath` and its transitive `apg-lite`, bundled into `dist/extension.js` and `dist/capture-worker.js`; npm `ignore-scripts`, exact versions, 7-day release cooldown; SHA-pinned CI actions; release from a protected environment with OIDC |
 
 ### Workspace Trust
 
@@ -543,11 +610,24 @@ Nothing is written to the workspace except files the user asks to save.
 | `# @insecure`, custom CA settings from the workspace                 | Yes     | Ignored; a relative user `caFile` blocks the request                |
 | File runs from the Testing view                                      | Yes     | No                                                                  |
 
-The confirmation comes only for a request that would otherwise be sent, just before connecting, so a blocked request never asks; declining cancels it. Restricted mode is tested by `npm run test:restricted`, which opens a real untrusted folder because the standard test runner always disables Workspace Trust.
+The confirmation comes only for a request that would otherwise be sent, just before connecting, so a blocked request never asks; declining cancels it.
+
+Granting trust clears every capture of the session: values, failures and pending captures. Values a server sent while the workspace was restricted must not steer requests that now carry secrets. Later results of runs that started before the grant are dropped, and a request waiting on a cleared capture resolves again as if its producer had not run. A `{{name.response…}}` reference follows the same rule: it never reads the response of a run that started before the grant and resolves as if the producer had not run. Runs in flight at the grant are not cancelled, because the user sent each one; references simply ignore their responses. Restricted mode is tested by `npm run test:restricted`, which opens a real untrusted folder because the standard test runner always disables Workspace Trust.
 
 ### Masking
 
 Masked in everything the extension itself writes (the request headers shown in Headers, the captured-values summary, hovers, inlay hints, log, history list, error messages): values from `{{$secret}}`, `secret` captures, values of variables whose names look like credentials (file, environment, `$shared`, `.env` and process variables; FR-A4's rule), masked by value wherever they appear, and the headers `Authorization`, `Proxy-Authorization`, `Cookie`, `Set-Cookie`, `X-Api-Key`, `Api-Key` **(builder's call for the last two)**. The log channel never prints request or response bodies at the default level.
+
+Captures add these rules (`src/masking/masking.ts`). A sensitive header below is one whose name, split at `-` and `_`, has a word from that file's header word list, such as `auth`, `token`, `key`, `session` or `cookie`.
+
+- **Shown masked.** A `secret` capture, or one whose name looks like a credential (FR-A4's rule), shows as `••••••` in the captured-values summary, inlay hints, hovers and completion.
+- **Secret by provenance.** A capture whose expression reads a sensitive header or a credential cookie by name, such as `headers["x-session-token"]` or `cookies.sessionid`, also through `default(…)`, is secret with or without the `secret` keyword. A cookie is a credential cookie when its name contains one of `session`, `sess`, `sid`, `token`, `auth`, `jwt`, `csrf`, `xsrf`, `secret`, `password`, `passwd`, `login`, `remember` or `credential`, compared as case-insensitive substrings, so `PHPSESSID`, `JSESSIONID` and `csrftoken` count, and so does a harmless `author_pref`.
+- **Failure reasons** are masked with the producer run's sensitive values when they are created, so blocked messages, notifications, hints and the summary show them masked.
+- **Carried values.** A resolved capture carries the producer's sensitive values that occur in its text: those of the producer request, values from its response headers, and the text of each `secret` capture of the same run that has resolved, whether it resolved before or after this capture. A capture that is secret only by provenance, without the `secret` keyword, carries its text into captures that read neither `headers` nor `cookies` only from 8 characters, like the response values above; into captures that read them it carries at any length. Every display of the capture masks them, and a request that inserts the capture adds them to its own sensitive values. While a secret capture of the same run, by keyword or by provenance, is still pending or has failed, its text is unknown and the capture may contain it, so a request that inserts the capture, or reuses it as its own previous value after a re-send, adds the capture's whole text to its sensitive values, as response references do. Nothing waits for that secret, and the capture's own displays stay as they are and mask the secret once it resolves. Values a `<@` template inserts count as well: the run's sensitive values are taken after its templates resolve.
+- **Source-aware carry.** From the response, only sensitive header values and cookie values are carried. When the capture's expression reads `headers` or `cookies` in any form, they are carried at any length, except a cookie value whose name has no credential word. That one, and every response value carried for a capture that reads neither, is carried only from 8 characters, so a `consent=1` cookie does not mask every `1`.
+- **JSON text.** A sensitive value that JSON escapes, one with `"`, `\`, a control character such as a newline, or a lone surrogate, is also found in its JSON-escaped form. A value with a lone surrogate is also matched with each lone surrogate replaced by U+FFFD, raw and URL-encoded, because that is how the request sends it.
+- **Response references.** A `{{x.response…}}` value is sensitive when the selector's last name looks like a credential, when it reads a sensitive header, or when it contains the text of a resolved secret capture of the producer's run (from 8 characters for a capture that is secret only by provenance). While a secret capture of that run is pending or has failed, the value may contain it, so it is masked.
+- **Previews.** Hovers and inlay hint tooltips show at most 4,096 characters of a value.
 
 Response content is not masked: Events, Reply, Body, Raw and saved responses show exactly what the server sent, even if it contains a token (Achraf's decision; Raw stays byte-exact and latency is unaffected).
 

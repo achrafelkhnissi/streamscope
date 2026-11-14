@@ -1,7 +1,10 @@
 import { afterEach, describe, expect, it } from 'vitest';
+import { CaptureRegistry } from '../../../src/capture/registry';
+import { CaptureService } from '../../../src/capture/service';
 import { isActive, RunRegistry } from '../../../src/runs/registry';
 import type { RunStatus } from '../../../src/runs/run';
 import { startHttpServer, type LocalServer } from '../../support/servers';
+import { missingWorker } from '../capture/worker';
 import { waitFor } from '../transport/harness';
 import { dependencies, runInput, useSpillArea } from './support';
 
@@ -99,6 +102,45 @@ describe('RunRegistry', () => {
     await first.done;
     expect(isActive(first)).toBe(false);
     expect(isActive(second)).toBe(false);
+  });
+
+  it('a waiting run is active, running and stoppable', async () => {
+    const runs = registry();
+    const captures = new CaptureRegistry();
+    captures.begin(
+      { id: -1, key: 'file:///requests.http\n@startRun', label: 'startRun', startedAt: 0 },
+      [{ name: 'threadId', secret: false }],
+    );
+    const input = runInput(
+      [
+        '# @name startRun',
+        '# @capture threadId = first(type == "RUN_STARTED").threadId',
+        'POST https://api.example.test/agent/run',
+        '',
+        '###',
+        'GET https://api.example.test/threads/{{startRun.threadId}}',
+      ],
+      { index: 1, key: 'waiting' },
+    );
+    const waiting = runs.start({
+      ...input,
+      captures: new CaptureService({
+        registry: captures,
+        documentUri: 'file:///requests.http',
+        file: input.file,
+        request: input.request,
+        workerFile: missingWorker,
+        runs: () => undefined,
+      }),
+    });
+    await waitFor(() => waiting.snapshot().status === 'waiting');
+
+    expect(isActive(waiting)).toBe(true);
+    expect(runs.isRunning()).toBe(true);
+    expect(runs.running()).toEqual([waiting]);
+    expect(runs.cancel('waiting')).toBe(true);
+    expect((await waiting.done).status).toBe('cancelled');
+    expect(captures.waitCount).toBe(0);
   });
 
   it('notifies listeners on every status change', async () => {

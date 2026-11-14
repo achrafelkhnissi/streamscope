@@ -344,8 +344,7 @@ export class SpillFile {
     await rm(this.sidePath, { force: true });
   }
 
-  private async readInto(buffer: Uint8Array, offset: number): Promise<boolean> {
-    const end = offset + buffer.length;
+  async whenWritten(end: number): Promise<boolean> {
     if (this.removed || end > this.saved) {
       return false;
     }
@@ -355,7 +354,12 @@ export class SpillFile {
         this.waiters.push({ until: end, resolve });
       });
     }
-    if (!this.holds(end)) {
+    return this.holds(end);
+  }
+
+  private async readInto(buffer: Uint8Array, offset: number): Promise<boolean> {
+    const end = offset + buffer.length;
+    if (!(await this.whenWritten(end))) {
       return false;
     }
     this.reader ??= open(this.path, 'r').catch((error: unknown) => {

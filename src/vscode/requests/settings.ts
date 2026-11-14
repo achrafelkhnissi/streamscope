@@ -19,13 +19,14 @@ const views = ['events', 'reply', 'raw'] as const;
 
 function duration(
   configuration: vscode.WorkspaceConfiguration,
+  section: string,
   name: string,
   fallback: string,
 ): number | string {
   const value = configuration.get<string>(name, fallback);
   return (
     parseDuration(value) ??
-    `streamscope.request.${name} must be a duration such as 500ms, 30s or 5m, not "${value}".`
+    `streamscope.${section}.${name} must be a duration such as 500ms, 30s or 5m, not "${value}".`
   );
 }
 
@@ -75,11 +76,11 @@ export async function readRequestSettings(
   restricted: boolean,
 ): Promise<SettingsResult> {
   const configuration = vscode.workspace.getConfiguration('streamscope.request', uri);
-  const connect = duration(configuration, 'connectTimeout', '30s');
+  const connect = duration(configuration, 'request', 'connectTimeout', '30s');
   if (typeof connect === 'string') {
     return { ok: false, message: connect };
   }
-  const headers = duration(configuration, 'headersTimeout', '300s');
+  const headers = duration(configuration, 'request', 'headersTimeout', '300s');
   if (typeof headers === 'string') {
     return { ok: false, message: headers };
   }
@@ -106,6 +107,15 @@ export async function readRequestSettings(
       insecureEnvironment: false,
     },
   };
+}
+
+export function readCaptureSettings():
+  { ok: true; waitTimeoutMs: number } | { ok: false; message: string } {
+  const configuration = vscode.workspace.getConfiguration('streamscope.capture');
+  const waitTimeout = duration(configuration, 'capture', 'waitTimeout', '30s');
+  return typeof waitTimeout === 'string'
+    ? { ok: false, message: waitTimeout }
+    : { ok: true, waitTimeoutMs: waitTimeout };
 }
 
 export function readStreamSettings(uri: vscode.Uri): LimitsResult<StreamLimits> {

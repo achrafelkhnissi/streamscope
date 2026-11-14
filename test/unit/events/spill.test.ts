@@ -79,6 +79,20 @@ describe('SpillArea and SpillFile', () => {
     await area.dispose();
   });
 
+  it('says once bytes are on disk, so another process can read them from its path', async () => {
+    const area = await SpillArea.open(root);
+    const file = await area.create();
+    file.append(encoder.encode('{"type":"RUN_STARTED"}\n'));
+
+    const written = file.whenWritten(23);
+    expect(await written).toBe(true);
+    expect(readFileSync(file.path, 'utf8')).toBe('{"type":"RUN_STARTED"}\n');
+    expect(await file.whenWritten(24)).toBe(false);
+    await file.delete();
+    expect(await file.whenWritten(23)).toBe(false);
+    await area.dispose();
+  });
+
   it('stops saving at the per-file cap and reports it', async () => {
     const area = await SpillArea.open(root, limits({ maxFileSize: 10 }));
     const file = await area.create();

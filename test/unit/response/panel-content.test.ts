@@ -84,6 +84,21 @@ describe('panelStatus', () => {
     });
   });
 
+  it('counts a run waiting for a captured value as running', () => {
+    const waiting = panelStatus(
+      snapshot({
+        status: 'waiting',
+        waitingFor: 'startRun › threadId',
+        head: undefined,
+        sent: undefined,
+      }),
+    );
+
+    expect(waiting.state).toBe('waiting');
+    expect(waiting.running).toBe(true);
+    expect(waiting.text).toBe('120 ms · Waiting for startRun › threadId');
+  });
+
   it('gives the size and time of a body response', () => {
     expect(panelStatus(snapshot())).toEqual({
       state: 'completed',

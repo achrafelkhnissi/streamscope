@@ -105,6 +105,20 @@ describe('labels', () => {
     expect(describeOutcome(dropped)).toBe('200 OK · 2.0 KB · 120 ms');
   });
 
+  it('says that a waiting run has not been sent', () => {
+    expect(
+      noBodyMessage(
+        snapshot({
+          status: 'waiting',
+          waitingFor: 'startRun › threadId',
+          head: undefined,
+          sent: undefined,
+          body: new Uint8Array(),
+        }),
+      ),
+    ).toBe('Waiting for startRun › threadId: the request has not been sent yet.');
+  });
+
   it('says why there is no body to open', () => {
     const stream = { body: new Uint8Array(), bodyKept: false };
 
@@ -174,6 +188,20 @@ describe('labels', () => {
     expect(
       describeOutcome(snapshot({ status: 'receiving', elapsedMs: 2100, stream: streamOf(0) })),
     ).toBe('Running · 2.1 s');
+  });
+
+  it('a waiting run reads Waiting for startRun › threadId · 3 s', () => {
+    expect(
+      describeOutcome(
+        snapshot({
+          status: 'waiting',
+          head: undefined,
+          sent: undefined,
+          waitingFor: 'startRun › threadId',
+          elapsedMs: 3400,
+        }),
+      ),
+    ).toBe('Waiting for startRun › threadId · 3 s');
   });
 
   it('masks sensitive values in the outcome text', () => {

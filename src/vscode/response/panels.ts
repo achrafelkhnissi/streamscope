@@ -2,9 +2,14 @@ import { randomBytes } from 'node:crypto';
 import * as vscode from 'vscode';
 import type { TaskTimer } from '../../benchmark/task-timer';
 import { panelStatus } from '../../response/panel-content';
-import { PanelFeed } from '../../response/panel-feed';
+import { PanelFeed, type PanelCaptureSource } from '../../response/panel-feed';
 import { panelHtml } from '../../response/panel-html';
-import { parsePanelMessage, type PanelBody, type PanelView } from '../../response/panel-protocol';
+import {
+  parsePanelMessage,
+  type PanelBody,
+  type PanelCapture,
+  type PanelView,
+} from '../../response/panel-protocol';
 import { panelTitle } from '../../response/run-status';
 import type { RunHandle, RunStatus } from '../../runs/run';
 import { formatLabel } from '../../streaming/detect';
@@ -30,6 +35,7 @@ export interface ResponseState {
   title: string | undefined;
   bodyText: string | undefined;
   statusText: string;
+  captures: readonly PanelCapture[];
 }
 
 export interface PanelBenchmark {
@@ -41,6 +47,7 @@ export interface ResponsePanelsOptions {
   extensionUri: vscode.Uri;
   state: vscode.Memento;
   presenter: ResponsePresenter;
+  captures: PanelCaptureSource;
   benchmark?: PanelBenchmark;
   save(run: RunHandle, documentUri: vscode.Uri): Promise<void>;
 }
@@ -96,7 +103,7 @@ function bodyText(body: PanelBody): string | undefined {
 
 function isRunning(run: RunHandle): boolean {
   const { status } = run.snapshot();
-  return status === 'sending' || status === 'receiving';
+  return status === 'waiting' || status === 'sending' || status === 'receiving';
 }
 
 export class ResponsePanels implements vscode.Disposable {
@@ -208,6 +215,7 @@ export class ResponsePanels implements vscode.Disposable {
       title: entry.panel?.title,
       bodyText: bodyText(entry.feed.body),
       statusText: panelStatus(snapshot).text,
+      captures: entry.feed.captures,
     };
   }
 
@@ -269,6 +277,10 @@ export class ResponsePanels implements vscode.Disposable {
     return new PanelFeed(run, {
       readOnly,
       streamView: this.streamView(),
+      captures: this.options.captures,
+      timed: (work) => {
+        this.timed(work);
+      },
       post: (message) => {
         const entry = this.entries.get(key);
         if (entry?.run === run && entry.ready) {
@@ -346,13 +358,19 @@ export class ResponsePanels implements vscode.Disposable {
   }
 
   private refresh(entry: Entry): void {
+    this.timed(() => {
+      entry.feed.refresh();
+    });
+  }
+
+  private timed(work: () => void): void {
     const timer = this.options.benchmark?.timer;
     if (timer === undefined) {
-      entry.feed.refresh();
+      work();
       return;
     }
     const started = performance.now();
-    entry.feed.refresh();
+    work();
     timer.record(performance.now() - started);
   }
 

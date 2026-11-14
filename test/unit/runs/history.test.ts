@@ -12,6 +12,7 @@ function fakeRun(id: number, indexBytes = 0): FakeRun {
   return {
     id,
     done: new Promise<RunSnapshot>(() => undefined),
+    headArrived: new Promise<void>(() => undefined),
     snapshot: () => {
       throw new Error('not used');
     },
@@ -20,6 +21,7 @@ function fakeRun(id: number, indexBytes = 0): FakeRun {
     release: vi.fn(() => Promise.resolve()),
     compact: () => undefined,
     readBody: () => Promise.resolve(undefined),
+    bodyFile: () => Promise.resolve(undefined),
     readRaw: () => Promise.resolve(undefined),
     readReply: () => Promise.resolve(undefined),
     indexBytes: () => indexBytes,

@@ -24,6 +24,8 @@ The product is **Streamscope** (`achrafelkhnissi.streamscope`, display name "Str
 | `src/http-file/`                   | `.http` parser, directives and diagnostics                                                                                   |
 | `src/environments/`                | REST Client and JetBrains environments, the merged catalog, and `.env` parsing and lookup order                              |
 | `src/variables/`                   | Variable resolution from every source, sensitive values, and reference descriptions for hovers                               |
+| `src/expressions/`                 | Capture expression language: lexer, parser, evaluator with work budgets, value insertion, linear-time regex, JSONPath        |
+| `src/capture/`                     | Capture tracking per run, evaluation on the host or in a child process, the capture registry and waits, response references  |
 | `src/secrets/`                     | Secret storage key format                                                                                                    |
 | `src/transport/`                   | `node:http`/`node:https` exchange, decompression, TLS options and redirects                                                  |
 | `src/runs/`                        | Outgoing request building, body files, durations, runs and the run registry                                                  |
@@ -51,7 +53,7 @@ The product is **Streamscope** (`achrafelkhnissi.streamscope`, display name "Str
 - Keep five layers apart: HTTP transport, stream framing and parsing, event processing, variable extraction, rendering. Only rendering and command wiring may import `vscode`, so the rest stays unit-testable in Vitest.
 - Transport uses `node:http` and `node:https`, which VS Code patches with the user's proxy and system certificates. The extension host's global `fetch` drops custom dispatchers (TLS options, client certificates, timeouts), so do not use it, and do not bundle another HTTP client.
 - Parse streams incrementally with hand-written, size-limited framers. Never trust `Content-Type` alone and never add headers the user did not write (some servers reject `Accept: text/event-stream`).
-- Read the socket at full speed into bounded buffers and batch UI updates; a slow view must never throttle the connection. Only bounded byte sinks, such as the decompressor and the spill-file write, may pause the socket.
+- Read the socket at full speed into bounded buffers and batch UI updates; a slow view must never throttle the connection. Only bounded sinks, such as the decompressor, the spill-file write and the capture queue, may pause the socket.
 - Everything long-running accepts a `CancellationToken` or `AbortSignal` and releases its resources on every exit path.
 
 ## Performance

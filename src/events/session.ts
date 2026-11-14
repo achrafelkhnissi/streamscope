@@ -2,9 +2,15 @@ import type { FormatDecision, StreamDirective } from '../streaming/detect';
 import { defaultStreamLimits, maxIndexedEvents, type StreamLimits } from '../streaming/limits';
 import { parseEventBytes, StreamParser, type StreamWarning } from '../streaming/parser';
 import { UpdateBatcher } from './batcher';
+import type { StreamEvent } from './model';
 import { ReplyAssembler } from './reply';
 import type { SpillCopy, SpillFile } from './spill';
 import { EventStore } from './store';
+
+export interface EventBackpressure {
+  readonly congested: boolean;
+  onDrain(listener: () => void): () => void;
+}
 
 export interface StreamSessionOptions {
   contentType: string | undefined;
@@ -13,6 +19,8 @@ export interface StreamSessionOptions {
   now: () => number;
   onUpdate: () => void;
   onText: (text: string) => void;
+  onEvent?: (event: StreamEvent) => void;
+  backpressure?: EventBackpressure;
   limits?: Partial<StreamLimits>;
 }
 
@@ -29,6 +37,7 @@ export class StreamSession {
   private readonly parser: StreamParser;
   private readonly batcher: UpdateBatcher;
   private closed = false;
+  private spillBehind = false;
 
   constructor(private readonly options: StreamSessionOptions) {
     const limits: StreamLimits = { ...defaultStreamLimits, ...options.limits };
@@ -66,6 +75,7 @@ export class StreamSession {
         },
         event: (event) => {
           this.store.append(event);
+          options.onEvent?.(event);
           this.reply.push(event, this.decision?.format ?? 'text');
           this.batcher.schedule();
         },
@@ -93,13 +103,27 @@ export class StreamSession {
     if (this.closed) {
       return true;
     }
-    const accepted = this.options.spill?.append(chunk) ?? true;
+    this.spillBehind = !(this.options.spill?.append(chunk) ?? true);
     this.parser.push(chunk);
-    return accepted;
+    return !this.spillBehind && this.options.backpressure?.congested !== true;
   }
 
   onDrain(listener: () => void): () => void {
-    return this.options.spill?.onDrain(listener) ?? (() => undefined);
+    const { spill, backpressure } = this.options;
+    const ready = (): void => {
+      if (!this.spillBehind && backpressure?.congested !== true) {
+        listener();
+      }
+    };
+    const stopSpill = spill?.onDrain(() => {
+      this.spillBehind = false;
+      ready();
+    });
+    const stopConsumer = backpressure?.onDrain(ready);
+    return () => {
+      stopSpill?.();
+      stopConsumer?.();
+    };
   }
 
   async copyRaw(destination: string): Promise<RawCopy> {

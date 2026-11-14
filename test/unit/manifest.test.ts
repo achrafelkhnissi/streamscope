@@ -87,15 +87,17 @@ describe('extension manifest', () => {
     expect(manifest.files).toContain('dist/extension.js');
   });
 
-  it('ships the bundle, format worker, response page, language files, changelog and license', () => {
+  it('ships the bundle, format and capture workers, response page, language files, changelog, license and third-party notices', () => {
     expect(manifest.files).toEqual([
       'dist/extension.js',
       'dist/format-worker.js',
+      'dist/capture-worker.js',
       'dist/response-view.js',
       'syntaxes/http.tmLanguage.json',
       'language-configuration.json',
       'CHANGELOG.md',
       'LICENSE',
+      'ThirdPartyNotices.txt',
     ]);
   });
 
@@ -154,7 +156,7 @@ describe('extension manifest', () => {
     expect(
       Object.fromEntries(
         Object.entries(properties)
-          .filter(([name]) => !/^streamscope\.(stream|view)\./.test(name))
+          .filter(([name]) => !/^streamscope\.(stream|view|capture)\./.test(name))
           .map(([name, property]) => [name, property.default]),
       ),
     ).toEqual({
@@ -222,6 +224,24 @@ describe('extension manifest', () => {
     for (const name of names) {
       expect(properties[name]?.markdownDescription?.trim()).toBeTruthy();
     }
+  });
+
+  it('contributes the capture wait timeout as a window duration setting', () => {
+    const property =
+      manifest.contributes.configuration.properties['streamscope.capture.waitTimeout'];
+
+    expect(property).toMatchObject({
+      type: 'string',
+      default: '30s',
+      pattern: '^\\d+(ms|s|m)$',
+      scope: 'window',
+    });
+    expect(property?.markdownDescription).toMatch(
+      /^How long a request waits for a captured value that has not arrived yet\./,
+    );
+    const pattern = new RegExp(property?.pattern ?? '');
+    expect(['500ms', '30s', '5m'].map((value) => pattern.test(value))).toEqual([true, true, true]);
+    expect(['30 s', '30', '1h'].map((value) => pattern.test(value))).toEqual([false, false, false]);
   });
 
   it('keeps a workspace from lifting the limits on memory and disk', () => {

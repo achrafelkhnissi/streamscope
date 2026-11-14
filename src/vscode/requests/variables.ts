@@ -5,7 +5,7 @@ import type { EnvironmentCatalog } from '../../environments/model';
 import type { HttpFile, HttpRequest } from '../../http-file/model';
 import type { RunInput } from '../../runs/run';
 import { referencedSecrets } from '../../variables/secrets';
-import type { DotenvState } from '../../variables/sources';
+import { emptyCaptureLookup, type DotenvState } from '../../variables/sources';
 import type { SystemContext } from '../../variables/system';
 import type { EnvironmentStore } from '../environments/environment-store';
 import { askForSecret } from '../secrets/commands';
@@ -93,6 +93,7 @@ export async function variablesFor(
   }
   for (const name of referencedSecrets(file, request, {
     ...variables,
+    captures: emptyCaptureLookup,
     system: inertSystem,
     restricted,
   })) {

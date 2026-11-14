@@ -1,19 +1,54 @@
-import { chmodSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
+import type { ServerResponse } from 'node:http';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import * as zlib from 'node:zlib';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { captureCompletions } from '../../../src/capture/completions';
+import { captureHint } from '../../../src/capture/hints';
+import { captureLookup } from '../../../src/capture/lookup';
+import { CaptureRegistry } from '../../../src/capture/registry';
+import { CaptureService } from '../../../src/capture/service';
+import type { CaptureResult } from '../../../src/capture/tracker';
 import type { SpillFile } from '../../../src/events/spill';
 import { parseHttpFile } from '../../../src/http-file/parse';
-import { describeOutcome, formatBytes } from '../../../src/response/labels';
-import { requestKey, requestKeyDocument, startRun, type RunStatus } from '../../../src/runs/run';
+import { maskedValue } from '../../../src/masking/masking';
+import { describeOutcome, formatBytes, requestLabel } from '../../../src/response/labels';
+import { renderHeadersDocument } from '../../../src/response/headers-document';
+import { PanelFeed } from '../../../src/response/panel-feed';
+import type { ToPanel } from '../../../src/response/panel-protocol';
+import type { RunAccess, RunEnd, RunObserver } from '../../../src/runs/observer';
+import { RunRegistry } from '../../../src/runs/registry';
+import {
+  findRequest,
+  requestKey,
+  requestKeyDocument,
+  startRun,
+  type RunHandle,
+  type RunInput,
+  type RunSnapshot,
+  type RunStatus,
+} from '../../../src/runs/run';
 import type { Transport } from '../../../src/transport/model';
+import { describeReference } from '../../../src/variables/inspect';
+import type { VariableSources } from '../../../src/variables/sources';
 import { createSelfSignedCertificate } from '../../support/certificate';
 import { startHttpServer, startHttpsServer, type LocalServer } from '../../support/servers';
 import { startStreamServer } from '../../support/stream-server';
 import { collect } from '../../support/memory';
+import { logRunEnd } from '../../../src/vscode/log';
+import { missingWorker, useCaptureWorker } from '../capture/worker';
 import { waitFor } from '../transport/harness';
-import { dependencies, runInput, useSpillArea } from './support';
+import { dependencies, emptyVariables, runInput, useSpillArea, withObserver } from './support';
 
 const servers: LocalServer[] = [];
 const spillArea = useSpillArea();
@@ -585,6 +620,72 @@ describe('startRun streaming', () => {
     expect(returned.length).toBeGreaterThan(0);
     expect(returned.every((result) => result instanceof Promise)).toBe(true);
     expect(snapshot.stream?.store.count).toBe(12);
+  });
+
+  it('requires every observer to say how it holds back the stream', () => {
+    // @ts-expect-error an observer without backpressure could queue events without bound
+    const unpaced: RunObserver = {
+      head: () => undefined,
+      event: () => undefined,
+      end: () => undefined,
+    };
+
+    expect(unpaced).not.toHaveProperty('backpressure');
+  });
+
+  it('stops reading the socket while the observer is congested, until it drains', async () => {
+    const line = `${JSON.stringify({ type: 'TICK', pad: 'x'.repeat(200) })}\n`;
+    const body = line.repeat(Math.ceil((4 * 1_048_576) / line.length));
+    const server = await track(
+      startHttpServer((_request, response) => {
+        response.writeHead(200, { 'Content-Type': 'application/x-ndjson' });
+        response.end(body);
+      }),
+    );
+    const listeners = new Set<() => void>();
+    let events = 0;
+    const observer: RunObserver = {
+      head: () => undefined,
+      event: () => {
+        events += 1;
+      },
+      end: () => undefined,
+      backpressure: {
+        congested: true,
+        onDrain(listener) {
+          listeners.add(listener);
+          return () => {
+            listeners.delete(listener);
+          };
+        },
+      },
+    };
+
+    const run = startRun(
+      withObserver({ ...runInput([`GET ${server.url}/paced`]), spill: undefined }, observer),
+      dependencies,
+    );
+    await waitFor(() => run.snapshot().receivedBytes > 0);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    const held = run.snapshot().receivedBytes;
+    const heldEvents = events;
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    expect(run.snapshot().receivedBytes).toBe(held);
+    expect(events).toBe(heldEvents);
+    expect(held).toBeLessThan(body.length / 4);
+    expect(run.snapshot().status).toBe('receiving');
+    expect(listeners.size).toBe(1);
+
+    Object.assign(observer.backpressure, { congested: false });
+    for (const listener of [...listeners]) {
+      listener();
+    }
+    const snapshot = await run.done;
+
+    expect(snapshot.status).toBe('completed');
+    expect(snapshot.receivedBytes).toBe(body.length);
+    expect(events).toBe(body.length / line.length);
   });
 
   it('sends without a spill file when it cannot be created', async () => {
@@ -1209,6 +1310,27 @@ describe('release', () => {
   });
 });
 
+describe('headArrived', () => {
+  it('settles when the head arrives, and when the run ends without one', async () => {
+    const server = await track(
+      startHttpServer((_request, response) => {
+        response.writeHead(200);
+        response.write('partial');
+      }),
+    );
+    const receiving = startRun(runInput([`GET ${server.url}/hold`]), dependencies);
+    await receiving.headArrived;
+    expect(receiving.snapshot().head?.status).toBe(200);
+    receiving.cancel();
+    await receiving.done;
+
+    const blocked = startRun(runInput(['GET https://api.example.test/{{missing}}']), dependencies);
+    await blocked.done;
+    await blocked.headArrived;
+    expect(blocked.snapshot().head).toBeUndefined();
+  });
+});
+
 describe('wall-clock start', () => {
   it('records the time of day the run started, not the monotonic clock', async () => {
     const snapshot = await startRun(
@@ -1218,6 +1340,259 @@ describe('wall-clock start', () => {
 
     expect(snapshot.wallStartedAt).toBe(new Date('2026-11-11T10:20:30.456Z').getTime());
     expect(snapshot.startedAt).not.toBe(snapshot.wallStartedAt);
+  });
+});
+
+describe('the observer sees head, events and exactly one end on every exit path', () => {
+  interface Recording {
+    observer: RunObserver;
+    heads: number[];
+    accesses: RunAccess[];
+    events: number[];
+    ends: RunEnd[];
+  }
+
+  function recording(): Recording {
+    const recorded: Recording = {
+      observer: {
+        head: (head, runAccess) => {
+          recorded.heads.push(head.status);
+          recorded.accesses.push(runAccess);
+        },
+        event: (event) => {
+          recorded.events.push(event.index);
+        },
+        end: (end) => {
+          recorded.ends.push(end);
+        },
+        backpressure: { congested: false, onDrain: () => () => undefined },
+      },
+      heads: [],
+      accesses: [],
+      events: [],
+      ends: [],
+    };
+    return recorded;
+  }
+
+  function settle(): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, 20));
+  }
+
+  async function observed(
+    recorded: Recording,
+    input: RunInput,
+    transport?: Transport,
+  ): Promise<{ snapshot: RunSnapshot; run: ReturnType<typeof startRun> }> {
+    const run = startRun(
+      withObserver(input, recorded.observer),
+      transport === undefined ? dependencies : { ...dependencies, transport },
+    );
+    const snapshot = await run.done;
+    expect(recorded.ends).toHaveLength(1);
+    await settle();
+    expect(recorded.ends).toHaveLength(1);
+    return { snapshot, run };
+  }
+
+  it('completed: an event stream, with its format, content type, body and reply', async () => {
+    const server = await track(startStreamServer());
+    const recorded = recording();
+
+    const { snapshot, run } = await observed(
+      recorded,
+      runInput([`GET ${server.url}/stream?rate=100&seconds=0.2&size=256`]),
+    );
+
+    expect(snapshot.status).toBe('completed');
+    expect(recorded.heads).toEqual([200]);
+    const count = snapshot.stream?.store.count ?? 0;
+    expect(count).toBeGreaterThan(2);
+    expect(recorded.events).toEqual(Array.from({ length: count }, (_, at) => at + 1));
+    const end = recorded.ends[0];
+    if (end?.kind !== 'completed') {
+      throw new Error(`expected a completed end, got ${String(end?.kind)}`);
+    }
+    expect(end.format).toBe('ndjson');
+    expect(end.contentType).toBe('application/x-ndjson');
+    expect(await end.readReply()).toBe(await run.readReply());
+    expect((await end.readBody(1024))?.length).toBe(0);
+    expect(end.reply).toEqual({ recognised: true, truncated: false });
+    const runAccess = recorded.accesses[0];
+    expect(runAccess?.signal).toBe(end.signal);
+    expect(await runAccess?.spillPath(1)).toMatch(/\.spill$/);
+    expect(await runAccess?.spillPath(Number.MAX_SAFE_INTEGER)).toBeUndefined();
+  });
+
+  it('completed: a JSON body that readBody returns whole or cut', async () => {
+    const server = await track(
+      startHttpServer((_request, response) => {
+        response.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+        response.end('{"token":"token-1"}');
+      }),
+    );
+    const recorded = recording();
+
+    await observed(recorded, runInput([`GET ${server.url}`]));
+
+    expect(recorded.heads).toEqual([200]);
+    expect(recorded.events).toEqual([]);
+    const end = recorded.ends[0];
+    if (end?.kind !== 'completed') {
+      throw new Error(`expected a completed end, got ${String(end?.kind)}`);
+    }
+    expect(end.format).toBe('json');
+    expect(end.contentType).toBe('application/json; charset=utf-8');
+    expect(Buffer.from((await end.readBody(Number.MAX_SAFE_INTEGER)) ?? []).toString()).toBe(
+      '{"token":"token-1"}',
+    );
+    expect(Buffer.from((await end.readBody(4)) ?? []).toString()).toBe('{"to');
+    expect(end.bodyLength).toBe(19);
+    expect(end.reply).toEqual({ recognised: false, truncated: false });
+  });
+
+  it('completed: names the spill file while it holds the bytes asked for', async () => {
+    const body = Buffer.from(JSON.stringify({ padding: 'x'.repeat(2 * 1_048_576) }));
+    const server = await track(
+      startHttpServer((_request, response) => {
+        response.writeHead(200, { 'Content-Type': 'application/json' });
+        response.end(body);
+      }),
+    );
+    const spilled = recording();
+    const unspilled = recording();
+
+    const { run } = await observed(spilled, runInput([`GET ${server.url}`]));
+    await observed(unspilled, { ...runInput([`GET ${server.url}`]), spill: undefined });
+
+    const end = spilled.ends[0];
+    const without = unspilled.ends[0];
+    if (end?.kind !== 'completed' || without?.kind !== 'completed') {
+      throw new Error('expected completed ends');
+    }
+    expect(end.bodyLength).toBe(body.length);
+    const file = await end.spillPath(body.length);
+    expect(readFileSync(file ?? '').equals(body)).toBe(true);
+    expect(await end.spillPath(body.length + 1)).toBeUndefined();
+    expect(await without.spillPath(body.length)).toBeUndefined();
+    expect(end.signal.aborted).toBe(false);
+    await run.release();
+    expect(end.signal.aborted).toBe(true);
+    expect(await end.spillPath(body.length)).toBeUndefined();
+  });
+
+  it('failed: a run that never reached headers', async () => {
+    const server = await startHttpServer((_request, response) => response.end());
+    await server.close();
+    const recorded = recording();
+
+    const { snapshot } = await observed(recorded, runInput([`GET ${server.url}/gone`]));
+
+    expect(snapshot.status).toBe('failed');
+    expect(recorded.heads).toEqual([]);
+    expect(recorded.events).toEqual([]);
+    expect(recorded.ends).toEqual([{ kind: 'failed', message: snapshot.failure?.message }]);
+  });
+
+  it('failed: a transport that rejects', async () => {
+    const recorded = recording();
+
+    await observed(recorded, runInput(['GET https://api.example.test/items']), {
+      send: () => Promise.reject(new Error('synthetic transport failure')),
+    });
+
+    expect(recorded.ends).toEqual([
+      { kind: 'failed', message: 'The request could not be sent: synthetic transport failure.' },
+    ]);
+  });
+
+  it('failed: a body too large', async () => {
+    const server = await track(
+      startHttpServer((_request, response) => {
+        response.end(Buffer.alloc(4096, 'x'));
+      }),
+    );
+    const recorded = recording();
+
+    const { snapshot } = await observed(
+      recorded,
+      runInput([`GET ${server.url}`], { settings: { maxBodyBytes: 1024 } }),
+    );
+
+    expect(snapshot.failure?.kind).toBe('body-too-large');
+    expect(recorded.heads).toEqual([200]);
+    expect(recorded.ends).toEqual([{ kind: 'failed', message: snapshot.failure?.message }]);
+  });
+
+  it('cancelled: while receiving', async () => {
+    const server = await track(
+      startHttpServer((_request, response) => {
+        response.writeHead(200, { 'Content-Type': 'application/x-ndjson' });
+        response.write('{"type":"RUN_STARTED","threadId":"thread-1"}\n');
+      }),
+    );
+    const recorded = recording();
+    const run = startRun(
+      withObserver(runInput([`GET ${server.url}`]), recorded.observer),
+      dependencies,
+    );
+    await waitFor(() => recorded.events.length === 1, 2000);
+
+    run.cancel();
+    await run.done;
+    await settle();
+
+    expect(recorded.heads).toEqual([200]);
+    expect(recorded.events).toEqual([1]);
+    expect(recorded.ends).toEqual([{ kind: 'cancelled' }]);
+  });
+
+  it('cancelled: before sending', async () => {
+    const server = await track(startHttpServer((_request, response) => response.end()));
+    const recorded = recording();
+    const run = startRun(
+      withObserver(runInput([`GET ${server.url}`]), recorded.observer),
+      dependencies,
+    );
+
+    run.cancel();
+    await run.done;
+    await settle();
+
+    expect(recorded.heads).toEqual([]);
+    expect(recorded.ends).toEqual([{ kind: 'cancelled' }]);
+  });
+
+  it('cancelled: a send the user declined', async () => {
+    const recorded = recording();
+
+    await observed(
+      recorded,
+      runInput(['GET https://api.example.test/items'], {
+        confirmSend: () => Promise.resolve(false),
+      }),
+    );
+
+    expect(recorded.ends).toEqual([{ kind: 'cancelled' }]);
+  });
+
+  it('blocked: with the problems that stopped it', async () => {
+    const recorded = recording();
+
+    const { snapshot } = await observed(
+      recorded,
+      runInput(['GET https://api.example.test/{{missing}}/{{other}}']),
+    );
+
+    expect(snapshot.status).toBe('blocked');
+    expect(recorded.heads).toEqual([]);
+    expect(recorded.ends).toEqual([
+      {
+        kind: 'blocked',
+        message: snapshot.problems.map((problem) => problem.message).join(' '),
+      },
+    ]);
+    expect(snapshot.problems).toHaveLength(2);
   });
 });
 
@@ -1262,5 +1637,2258 @@ describe('requestKey', () => {
     expect(requestKeyDocument(requestKey(document, login, 0))).toBe(document);
     expect(requestKeyDocument(requestKey(document, me, 1))).toBe(document);
     expect(requestKeyDocument('untitled:Untitled-1\n@x')).toBe('untitled:Untitled-1');
+  });
+
+  it('finds a request by its key or name in the current parse, wherever it moved, or nothing', () => {
+    const document = 'file:///a.http';
+    const lines = [
+      '# @name login',
+      'POST https://api.example.test/login',
+      '',
+      '###',
+      'GET https://api.example.test/me',
+    ];
+    const before = parseHttpFile(lines.join('\n'));
+    const [login, me] = before.requests;
+    if (!login || !me) {
+      throw new Error('expected two requests');
+    }
+    const loginName = 'login';
+    const meKey = requestKey(document, me, 1);
+    const lineOf = (file: string[], identity: string): number | undefined =>
+      findRequest(document, parseHttpFile(file.join('\n')), identity)?.requestLine.range.start.line;
+
+    expect(lineOf(lines, loginName)).toBe(1);
+    expect(lineOf(lines, meKey)).toBe(4);
+    expect(lineOf(['@base = x', '', ...lines], loginName)).toBe(3);
+    expect(lineOf(['@base = x', '', ...lines], meKey)).toBe(6);
+    expect(
+      lineOf(
+        ['# @name inserted', 'GET https://api.example.test/x', '', '###', ...lines],
+        loginName,
+      ),
+    ).toBe(5);
+    expect(
+      lineOf(['# @name inserted', 'GET https://api.example.test/x', '', '###', ...lines], meKey),
+    ).toBeUndefined();
+    expect(lineOf(['# @name renamed', ...lines.slice(1)], loginName)).toBeUndefined();
+  });
+});
+
+describe('waiting for captured values', () => {
+  const documentUri = 'file:///requests.http';
+  const threadId = [{ name: 'threadId', secret: false }];
+  const followUp = [
+    '# @name startRun',
+    '# @capture threadId = first(type == "RUN_STARTED").threadId',
+    'POST https://api.example.test/agent/run',
+    '',
+    '###',
+    '# @name continue',
+    'GET https://api.example.test/threads/{{startRun.threadId}}',
+  ];
+  const startKey = `${documentUri}\n@startRun`;
+  const folders: string[] = [];
+
+  afterEach(() => {
+    vi.useRealTimers();
+    for (const folder of folders.splice(0)) {
+      rmSync(folder, { recursive: true, force: true });
+    }
+  });
+
+  function capturing(
+    registry: CaptureRegistry,
+    lines: string[],
+    index: number,
+    runs: (key: string) => RunHandle | undefined = () => undefined,
+    variables: Partial<RunInput['variables']> = {},
+    workerFile = missingWorker,
+  ): RunInput {
+    const input = runInput(lines, { index, variables });
+    return {
+      ...input,
+      key: requestKey(documentUri, input.request, index),
+      label: requestLabel(input.request),
+      captures: new CaptureService({
+        registry,
+        documentUri,
+        file: input.file,
+        request: input.request,
+        workerFile,
+        runs,
+      }),
+    };
+  }
+
+  function headerOf(request: { rawHeaders: string[] }, name: string): string | undefined {
+    const at = request.rawHeaders.findIndex(
+      (header, index) => index % 2 === 0 && header.toLowerCase() === name,
+    );
+    return at === -1 ? undefined : request.rawHeaders[at + 1];
+  }
+
+  function resolved(text: string, runId: number): CaptureResult {
+    return {
+      state: 'resolved',
+      text,
+      secret: false,
+      sensitive: [],
+      provenance: { runId, event: 1, path: 'threadId', time: 0 },
+    };
+  }
+
+  function pendingProducer(registry: CaptureRegistry, id: number): void {
+    registry.begin({ id, key: startKey, label: 'startRun', startedAt: -id }, threadId);
+  }
+
+  function at(line: number, start: number, end: number) {
+    return { start: { line, character: start }, end: { line, character: end } };
+  }
+
+  function bodyFolder(name: string, contents: string): string {
+    const folder = realpathSync.native(mkdtempSync(path.join(tmpdir(), 'streamscope-wait-')));
+    folders.push(folder);
+    writeFileSync(path.join(folder, name), contents);
+    return folder;
+  }
+
+  it('a request waits for a pending capture, then sends with its value', async () => {
+    const streams = await track(startStreamServer());
+    const api = await track(
+      startHttpServer((_request, response) => {
+        response.end('ok');
+      }),
+    );
+    const registry = new CaptureRegistry();
+    const lines = [
+      '# @name startRun',
+      '# @capture threadId = first(type == "RUN_STARTED").threadId',
+      `GET ${streams.url}/stream?delayMs=300&seconds=0`,
+      '',
+      '###',
+      '# @name continue',
+      `GET ${api.url}/threads/{{startRun.threadId}}`,
+    ];
+
+    const producer = startRun(capturing(registry, lines, 0), dependencies);
+    const consumer = startRun(capturing(registry, lines, 1), dependencies);
+    await waitFor(() => consumer.snapshot().status === 'waiting');
+
+    expect(consumer.snapshot().waitingFor).toBe('startRun › threadId');
+    expect(api.requests).toEqual([]);
+    const sent = await consumer.done;
+    expect(sent.status).toBe('completed');
+    expect(sent.waitingFor).toBeUndefined();
+    expect(api.requests.map((request) => request.url)).toEqual(['/threads/thread-1']);
+    expect(registry.waitCount).toBe(0);
+    expect((await producer.done).status).toBe('completed');
+  });
+
+  it('the wait times out and blocks with the decision 10 message', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const registry = new CaptureRegistry();
+    pendingProducer(registry, -1);
+
+    const consumer = startRun(capturing(registry, followUp, 1), dependencies);
+    await vi.advanceTimersByTimeAsync(30_000);
+    const blocked = await consumer.done;
+
+    expect(blocked.status).toBe('blocked');
+    expect(blocked.problems).toEqual([
+      { message: 'startRun › threadId did not arrive within 30 s.', range: at(6, 37, 58) },
+    ]);
+    expect(blocked.sent).toBeUndefined();
+    expect(registry.waitCount).toBe(0);
+  });
+
+  it('cancelling a waiting run ends it cancelled and releases the wait', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const registry = new CaptureRegistry();
+    pendingProducer(registry, -1);
+
+    const consumer = startRun(capturing(registry, followUp, 1), dependencies);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(consumer.snapshot().status).toBe('waiting');
+    expect(registry.waitCount).toBe(1);
+    consumer.cancel();
+    const cancelled = await consumer.done;
+
+    expect(cancelled.status).toBe('cancelled');
+    expect(cancelled.waitingFor).toBeUndefined();
+    expect(registry.waitCount).toBe(0);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('a producer never run blocks at once with a producer name on the problem', async () => {
+    const registry = new CaptureRegistry();
+    const lines = [...followUp, 'X-Thread: {{threadId}}'];
+
+    const blocked = await startRun(capturing(registry, lines, 1), dependencies).done;
+
+    expect(blocked.status).toBe('blocked');
+    expect(blocked.problems).toEqual([
+      {
+        message: '`{{startRun.threadId}}` comes from startRun, which has not run in this session.',
+        range: at(6, 37, 58),
+        producer: 'startRun',
+      },
+      {
+        message: '`{{threadId}}` comes from startRun, which has not run in this session.',
+        range: at(7, 10, 22),
+        producer: 'startRun',
+      },
+    ]);
+    expect(registry.waitCount).toBe(0);
+  });
+
+  it('a consumer waiting when the captures are cleared resolves again as if its producer had not run', async () => {
+    const registry = new CaptureRegistry();
+    pendingProducer(registry, -1);
+
+    const consumer = startRun(capturing(registry, followUp, 1), dependencies);
+    await waitFor(() => registry.waitCount === 1);
+    registry.clear();
+    const blocked = await consumer.done;
+
+    expect(blocked.status).toBe('blocked');
+    expect(blocked.problems).toEqual([
+      {
+        message: '`{{startRun.threadId}}` comes from startRun, which has not run in this session.',
+        range: at(6, 37, 58),
+        producer: 'startRun',
+      },
+    ]);
+    expect(registry.waitCount).toBe(0);
+  });
+
+  it("begin resets the producer's captures before it resolves", async () => {
+    const registry = new CaptureRegistry();
+    pendingProducer(registry, -1);
+    registry.update(-1, 'threadId', resolved('thread-0', -1));
+    const changes: string[] = [];
+    registry.onDidChange((request, name) => {
+      const entry = registry.get(request, name);
+      changes.push(
+        entry === undefined ? `${name} removed` : `${String(entry.runId)} ${entry.result.state}`,
+      );
+    });
+    const lines = [
+      '# @name startRun',
+      '# @capture threadId = first(type == "RUN_STARTED").threadId',
+      'POST https://api.example.test/{{missing}}',
+    ];
+
+    const producer = startRun(capturing(registry, lines, 0), dependencies);
+    expect((await producer.done).status).toBe('blocked');
+    await waitFor(() => registry.get(startKey, 'threadId')?.result.state === 'failed');
+
+    expect(changes).toEqual([
+      'threadId removed',
+      `${String(producer.id)} pending`,
+      `${String(producer.id)} failed`,
+    ]);
+    expect(registry.get(startKey, 'threadId')?.result).toEqual({
+      state: 'failed',
+      reason:
+        'startRun was not sent: `{{missing}}` is not defined in this file or `$shared` (no environment selected)',
+    });
+  });
+
+  it('a request that re-captures the name it consumes sends its previous value', async () => {
+    const api = await track(
+      startHttpServer((_request, response) => {
+        response.writeHead(200, { 'Content-Type': 'application/json' });
+        response.end('{"next":"cursor-2"}');
+      }),
+    );
+    const registry = new CaptureRegistry();
+    const itemsKey = `${documentUri}\n@items`;
+    registry.begin({ id: -1, key: itemsKey, label: 'items', startedAt: 0 }, [
+      { name: 'nextCursor', secret: false },
+    ]);
+    registry.update(-1, 'nextCursor', resolved('cursor-1', -1));
+    const lines = [
+      '# @name items',
+      '# @capture nextCursor = body.next',
+      `GET ${api.url}/items?cursor={{nextCursor}}`,
+    ];
+
+    const sent = await startRun(capturing(registry, lines, 0), dependencies).done;
+    await waitFor(() => registry.get(itemsKey, 'nextCursor')?.result.state === 'resolved');
+
+    expect(sent.status).toBe('completed');
+    expect(api.requests.map((request) => request.url)).toEqual(['/items?cursor=cursor-1']);
+    expect(registry.get(itemsKey, 'nextCursor')?.result).toMatchObject({
+      state: 'resolved',
+      text: 'cursor-2',
+    });
+  });
+
+  it('a file variable seeds a request that captures the name it consumes, then the capture takes over', async () => {
+    let pages = 0;
+    const api = await track(
+      startHttpServer((_request, response) => {
+        pages += 1;
+        response.writeHead(200, { 'Content-Type': 'application/json' });
+        response.end(JSON.stringify({ next: `page-${String(pages + 1)}` }));
+      }),
+    );
+    const registry = new CaptureRegistry();
+    const pageKey = `${documentUri}\n@page`;
+    const lines = [
+      '@cursor = start',
+      '',
+      '# @name page',
+      '# @capture cursor = body.next',
+      `GET ${api.url}/items?cursor={{cursor}}`,
+    ];
+
+    const first = await startRun(capturing(registry, lines, 0), dependencies).done;
+    expect(first.problems).toEqual([]);
+    await waitFor(() => registry.get(pageKey, 'cursor')?.result.state === 'resolved');
+    const second = await startRun(capturing(registry, lines, 0), dependencies).done;
+
+    expect(second.problems).toEqual([]);
+    expect(api.requests.map((request) => request.url)).toEqual([
+      '/items?cursor=start',
+      '/items?cursor=page-2',
+    ]);
+  });
+
+  it('a request that consumes its own capture with no previous value is refused at once', async () => {
+    const lines = [
+      '# @name items',
+      '# @capture nextCursor = body.next',
+      'GET https://api.example.test/items?cursor={{nextCursor}}',
+    ];
+
+    const blocked = await startRun(capturing(new CaptureRegistry(), lines, 0), dependencies).done;
+
+    expect(blocked.status).toBe('blocked');
+    expect(blocked.problems).toEqual([
+      { message: 'items cannot use its own capture nextCursor.', range: at(2, 42, 56) },
+    ]);
+  });
+
+  it('a request whose capture, expect or until line has an expression error is blocked with it', async () => {
+    const server = await track(startHttpServer((_request, response) => response.end()));
+    const lines = [
+      '# @name startRun',
+      '# @capture threadId = first(type = "RUN_STARTED").threadId',
+      '# @capture runId = first(type == "RUN_STARTED").runId',
+      '# @capture runId = first(type == "RUN_STARTED").runId',
+      '# @expect status = 201',
+      '# @until type = "RUN_FINISHED"',
+      `POST ${server.url}/agent/run`,
+    ];
+    const blocking = ['invalid-expression', 'duplicate-capture', 'too-many-captures'];
+    const diagnostics = parseHttpFile(lines.join('\n')).diagnostics.filter((diagnostic) =>
+      blocking.includes(diagnostic.code),
+    );
+    const expected = diagnostics.map(({ message, range }) => ({ message, range }));
+
+    const blocked = await startRun(capturing(new CaptureRegistry(), lines, 0), dependencies).done;
+
+    expect(diagnostics.map((diagnostic) => diagnostic.range.start.line)).toEqual([1, 3, 4, 5]);
+    expect(blocked.status).toBe('blocked');
+    expect(blocked.problems).toEqual(expected);
+    expect(server.sockets.opened).toBe(0);
+  });
+
+  it('a capture used only inside a <@ body file waits like one in the request', async () => {
+    const api = await track(
+      startHttpServer((_request, response) => {
+        response.end('ok');
+      }),
+    );
+    const registry = new CaptureRegistry();
+    pendingProducer(registry, -1);
+    const folder = bodyFolder('template.json', '{"thread":"{{startRun.threadId}}"}');
+    const lines = [
+      ...followUp.slice(0, 6),
+      `POST ${api.url}/continue`,
+      'Content-Type: application/json',
+      '',
+      '<@ ./template.json',
+    ];
+
+    const consumer = startRun(
+      {
+        ...capturing(registry, lines, 1),
+        bodyFiles: { documentDir: folder, containmentRoot: folder },
+      },
+      dependencies,
+    );
+    await waitFor(() => consumer.snapshot().status === 'waiting');
+    expect(consumer.snapshot().waitingFor).toBe('startRun › threadId');
+    registry.update(-1, 'threadId', resolved('thread-1', -1));
+    const sent = await consumer.done;
+
+    expect(sent.status).toBe('completed');
+    expect(api.requests.map((request) => request.body.toString())).toEqual([
+      '{"thread":"thread-1"}\n',
+    ]);
+  });
+
+  it('a producer never run, used inside a <@ body file, blocks with its producer', async () => {
+    const folder = bodyFolder('template.json', '{"thread":"{{startRun.threadId}}"}');
+    const lines = [
+      ...followUp.slice(0, 6),
+      'POST https://api.example.test/continue',
+      'Content-Type: application/json',
+      '',
+      '<@ ./template.json',
+    ];
+
+    const blocked = await startRun(
+      {
+        ...capturing(new CaptureRegistry(), lines, 1),
+        bodyFiles: { documentDir: folder, containmentRoot: folder },
+      },
+      dependencies,
+    ).done;
+
+    expect(blocked.status).toBe('blocked');
+    expect(blocked.problems).toEqual([
+      {
+        message: '`{{startRun.threadId}}` comes from startRun, which has not run in this session.',
+        range: at(9, 3, 18),
+        producer: 'startRun',
+      },
+    ]);
+  });
+
+  it('a bare name the request also captures reads a newer capture from another request', async () => {
+    const api = await track(
+      startHttpServer((_request, response) => {
+        response.writeHead(200, { 'Content-Type': 'application/json' });
+        response.end('{"threadId":"thread-continued"}');
+      }),
+    );
+    const registry = new CaptureRegistry();
+    const continueKey = `${documentUri}\n@continue`;
+    const lines = [
+      '# @name startRun',
+      '# @capture threadId = body.threadId',
+      'POST https://api.example.test/agent/run',
+      '',
+      '###',
+      '# @name continue',
+      '# @capture threadId = body.threadId',
+      `GET ${api.url}/continue`,
+      'X-Thread: {{threadId}}',
+    ];
+    const producerResolves = (id: number, text: string): void => {
+      registry.begin(
+        { id, key: startKey, label: 'startRun', startedAt: performance.now() },
+        threadId,
+      );
+      registry.update(id, 'threadId', resolved(text, id));
+    };
+    const send = async (): Promise<void> => {
+      const run = startRun(capturing(registry, lines, 1), dependencies);
+      const sent = await run.done;
+      expect(sent.problems).toEqual([]);
+      await waitFor(() => {
+        const entry = registry.get(continueKey, 'threadId');
+        return entry?.runId === run.id && entry.result.state === 'resolved';
+      });
+    };
+
+    producerResolves(-1, 'thread-1');
+    await send();
+    producerResolves(-2, 'thread-2');
+    await send();
+    await send();
+
+    expect(api.requests.map((request) => headerOf(request, 'x-thread'))).toEqual([
+      'thread-1',
+      'thread-2',
+      'thread-continued',
+    ]);
+  });
+
+  it('a malformed # @capture line blocks the request with its diagnostic', async () => {
+    const server = await track(startHttpServer((_request, response) => response.end()));
+    const lines = ['# @name startRun', '# @capture threadId', `POST ${server.url}/agent/run`];
+    const [diagnostic] = parseHttpFile(lines.join('\n')).diagnostics.filter(
+      (candidate) => candidate.code === 'invalid-capture',
+    );
+
+    const blocked = await startRun(capturing(new CaptureRegistry(), lines, 0), dependencies).done;
+
+    expect(diagnostic).toBeDefined();
+    expect(blocked.status).toBe('blocked');
+    expect(blocked.problems).toEqual([{ message: diagnostic?.message, range: diagnostic?.range }]);
+    expect(server.sockets.opened).toBe(0);
+  });
+
+  describe('response references', () => {
+    const loginKey = `${documentUri}\n@login`;
+    const lines = (api: LocalServer): string[] => [
+      '# @name login',
+      `POST ${api.url}/login`,
+      '',
+      '###',
+      '# @name continue',
+      `GET ${api.url}/continue`,
+      'X-Session: {{login.response.headers.X-Session}}',
+    ];
+
+    async function sessionServer(): Promise<LocalServer> {
+      return track(
+        startHttpServer((_request, response) => {
+          response.writeHead(200, { 'X-Session': 'session-1' });
+          response.end('ok');
+        }),
+      );
+    }
+
+    it('one whose producer is done sends without waiting', async () => {
+      const api = await sessionServer();
+      const registry = new CaptureRegistry();
+      const login = startRun(capturing(registry, lines(api), 0), dependencies);
+      await login.done;
+      const statuses: RunStatus[] = [];
+
+      const sent = await startRun(
+        capturing(registry, lines(api), 1, (key) => (key === loginKey ? login : undefined)),
+        dependencies,
+        (snapshot) => statuses.push(snapshot.status),
+      ).done;
+
+      expect(sent.status).toBe('completed');
+      expect(statuses).not.toContain('waiting');
+      expect(headerOf(api.requests[1] ?? { rawHeaders: [] }, 'x-session')).toBe('session-1');
+    });
+
+    it('a value read while a secret capture of its producer is pending stays masked', async () => {
+      const api = await track(
+        startHttpServer((_request, response) => {
+          response.writeHead(200, { 'Content-Type': 'application/json', 'X-Sid': 'synthetic-sid' });
+          response.end('{"sid":"synthetic-sid"}');
+        }),
+      );
+      const registry = new CaptureRegistry();
+      const sidLines = [
+        '# @name login',
+        '# @capture secret sid = body.sid',
+        `POST ${api.url}/login`,
+        '',
+        '###',
+        '# @name continue',
+        `GET ${api.url}/continue`,
+        'X-Sid: {{login.response.headers.X-Sid}}',
+      ];
+      const held: (() => void)[] = [];
+      const producerInput = capturing(registry, sidLines, 0);
+      const { captures } = producerInput;
+      const login = startRun(
+        {
+          ...producerInput,
+          captures: {
+            lookup: captures.lookup,
+            begin: (run) => {
+              captures.begin(run);
+            },
+            settle: (waits, runId, signal) => captures.settle(waits, runId, signal),
+            wait: (waits, runId, options) => captures.wait(waits, runId, options),
+            observer: (run) => {
+              const observer = captures.observer(run);
+              return (
+                observer && {
+                  ...observer,
+                  end: (end) => {
+                    held.push(() => {
+                      observer.end(end);
+                    });
+                  },
+                }
+              );
+            },
+          },
+        },
+        dependencies,
+      );
+      await login.done;
+
+      const sent = await startRun(
+        capturing(registry, sidLines, 1, (key) => (key === loginKey ? login : undefined)),
+        dependencies,
+      ).done;
+      const logged: string[] = [];
+      const record = (line: string): void => {
+        logged.push(line);
+      };
+      logRunEnd({ info: record, warn: record, debug: record }, sent);
+
+      expect(registry.get(loginKey, 'sid')?.result).toEqual({ state: 'pending' });
+      expect(sent.sent?.headers).toContainEqual(['X-Sid', 'synthetic-sid']);
+      expect(logged.join('\n')).toContain('X-Sid: ••••••');
+      expect(logged.join('\n')).not.toContain('synthetic-sid');
+      expect(describeOutcome(sent)).not.toContain('synthetic-sid');
+      for (const release of held.splice(0)) {
+        release();
+      }
+      await waitFor(() => registry.get(loginKey, 'sid')?.result.state === 'resolved');
+    });
+
+    it('after the captures are cleared, a run that started before is not read, and a later run is', async () => {
+      const api = await sessionServer();
+      const registry = new CaptureRegistry();
+      let login = startRun(capturing(registry, lines(api), 0), dependencies);
+      const latest = (key: string): RunHandle | undefined => (key === loginKey ? login : undefined);
+      await login.done;
+      registry.clear();
+
+      const blocked = await startRun(capturing(registry, lines(api), 1, latest), dependencies).done;
+      login = startRun(capturing(registry, lines(api), 0), dependencies);
+      await login.done;
+      const sent = await startRun(capturing(registry, lines(api), 1, latest), dependencies).done;
+
+      expect(blocked.problems).toEqual([
+        {
+          message:
+            '`{{login.response.headers.X-Session}}` comes from login, which has not run in this session.',
+          range: at(6, 11, 47),
+          producer: 'login',
+        },
+      ]);
+      expect(sent.status).toBe('completed');
+      expect(api.requests.map((request) => request.url)).toEqual(['/login', '/login', '/continue']);
+      expect(headerOf(api.requests[2] ?? { rawHeaders: [] }, 'x-session')).toBe('session-1');
+    });
+
+    it('one to a request that never ran blocks at once, without waiting', async () => {
+      const api = await sessionServer();
+      const statuses: RunStatus[] = [];
+
+      const blocked = await startRun(
+        capturing(new CaptureRegistry(), lines(api), 1),
+        dependencies,
+        (snapshot) => statuses.push(snapshot.status),
+      ).done;
+
+      expect(statuses).not.toContain('waiting');
+      expect(blocked.problems).toEqual([
+        {
+          message:
+            '`{{login.response.headers.X-Session}}` comes from login, which has not run in this session.',
+          range: at(6, 11, 47),
+          producer: 'login',
+        },
+      ]);
+      expect(api.requests).toEqual([]);
+    });
+
+    it('one to the run itself blocks at once, without waiting', async () => {
+      const api = await sessionServer();
+      const statuses: RunStatus[] = [];
+      const own = [
+        '# @name continue',
+        `GET ${api.url}/continue`,
+        'X-Session: {{continue.response.headers.X-Session}}',
+      ];
+      const self: RunHandle = startRun(
+        capturing(new CaptureRegistry(), own, 0, () => self),
+        dependencies,
+        (snapshot) => statuses.push(snapshot.status),
+      );
+      const blocked = await self.done;
+
+      expect(statuses).not.toContain('waiting');
+      expect(blocked.problems).toEqual([
+        { message: 'continue cannot use its own response.', range: at(2, 11, 50) },
+      ]);
+      expect(api.requests).toEqual([]);
+    });
+  });
+
+  describe('a body file path', () => {
+    const refused =
+      'Body file paths cannot use captured values or response references. Write the path in the file or in a variable.';
+
+    async function uploads(): Promise<{ api: LocalServer; folder: string }> {
+      const api = await track(
+        startHttpServer((request, response) => {
+          if (request.url === '/names') {
+            response.writeHead(200, { 'Content-Type': 'application/json', 'X-File': '../.env' });
+            response.end('{"name":"../.env"}');
+            return;
+          }
+          response.end('ok');
+        }),
+      );
+      const folder = bodyFolder('.env', 'SYNTHETIC_KEY=synthetic-env-secret\n');
+      mkdirSync(path.join(folder, 'uploads'));
+      writeFileSync(path.join(folder, 'uploads', 'report.txt'), 'synthetic report');
+      return { api, folder };
+    }
+
+    function upload(api: LocalServer, written: string, before: string[] = []): string[] {
+      return [
+        ...before,
+        '# @name names',
+        '# @capture name = body.name',
+        `POST ${api.url}/names`,
+        '',
+        '###',
+        '# @name upload',
+        `POST ${api.url}/upload`,
+        'Content-Type: text/plain',
+        '',
+        `< ./uploads/${written}`,
+      ];
+    }
+
+    it('is refused when a captured value chose it, and nothing is read or sent', async () => {
+      const { api, folder } = await uploads();
+      const registry = new CaptureRegistry();
+      const names = startRun(capturing(registry, upload(api, '{{name}}'), 0), dependencies);
+      await names.done;
+      await waitFor(
+        () => registry.get(`${documentUri}\n@names`, 'name')?.result.state === 'resolved',
+      );
+
+      const blocked = await startRun(
+        {
+          ...capturing(registry, upload(api, '{{name}}'), 1),
+          bodyFiles: { documentDir: folder, containmentRoot: folder },
+        },
+        dependencies,
+      ).done;
+
+      expect(blocked.status).toBe('blocked');
+      expect(blocked.problems.map((problem) => problem.message)).toEqual([refused]);
+      expect(blocked.problems[0]?.range.start.line).toBe(9);
+      expect(api.requests.map((request) => request.url)).toEqual(['/names']);
+    });
+
+    it('is refused when a response reference chose it', async () => {
+      const { api, folder } = await uploads();
+      const registry = new CaptureRegistry();
+      const lines = upload(api, '{{names.response.headers.X-File}}');
+      const names = startRun(capturing(registry, lines, 0), dependencies);
+      await names.done;
+
+      const blocked = await startRun(
+        {
+          ...capturing(registry, lines, 1, (key) =>
+            key === `${documentUri}\n@names` ? names : undefined,
+          ),
+          bodyFiles: { documentDir: folder, containmentRoot: folder },
+        },
+        dependencies,
+      ).done;
+
+      expect(blocked.status).toBe('blocked');
+      expect(blocked.problems.map((problem) => problem.message)).toEqual([refused]);
+      expect(api.requests.map((request) => request.url)).toEqual(['/names']);
+    });
+
+    it('is refused when a captured value chose it through {{$dotenv %name}}, and nothing is read', async () => {
+      const { api, folder } = await uploads();
+      mkdirSync(path.join(folder, 'secrets'));
+      const keyFile = path.join(folder, 'secrets', 'service-key.json');
+      writeFileSync(keyFile, '{"key":"synthetic-service-key"}');
+      chmodSync(keyFile, 0o000);
+      const registry = new CaptureRegistry();
+      registry.begin({ id: -7, key: `${documentUri}\n@kinds`, label: 'kinds', startedAt: 0 }, [
+        { name: 'kind', secret: false },
+      ]);
+      registry.update(-7, 'kind', resolved('KEYFILE', -7));
+      const lines = [
+        '# @name kinds',
+        '# @capture kind = body.kind',
+        `POST ${api.url}/kinds`,
+        '',
+        '###',
+        '# @name upload',
+        `POST ${api.url}/upload`,
+        'Content-Type: application/json',
+        '',
+        '< {{$dotenv %which}}',
+      ];
+
+      const blocked = await startRun(
+        {
+          ...capturing(registry, lines, 1, undefined, {
+            environmentName: 'dev',
+            environment: new Map([
+              ['which', { value: '{{kind}}', origin: 'dev environment (settings)' }],
+            ]),
+            dotenv: {
+              kind: 'loaded',
+              values: new Map([['KEYFILE', './secrets/service-key.json']]),
+              path: path.join(folder, '.env'),
+            },
+          }),
+          bodyFiles: { documentDir: folder, containmentRoot: folder },
+        },
+        dependencies,
+      ).done;
+
+      expect(blocked.status).toBe('blocked');
+      expect(blocked.problems.map((problem) => problem.message)).toEqual([refused]);
+      expect(api.requests).toEqual([]);
+    });
+
+    it('still works when a file variable chose it', async () => {
+      const { api, folder } = await uploads();
+      const lines = upload(api, '{{report}}', ['@report = report.txt', '']);
+
+      const sent = await startRun(
+        {
+          ...capturing(new CaptureRegistry(), lines, 1),
+          bodyFiles: { documentDir: folder, containmentRoot: folder },
+        },
+        dependencies,
+      ).done;
+
+      expect(sent.problems).toEqual([]);
+      expect(sent.status).toBe('completed');
+      expect(api.requests.map((request) => request.body.toString())).toEqual([
+        'synthetic report\n',
+      ]);
+    });
+  });
+
+  describe('a value inserted only inside a <@ template', () => {
+    const loginKey = `${documentUri}\n@login`;
+    const continueKey = `${documentUri}\n@continue`;
+
+    async function echoed(
+      template: string,
+      variables: Partial<RunInput['variables']> = {},
+    ): Promise<{ sent: RunSnapshot; log: string; echo: CaptureResult | undefined }> {
+      const api = await track(
+        startHttpServer((_request, response, recorded) => {
+          const body = recorded.body.toString().trim();
+          response.writeHead(200, { 'Content-Type': 'application/json', 'X-Echo': body });
+          response.end(body);
+        }),
+      );
+      const registry = new CaptureRegistry();
+      registry.begin({ id: -5, key: loginKey, label: 'login', startedAt: 0 }, [
+        { name: 'token', secret: true },
+        { name: 'location', secret: false },
+        { name: 'code', secret: true },
+      ]);
+      registry.update(-5, 'token', resolved('synthetic-token-tmpl', -5));
+      registry.update(-5, 'location', resolved('https://cb.example.test/loc-1', -5));
+      const folder = bodyFolder('template.json', template);
+      const lines = [
+        '# @name login',
+        '# @capture secret token = body.token',
+        '# @capture location = headers["location"]',
+        '# @capture secret code = body.code',
+        'POST https://api.example.test/login',
+        '',
+        '###',
+        '# @name continue',
+        '# @capture echo = body',
+        `POST ${api.url}/continue`,
+        'Content-Type: application/json',
+        '',
+        '<@ ./template.json',
+      ];
+
+      const sent = await startRun(
+        {
+          ...capturing(registry, lines, 1, undefined, variables),
+          bodyFiles: { documentDir: folder, containmentRoot: folder },
+        },
+        dependencies,
+      ).done;
+      await waitFor(() => registry.get(continueKey, 'echo')?.result.state === 'resolved');
+      const logged: string[] = [];
+      const record = (line: string): void => {
+        logged.push(line);
+      };
+      logRunEnd({ info: record, warn: record, debug: record }, sent);
+      return { sent, log: logged.join('\n'), echo: registry.get(continueKey, 'echo')?.result };
+    }
+
+    it.each([
+      ['a secret capture', '{"value":"{{login.token}}"}', {}, 'synthetic-token-tmpl'],
+      [
+        'a capture whose run has a pending secret',
+        '{"value":"{{login.location}}"}',
+        {},
+        'https://cb.example.test/loc-1',
+      ],
+      [
+        'a $secret',
+        '{"value":"{{$secret apiKey}}"}',
+        { secrets: new Map([['apiKey', 'synthetic-secret-tmpl']]) },
+        'synthetic-secret-tmpl',
+      ],
+    ])(
+      '%s is masked in the run log and carried into its captures',
+      async (_what, template, variables, value) => {
+        const { sent, log, echo } = await echoed(template, variables);
+
+        expect(sent.status).toBe('completed');
+        expect(sent.sensitiveValues).toContain(value);
+        expect(log).toContain(`X-Echo: {"value":"${maskedValue}"}`);
+        expect(log).not.toContain(value);
+        expect(echo).toMatchObject({ state: 'resolved', sensitive: [value] });
+      },
+    );
+  });
+
+  it('a wait inside a <@ body file that times out points at the file', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const registry = new CaptureRegistry();
+    pendingProducer(registry, -1);
+    const folder = bodyFolder('template.json', '{"thread":"{{startRun.threadId}}"}');
+    const lines = [
+      ...followUp.slice(0, 6),
+      'POST https://api.example.test/continue',
+      'Content-Type: application/json',
+      '',
+      '<@ ./template.json',
+    ];
+
+    const consumer = startRun(
+      {
+        ...capturing(registry, lines, 1),
+        bodyFiles: { documentDir: folder, containmentRoot: folder },
+      },
+      dependencies,
+    );
+    await vi.waitFor(() => {
+      expect(consumer.snapshot().status).toBe('waiting');
+    });
+    await vi.advanceTimersByTimeAsync(30_000);
+    const blocked = await consumer.done;
+
+    expect(blocked.problems).toEqual([
+      { message: 'startRun › threadId did not arrive within 30 s.', range: at(9, 3, 18) },
+    ]);
+  });
+
+  describe('a producer re-sent through RunRegistry.start while a consumer waits', () => {
+    const runRegistries: RunRegistry[] = [];
+
+    afterEach(() => {
+      for (const runs of runRegistries.splice(0)) {
+        runs.dispose();
+      }
+    });
+
+    function runRegistry(): RunRegistry {
+      const runs = new RunRegistry(dependencies);
+      runRegistries.push(runs);
+      return runs;
+    }
+
+    function holdingFirstProducer(
+      answer: (response: ServerResponse) => void,
+    ): Promise<LocalServer> {
+      let producers = 0;
+      return track(
+        startHttpServer((request, response) => {
+          if (request.url?.startsWith('/continue') === true) {
+            response.end('ok');
+            return;
+          }
+          producers += 1;
+          if (producers > 1) {
+            answer(response);
+          }
+        }),
+      );
+    }
+
+    async function resend(
+      lines: string[],
+      api: LocalServer,
+    ): Promise<{ first: RunSnapshot; second: RunSnapshot; consumer: RunSnapshot }> {
+      const registry = new CaptureRegistry();
+      const runs = runRegistry();
+      const latest = (key: string): RunHandle | undefined => runs.latest(key);
+      const first = runs.start(capturing(registry, lines, 0, latest));
+      await waitFor(() => api.requests.length === 1);
+      const consumer = runs.start(capturing(registry, lines, 1, latest));
+      await waitFor(() => consumer.snapshot().status === 'waiting');
+      const second = runs.start(capturing(registry, lines, 0, latest));
+      return {
+        first: await first.done,
+        second: await second.done,
+        consumer: await consumer.done,
+      };
+    }
+
+    it('a capture wait sends with the value of the new run', async () => {
+      const api = await holdingFirstProducer((response) => {
+        response.writeHead(200, { 'Content-Type': 'application/x-ndjson' });
+        response.end('{"type":"RUN_STARTED","threadId":"thread-2"}\n');
+      });
+      const lines = [
+        '# @name startRun',
+        '# @capture threadId = first(type == "RUN_STARTED").threadId',
+        `POST ${api.url}/agent/run`,
+        '',
+        '###',
+        '# @name continue',
+        `GET ${api.url}/continue/{{startRun.threadId}}`,
+      ];
+
+      const { first, second, consumer } = await resend(lines, api);
+
+      expect(first.status).toBe('cancelled');
+      expect(second.status).toBe('completed');
+      expect(consumer.status).toBe('completed');
+      expect(api.requests.map((request) => request.url)).toEqual([
+        '/agent/run',
+        '/agent/run',
+        '/continue/thread-2',
+      ]);
+    });
+
+    it('a response reference wait sends with the response of the new run', async () => {
+      const api = await holdingFirstProducer((response) => {
+        response.writeHead(200, { 'X-Session': 'session-2' });
+        response.end('ok');
+      });
+      const lines = [
+        '# @name login',
+        `POST ${api.url}/login`,
+        '',
+        '###',
+        '# @name continue',
+        `GET ${api.url}/continue`,
+        'X-Session: {{login.response.headers.X-Session}}',
+      ];
+
+      const { first, second, consumer } = await resend(lines, api);
+
+      expect(first.status).toBe('cancelled');
+      expect(second.status).toBe('completed');
+      expect(consumer.problems).toEqual([]);
+      expect(consumer.status).toBe('completed');
+      expect(api.requests.map((request) => request.url)).toEqual(['/login', '/login', '/continue']);
+      expect(headerOf(api.requests[2] ?? { rawHeaders: [] }, 'x-session')).toBe('session-2');
+    });
+  });
+
+  it('a fifth wait blocks with The captured values kept changing while continue waited.', async () => {
+    const registry = new CaptureRegistry();
+    pendingProducer(registry, -1);
+
+    const consumer = startRun(capturing(registry, followUp, 1), dependencies);
+    for (let round = 1; round <= 4; round += 1) {
+      await waitFor(() => registry.waitCount === 1);
+      expect(consumer.snapshot().status).toBe('waiting');
+      registry.update(-round, 'threadId', resolved(`thread-${String(round)}`, -round));
+      pendingProducer(registry, -round - 1);
+    }
+    const blocked = await consumer.done;
+
+    expect(blocked.status).toBe('blocked');
+    expect(blocked.problems).toEqual([
+      {
+        message: 'The captured values kept changing while continue waited.',
+        range: at(6, 0, 58),
+      },
+    ]);
+    expect(registry.waitCount).toBe(0);
+  });
+
+  describe("a capture resolved while its run's secret capture is still pending", () => {
+    const loginKey = `${documentUri}\n@login`;
+    const token = 'synthetic-token-7f3a9c';
+
+    async function held(
+      headers: Record<string, string>,
+      first: string,
+      last: string,
+    ): Promise<{ api: LocalServer; release: () => void }> {
+      let finish = (): void => undefined;
+      const api = await track(
+        startHttpServer((request, response) => {
+          if (request.url !== '/login') {
+            response.end('ok');
+            return;
+          }
+          response.writeHead(200, headers);
+          response.flushHeaders();
+          if (first !== '') {
+            response.write(first);
+          }
+          finish = () => {
+            response.end(last);
+          };
+        }),
+      );
+      return {
+        api,
+        release: () => {
+          finish();
+        },
+      };
+    }
+
+    async function consumerLog(registry: CaptureRegistry, lines: string[]): Promise<string> {
+      const sent = await startRun(capturing(registry, lines, 1), dependencies).done;
+      expect(sent.status).toBe('completed');
+      const logged: string[] = [];
+      const record = (line: string): void => {
+        logged.push(line);
+      };
+      logRunEnd({ info: record, warn: record, debug: record }, sent);
+      return logged.join('\n');
+    }
+
+    it('a head-phase headers[…] capture is masked whole in a consumer log until the body secret resolves', async () => {
+      const { api, release } = await held(
+        { Location: `https://cb.example.test/cb#t=${token}`, 'Content-Type': 'application/json' },
+        '',
+        JSON.stringify({ code: token }),
+      );
+      const lines = [
+        '# @name login',
+        '# @capture location = headers["location"]',
+        '# @capture secret code = body.code',
+        `POST ${api.url}/login`,
+        '',
+        '###',
+        '# @name continue',
+        `GET ${api.url}/continue`,
+        'X-Location: {{location}}',
+      ];
+      const registry = new CaptureRegistry();
+      const login = startRun(capturing(registry, lines, 0), dependencies);
+      await waitFor(() => registry.get(loginKey, 'location')?.result.state === 'resolved');
+
+      const pending = await consumerLog(registry, lines);
+      expect(registry.get(loginKey, 'code')?.result.state).toBe('pending');
+      release();
+      await login.done;
+      await waitFor(() => registry.get(loginKey, 'code')?.result.state === 'resolved');
+      const resolved = await consumerLog(registry, lines);
+
+      expect(pending).toContain(`X-Location: ${maskedValue}`);
+      expect(pending).not.toContain(token);
+      expect(resolved).toContain(`X-Location: https://cb.example.test/cb#t=${maskedValue}`);
+      expect(resolved).not.toContain(token);
+    });
+
+    it('a stream first(…) capture stays masked whole in a consumer log when the run is stopped before its last(…) secret', async () => {
+      const event = JSON.stringify({ type: 'SESSION', token });
+      const { api } = await held({ 'Content-Type': 'application/x-ndjson' }, `${event}\n`, '');
+      const lines = [
+        '# @name login',
+        '# @capture profile = first(type == "SESSION")',
+        '# @capture secret token = last(type == "SESSION").token',
+        `POST ${api.url}/login`,
+        '',
+        '###',
+        '# @name continue',
+        `GET ${api.url}/continue`,
+        'X-Profile: {{profile}}',
+      ];
+      const registry = new CaptureRegistry();
+      const login = startRun(capturing(registry, lines, 0), dependencies);
+      await waitFor(() => registry.get(loginKey, 'profile')?.result.state === 'resolved');
+
+      login.cancel();
+      await login.done;
+      await waitFor(() => registry.get(loginKey, 'token')?.result.state === 'failed');
+      const log = await consumerLog(registry, lines);
+
+      expect(log).toContain(`X-Profile: ${maskedValue}`);
+      expect(log).not.toContain(token);
+    });
+
+    it('a stream first(…) capture is masked whole in a consumer log until a last(…) secret resolves', async () => {
+      const event = JSON.stringify({ type: 'SESSION', token });
+      const { api, release } = await held(
+        { 'Content-Type': 'application/x-ndjson' },
+        `${event}\n`,
+        '',
+      );
+      const lines = [
+        '# @name login',
+        '# @capture profile = first(type == "SESSION")',
+        '# @capture secret token = last(type == "SESSION").token',
+        `POST ${api.url}/login`,
+        '',
+        '###',
+        '# @name continue',
+        `GET ${api.url}/continue`,
+        'X-Profile: {{profile}}',
+      ];
+      const registry = new CaptureRegistry();
+      const login = startRun(capturing(registry, lines, 0), dependencies);
+      await waitFor(() => registry.get(loginKey, 'profile')?.result.state === 'resolved');
+
+      const pending = await consumerLog(registry, lines);
+      expect(registry.get(loginKey, 'token')?.result.state).toBe('pending');
+      release();
+      await login.done;
+      await waitFor(() => registry.get(loginKey, 'token')?.result.state === 'resolved');
+      const resolved = await consumerLog(registry, lines);
+
+      expect(pending).toContain(`X-Profile: ${maskedValue}`);
+      expect(pending).not.toContain(token);
+      expect(resolved).toContain(`X-Profile: {"type":"SESSION","token":"${maskedValue}"}`);
+      expect(resolved).not.toContain(token);
+    });
+  });
+
+  it('a keyword secret after a short provenance secret with the same text masks a later body capture in a consumer log', async () => {
+    const loginKey = `${documentUri}\n@login`;
+    const api = await track(
+      startHttpServer((request, response) => {
+        if (request.url === '/login') {
+          response.writeHead(200, {
+            'Content-Type': 'application/json',
+            'Set-Cookie': 'csrftoken=k7Q2x',
+          });
+          response.end(JSON.stringify({ csrf: 'k7Q2x', form: '<input value=k7Q2x>' }));
+          return;
+        }
+        response.end('ok');
+      }),
+    );
+    const lines = [
+      '# @name login',
+      '# @capture csrf = cookies.csrftoken',
+      '# @capture secret formToken = body.csrf',
+      '# @capture page = body.form',
+      `POST ${api.url}/login`,
+      '',
+      '###',
+      '# @name continue',
+      `GET ${api.url}/continue`,
+      'X-Page: {{page}}',
+    ];
+    const registry = new CaptureRegistry();
+    await startRun(capturing(registry, lines, 0), dependencies).done;
+    await waitFor(() => registry.get(loginKey, 'page')?.result.state === 'resolved');
+
+    const sent = await startRun(capturing(registry, lines, 1), dependencies).done;
+    const logged: string[] = [];
+    const record = (line: string): void => {
+      logged.push(line);
+    };
+    logRunEnd({ info: record, warn: record, debug: record }, sent);
+
+    expect(captureHint(registry.get(loginKey, 'page'))?.label).toBe(
+      `= <input value=${maskedValue}>`,
+    );
+    expect(logged.join('\n')).toContain(`X-Page: <input value=${maskedValue}>`);
+    expect(logged.join('\n')).not.toContain('k7Q2x');
+  });
+
+  it('a one-character cookie captured by provenance blanks no 1 in a body sibling, a consumer log or a response reference', async () => {
+    const loginKey = `${documentUri}\n@login`;
+    const api = await track(
+      startHttpServer((request, response) => {
+        if (request.url === '/login') {
+          response.writeHead(200, {
+            'Content-Type': 'application/json',
+            'Set-Cookie': 'remember_me=1',
+          });
+          response.end('{"items":[1,2,11]}');
+          return;
+        }
+        response.end('ok');
+      }),
+    );
+    const lines = [
+      '# @name login',
+      '# @capture remember = cookies.remember_me',
+      '# @capture items = body.items',
+      `POST ${api.url}/login`,
+      '',
+      '###',
+      '# @name continue',
+      `GET ${api.url}/continue`,
+      'X-Items: {{items}}',
+      'X-Body: {{login.response.body.*}}',
+    ];
+    const registry = new CaptureRegistry();
+    const login = startRun(capturing(registry, lines, 0), dependencies);
+    await login.done;
+    await waitFor(() => registry.get(loginKey, 'items')?.result.state === 'resolved');
+
+    const sent = await startRun(
+      capturing(registry, lines, 1, (key) => (key === loginKey ? login : undefined)),
+      dependencies,
+    ).done;
+    const logged: string[] = [];
+    const record = (line: string): void => {
+      logged.push(line);
+    };
+    logRunEnd({ info: record, warn: record, debug: record }, sent);
+
+    expect(captureHint(registry.get(loginKey, 'remember'))?.label).toBe(`= ${maskedValue}`);
+    expect(captureHint(registry.get(loginKey, 'items'))?.label).toBe('= [1,2,11]');
+    expect(logged.join('\n')).toContain('X-Items: [1,2,11]');
+    expect(logged.join('\n')).toContain('X-Body: {"items":[1,2,11]}');
+  });
+
+  describe('a secret capture whose text has a lone surrogate', () => {
+    const loginKey = `${documentUri}\n@login`;
+    const token = 'synthetic-\ud800-token';
+    const body =
+      '{"access_token":"synthetic-\\ud800-token","data":{"token":"synthetic-\\ud800-token"}}';
+    const orders = ['the secret declared first', 'the secret declared last'] as const;
+
+    it.each(orders)(
+      'with %s, every capture resolves, the sibling masks the token and a consumer sends it',
+      async (order) => {
+        const api = await track(
+          startHttpServer((request, response) => {
+            response.writeHead(200, { 'Content-Type': 'application/json' });
+            response.end(request.url === '/login' ? body : 'ok');
+          }),
+        );
+        const secret = '# @capture secret token = body.access_token';
+        const sibling = '# @capture data = body.data';
+        const lines = [
+          '# @name login',
+          ...(order === orders[0] ? [secret, sibling] : [sibling, secret]),
+          `POST ${api.url}/login`,
+          '',
+          '###',
+          '# @name continue',
+          `POST ${api.url}/continue`,
+          'Content-Type: application/json',
+          '',
+          '{"token":"{{login.token}}"}',
+        ];
+        const registry = new CaptureRegistry();
+
+        const login = await startRun(capturing(registry, lines, 0), dependencies).done;
+        await waitFor(
+          () =>
+            registry.get(loginKey, 'token')?.result.state !== 'pending' &&
+            registry.get(loginKey, 'data')?.result.state !== 'pending',
+        );
+        const sent = await startRun(capturing(registry, lines, 1), dependencies).done;
+        const logged: string[] = [];
+        const record = (line: string): void => {
+          logged.push(line);
+        };
+        logRunEnd({ info: record, warn: record, debug: record }, sent);
+
+        expect(login.status).toBe('completed');
+        expect(registry.get(loginKey, 'token')?.result).toMatchObject({
+          state: 'resolved',
+          text: token,
+        });
+        expect(registry.get(loginKey, 'data')?.result).toMatchObject({
+          state: 'resolved',
+          sensitive: [token],
+        });
+        expect(captureHint(registry.get(loginKey, 'data'))?.label).toBe(
+          `= {"token":"${maskedValue}"}`,
+        );
+        expect(sent.status).toBe('completed');
+        expect(sent.sensitiveValues).toContain(token);
+        expect(api.requests[1]?.body.toString()).toBe('{"token":"synthetic-\uFFFD-token"}');
+        expect(describeOutcome(sent)).not.toContain(token);
+      },
+    );
+  });
+
+  it('a secret with a lone surrogate inserted into a URL query is masked in the log and in the URL as sent', async () => {
+    const loginKey = `${documentUri}\n@login`;
+    const sentForm = 'synthetic-%EF%BF%BD-token';
+    const api = await track(
+      startHttpServer((request, response) => {
+        if (request.url === '/login') {
+          response.writeHead(200, { 'Content-Type': 'application/json' });
+          response.end('{"access_token":"synthetic-\\ud800-token"}');
+          return;
+        }
+        response.writeHead(200, { 'X-Echo-Url': request.url ?? '' });
+        response.end('ok');
+      }),
+    );
+    const lines = [
+      '# @name login',
+      '# @capture secret token = body.access_token',
+      `POST ${api.url}/login`,
+      '',
+      '###',
+      '# @name continue',
+      `GET ${api.url}/continue?token={{login.token}}`,
+    ];
+    const registry = new CaptureRegistry();
+    await startRun(capturing(registry, lines, 0), dependencies).done;
+    await waitFor(() => registry.get(loginKey, 'token')?.result.state === 'resolved');
+
+    const sent = await startRun(capturing(registry, lines, 1), dependencies).done;
+    const logged: string[] = [];
+    const record = (line: string): void => {
+      logged.push(line);
+    };
+    logRunEnd({ info: record, warn: record, debug: record }, sent);
+    const headers = renderHeadersDocument(sent);
+
+    expect(api.requests[1]?.url).toBe(`/continue?token=${sentForm}`);
+    expect(logged.join('\n')).toContain(`X-Echo-Url: /continue?token=${maskedValue}`);
+    expect(logged.join('\n')).not.toContain(sentForm);
+    expect(headers).toContain(`/continue?token=${maskedValue}`);
+    expect(headers).not.toContain(sentForm);
+  });
+
+  describe('a secret capture and the captures beside it in one run', () => {
+    const files = useCaptureWorker();
+    const loginKey = `${documentUri}\n@login`;
+    const token = 'synthetic-token-7f3a9c';
+    const data = { owner: 'synthetic-owner', token };
+    const body = JSON.stringify({ access_token: token, data });
+    const orders = ['the secret declared first', 'the secret declared last'] as const;
+
+    async function loggedIn(order: (typeof orders)[number]): Promise<{
+      registry: CaptureRegistry;
+      lines: string[];
+      login: RunHandle;
+    }> {
+      const api = await track(
+        startHttpServer((request, response) => {
+          response.writeHead(200, { 'Content-Type': 'application/json' });
+          response.end(request.url === '/login' ? body : 'ok');
+        }),
+      );
+      const secret = '# @capture secret token = body.access_token';
+      const siblings = ['# @capture profile = body', '# @capture data = body.data'];
+      const lines = [
+        '# @name login',
+        ...(order === orders[0] ? [secret, ...siblings] : [...siblings, secret]),
+        `POST ${api.url}/login`,
+        '',
+        '###',
+        '# @name continue',
+        `POST ${api.url}/continue`,
+        'X-Profile: {{profile}}',
+        'X-Data: {{login.response.body.$.data}}',
+      ];
+      const registry = new CaptureRegistry();
+      const login = startRun(capturing(registry, lines, 0), dependencies);
+      await login.done;
+      await waitFor(() =>
+        ['token', 'profile', 'data'].every(
+          (name) => registry.get(loginKey, name)?.result.state === 'resolved',
+        ),
+      );
+      return { registry, lines, login };
+    }
+
+    it.each(orders)(
+      'with %s, the token is masked in the hint, tooltip, strip, hover and completion of profile and data',
+      async (order) => {
+        const { registry, lines, login } = await loggedIn(order);
+        const posted: ToPanel[] = [];
+        const feed = new PanelFeed(login, {
+          readOnly: false,
+          streamView: 'events',
+          post: (message) => posted.push(message),
+          captures: registry,
+          timed: (work) => {
+            work();
+          },
+        });
+        feed.start();
+        const file = parseHttpFile(lines.join('\n'));
+        const sources: VariableSources = {
+          ...emptyVariables,
+          system: dependencies.system,
+          restricted: false,
+          captures: captureLookup(registry, documentUri, file, new Map()),
+        };
+        const completions = new Map(
+          captureCompletions(file, sources).map(({ label, detail }) => [label, detail]),
+        );
+        const strip = posted.find((message) => message.type === 'reset')?.captures ?? [];
+
+        for (const name of ['profile', 'data']) {
+          const hint = captureHint(registry.get(loginKey, name));
+          const hover = describeReference(file, name, sources);
+          const shown = {
+            hint: hint?.label,
+            tooltip: hint?.tooltip,
+            strip: strip.find((capture) => capture.name === name)?.text,
+            hover: hover.kind === 'value' ? hover.value : hover.kind,
+            completion: completions.get(name),
+            namedCompletion: completions.get(`login.${name}`),
+          };
+          for (const [where, text] of Object.entries(shown)) {
+            expect(text, `${name} ${where}`).toContain(maskedValue);
+            expect(text, `${name} ${where}`).not.toContain(token);
+          }
+        }
+        feed.pause();
+      },
+    );
+
+    it.each(orders)(
+      'with %s, a consumer that inserts {{profile}} or {{login.response.body.$.data}} logs the token masked',
+      async (order) => {
+        const { registry, lines, login } = await loggedIn(order);
+
+        const sent = await startRun(
+          capturing(
+            registry,
+            lines,
+            1,
+            (key) => (key === loginKey ? login : undefined),
+            {},
+            files().worker,
+          ),
+          dependencies,
+        ).done;
+        const logged: string[] = [];
+        const record = (line: string): void => {
+          logged.push(line);
+        };
+        logRunEnd({ info: record, warn: record, debug: record }, sent);
+
+        expect(sent.status).toBe('completed');
+        expect(sent.sent?.headers).toContainEqual(['X-Profile', body]);
+        expect(sent.sent?.headers).toContainEqual(['X-Data', JSON.stringify(data)]);
+        expect(logged.join('\n')).toContain(`X-Profile: {"access_token":"${maskedValue}"`);
+        expect(logged.join('\n')).toContain(`X-Data: ${maskedValue}`);
+        expect(logged.join('\n')).not.toContain(token);
+        expect(describeOutcome(sent)).not.toContain(token);
+      },
+    );
+  });
+
+  describe("masking by the producer's sensitive values", () => {
+    const secretHost = 'secret-host.example.test';
+    const token = 'synthetic-token-value';
+    const cookie = 'synthetic-cookie-value';
+    const loginKey = `${documentUri}\n@login`;
+
+    function echoServer(): Promise<LocalServer> {
+      return track(
+        startHttpServer((request, response) => {
+          response.writeHead(200, {
+            'Content-Type': 'application/json',
+            'Set-Cookie': `session=${cookie}; Path=/; HttpOnly`,
+          });
+          response.end(
+            JSON.stringify({
+              echo: `received ${request.headers.authorization ?? ''}`,
+              note: `cookie ${cookie}`,
+            }),
+          );
+        }),
+      );
+    }
+
+    function echoLines(api: LocalServer): string[] {
+      return [
+        '# @name login',
+        '# @capture echo = body.echo',
+        '# @capture session = cookies.session',
+        '# @capture note = body.note',
+        `POST ${api.url}/login`,
+        'Authorization: Bearer {{$secret token}}',
+        '',
+        '###',
+        '# @name continue',
+        `GET ${api.url}/continue`,
+        'X-Echo: {{login.echo}}',
+        'X-Note: {{login.note}}',
+      ];
+    }
+
+    async function loggedIn(registry: CaptureRegistry, lines: string[]): Promise<RunHandle> {
+      const login = startRun(
+        capturing(registry, lines, 0, undefined, { secrets: new Map([['token', token]]) }),
+        dependencies,
+      );
+      await login.done;
+      await waitFor(() =>
+        ['echo', 'session', 'note'].every(
+          (name) => registry.get(loginKey, name)?.result.state === 'resolved',
+        ),
+      );
+      return login;
+    }
+
+    it('a producer that fails with a message containing a resolved {{$secret}} host gives a capture reason with no secret', async () => {
+      const registry = new CaptureRegistry();
+      const lines = [
+        '# @name startRun',
+        '# @capture threadId = first(type == "RUN_STARTED").threadId',
+        'GET http://{{$secret host}}/agent/run',
+        '',
+        '###',
+        '# @name continue',
+        'GET http://127.0.0.1:9/threads/{{startRun.threadId}}',
+      ];
+      const unresolved: typeof dependencies = {
+        ...dependencies,
+        transport: {
+          send: (request) =>
+            Promise.reject(new Error(`getaddrinfo ENOTFOUND ${request.url.hostname}`)),
+        },
+      };
+
+      const producer = await startRun(
+        capturing(registry, lines, 0, undefined, { secrets: new Map([['host', secretHost]]) }),
+        unresolved,
+      ).done;
+      await waitFor(() => registry.get(startKey, 'threadId')?.result.state === 'failed');
+      const consumer = await startRun(capturing(registry, lines, 1), dependencies).done;
+
+      expect(producer.failure?.message).toContain(secretHost);
+      const result = registry.get(startKey, 'threadId')?.result;
+      const reason = result?.state === 'failed' ? result.reason : '';
+      expect(reason).toContain('startRun failed before threadId resolved');
+      expect(reason).toContain(maskedValue);
+      expect(reason).not.toContain(secretHost);
+      const blocked = consumer.problems.map((problem) => problem.message).join('\n');
+      expect(consumer.status).toBe('blocked');
+      expect(blocked).toContain('startRun › threadId failed');
+      expect(blocked).toContain(maskedValue);
+      expect(blocked).not.toContain(secretHost);
+    });
+
+    it("a non-secret capture whose text contains the producer's secret header value or its Set-Cookie value is masked in the strip, the hint, the tooltip and the hover", async () => {
+      const api = await echoServer();
+      const registry = new CaptureRegistry();
+      const lines = echoLines(api);
+      const login = await loggedIn(registry, lines);
+      const posted: ToPanel[] = [];
+      const feed = new PanelFeed(login, {
+        readOnly: false,
+        streamView: 'events',
+        post: (message) => posted.push(message),
+        captures: registry,
+        timed: (work) => {
+          work();
+        },
+      });
+      feed.start();
+      const file = parseHttpFile(lines.join('\n'));
+      const sources: VariableSources = {
+        ...emptyVariables,
+        system: dependencies.system,
+        restricted: false,
+        captures: captureLookup(registry, documentUri, file, new Map()),
+      };
+
+      const strip = posted.find((message) => message.type === 'reset')?.captures ?? [];
+      expect(strip).toEqual([
+        { name: 'echo', state: 'resolved', text: `received Bearer ${maskedValue}` },
+        { name: 'session', state: 'resolved', text: maskedValue },
+        { name: 'note', state: 'resolved', text: `cookie ${maskedValue}` },
+      ]);
+      for (const name of ['echo', 'session', 'note']) {
+        const hint = captureHint(registry.get(loginKey, name));
+        const hover = describeReference(file, `login.${name}`, sources);
+        const shown = [
+          hint?.label ?? '',
+          hint?.tooltip ?? '',
+          hover.kind === 'value' ? hover.value : '',
+        ].join('\n');
+        expect(shown).toContain(maskedValue);
+        expect(shown).not.toContain(token);
+        expect(shown).not.toContain(cookie);
+      }
+      feed.pause();
+    });
+
+    it('a consumer that sends that capture logs it masked', async () => {
+      const api = await echoServer();
+      const registry = new CaptureRegistry();
+      const lines = echoLines(api);
+      const login = await loggedIn(registry, lines);
+
+      const sent = await startRun(
+        capturing(registry, lines, 1, (key) => (key === loginKey ? login : undefined)),
+        dependencies,
+      ).done;
+      const logged: string[] = [];
+      const record = (line: string): void => {
+        logged.push(line);
+      };
+      logRunEnd({ info: record, warn: record, debug: record }, sent);
+
+      expect(sent.sent?.headers).toContainEqual(['X-Echo', `received Bearer ${token}`]);
+      expect(sent.sent?.headers).toContainEqual(['X-Note', `cookie ${cookie}`]);
+      expect(logged.join('\n')).toContain(`X-Echo: received Bearer ${maskedValue}`);
+      expect(logged.join('\n')).toContain(`X-Note: cookie ${maskedValue}`);
+      expect(logged.join('\n')).not.toContain(token);
+      expect(logged.join('\n')).not.toContain(cookie);
+      expect(describeOutcome(sent)).not.toContain(token);
+    });
+
+    describe('values taken from response headers', () => {
+      async function shownAndLogged(
+        headers: Record<string, string | string[]>,
+        threadText: string,
+      ): Promise<{ strip: string; hint: string; logged: string }> {
+        const api = await track(
+          startHttpServer((_request, response) => {
+            response.writeHead(200, { 'Content-Type': 'application/json', ...headers });
+            response.end(JSON.stringify({ threadId: threadText }));
+          }),
+        );
+        const registry = new CaptureRegistry();
+        const lines = [
+          '# @name login',
+          '# @capture threadId = body.threadId',
+          `POST ${api.url}/login`,
+          '',
+          '###',
+          '# @name continue',
+          `GET ${api.url}/continue`,
+          'X-Thread: {{login.threadId}}',
+        ];
+        const login = startRun(capturing(registry, lines, 0), dependencies);
+        await login.done;
+        await waitFor(() => registry.get(loginKey, 'threadId')?.result.state === 'resolved');
+        const posted: ToPanel[] = [];
+        const feed = new PanelFeed(login, {
+          readOnly: false,
+          streamView: 'events',
+          post: (message) => posted.push(message),
+          captures: registry,
+          timed: (work) => {
+            work();
+          },
+        });
+        feed.start();
+        feed.pause();
+        const sent = await startRun(
+          capturing(registry, lines, 1, (key) => (key === loginKey ? login : undefined)),
+          dependencies,
+        ).done;
+        const logged: string[] = [];
+        const record = (line: string): void => {
+          logged.push(line);
+        };
+        logRunEnd({ info: record, warn: record, debug: record }, sent);
+        const reset = posted.find((message) => message.type === 'reset');
+        return {
+          strip: reset?.captures[0]?.text ?? '',
+          hint: captureHint(registry.get(loginKey, 'threadId'))?.label ?? '',
+          logged: logged.join('\n'),
+        };
+      }
+
+      it("Set-Cookie: consent=1 does not mask the 1s in a capture or in a consumer's log line", async () => {
+        const shown = await shownAndLogged({ 'Set-Cookie': 'consent=1' }, 'thread-1');
+
+        expect(shown.strip).toBe('thread-1');
+        expect(shown.hint).toBe('= thread-1');
+        expect(shown.logged).toContain('X-Thread: thread-1');
+        expect(shown.logged).toContain('127.0.0.1');
+      });
+
+      it("a cookie value of 8 characters or more is still masked in the strip, the hint and the consumer's log", async () => {
+        const shown = await shownAndLogged(
+          { 'Set-Cookie': ['session=cookie08', 'consent=1'] },
+          'thread-1 cookie08',
+        );
+
+        expect(shown.strip).toBe(`thread-1 ${maskedValue}`);
+        expect(shown.hint).toBe(`= thread-1 ${maskedValue}`);
+        expect(shown.logged).toContain(`X-Thread: thread-1 ${maskedValue}`);
+        expect(shown.logged).not.toContain('cookie08');
+      });
+
+      it('a sensitive response header of 8 characters or more is still masked, a shorter one is not', async () => {
+        const shown = await shownAndLogged(
+          { 'X-Session-Token': 'token-08', 'X-Api-Key': 'key-007' },
+          'thread-1 token-08 key-007',
+        );
+
+        expect(shown.strip).toBe(`thread-1 ${maskedValue} key-007`);
+        expect(shown.hint).toBe(`= thread-1 ${maskedValue} key-007`);
+        expect(shown.logged).toContain(`X-Thread: thread-1 ${maskedValue} key-007`);
+        expect(shown.logged).not.toContain('token-08');
+      });
+
+      it('a session cookie value under 8 characters is not carried into a body capture, and consent=1 still does not blank the 1s', async () => {
+        const shown = await shownAndLogged(
+          { 'Set-Cookie': ['session=q7x9z', 'consent=1'] },
+          'thread-1 q7x9z',
+        );
+
+        expect(shown.strip).toBe('thread-1 q7x9z');
+        expect(shown.hint).toBe('= thread-1 q7x9z');
+        expect(shown.logged).toContain('X-Thread: thread-1 q7x9z');
+        expect(shown.logged).toContain('127.0.0.1');
+      });
+    });
+
+    describe('captures that read a sensitive header or a cookie', () => {
+      async function produced(
+        headers: Record<string, string | string[]>,
+        captures: string[],
+      ): Promise<{ registry: CaptureRegistry; login: RunHandle; lines: string[] }> {
+        const api = await track(
+          startHttpServer((_request, response) => {
+            response.writeHead(200, { 'Content-Type': 'application/json', ...headers });
+            response.end('{}');
+          }),
+        );
+        const registry = new CaptureRegistry();
+        const lines = [
+          '# @name login',
+          ...captures.map((capture) => `# @capture ${capture}`),
+          `POST ${api.url}/login`,
+          '',
+          '###',
+          '# @name continue',
+          `GET ${api.url}/continue`,
+        ];
+        const login = startRun(capturing(registry, lines, 0), dependencies);
+        await login.done;
+        await waitFor(() =>
+          registry.forRequest(loginKey).every((entry) => entry.result.state === 'resolved'),
+        );
+        return { registry, login, lines };
+      }
+
+      it('cookies.sid with a 4-character value resolves secret and shows •••••• in the strip, the hint and the hover', async () => {
+        const { registry, login, lines } = await produced({ 'Set-Cookie': 'sid=q7x9' }, [
+          'sid = cookies.sid',
+        ]);
+        const posted: ToPanel[] = [];
+        const feed = new PanelFeed(login, {
+          readOnly: false,
+          streamView: 'events',
+          post: (message) => posted.push(message),
+          captures: registry,
+          timed: (work) => {
+            work();
+          },
+        });
+        feed.start();
+        feed.pause();
+        const file = parseHttpFile(lines.join('\n'));
+        const sources: VariableSources = {
+          ...emptyVariables,
+          system: dependencies.system,
+          restricted: false,
+          captures: captureLookup(registry, documentUri, file, new Map()),
+        };
+        const hover = describeReference(file, 'login.sid', sources);
+
+        expect(registry.get(loginKey, 'sid')?.result).toMatchObject({
+          state: 'resolved',
+          text: 'q7x9',
+          secret: true,
+        });
+        expect(posted.find((message) => message.type === 'reset')?.captures).toEqual([
+          { name: 'sid', state: 'resolved', text: maskedValue },
+        ]);
+        expect(captureHint(registry.get(loginKey, 'sid'))?.label).toBe(`= ${maskedValue}`);
+        expect(hover).toMatchObject({ kind: 'value', value: maskedValue, sensitive: true });
+      });
+
+      it('headers["X-Api-Key"] with a 6-character value resolves secret', async () => {
+        const { registry } = await produced({ 'X-Api-Key': 'k3y-06' }, [
+          'apiValue = headers["X-Api-Key"]',
+        ]);
+
+        expect(registry.get(loginKey, 'apiValue')?.result).toMatchObject({
+          state: 'resolved',
+          text: 'k3y-06',
+          secret: true,
+        });
+        expect(registry.get(loginKey, 'apiValue')?.secret).toBe(true);
+      });
+
+      it('cookies.theme = dark is not secret by provenance and shows dark', async () => {
+        const { registry } = await produced({ 'Set-Cookie': 'theme=dark' }, [
+          'theme = cookies.theme',
+        ]);
+
+        expect(registry.get(loginKey, 'theme')?.result).toMatchObject({
+          state: 'resolved',
+          text: 'dark',
+          secret: false,
+        });
+        expect(registry.get(loginKey, 'theme')?.secret).toBe(false);
+        expect(captureHint(registry.get(loginKey, 'theme'))?.label).toBe('= dark');
+      });
+    });
+
+    describe('header and cookie values by source and cookie name', () => {
+      interface Displays {
+        strip: string;
+        hint: string;
+        tooltip: string;
+        hover: string;
+        completion: string;
+      }
+
+      interface Exchanged {
+        registry: CaptureRegistry;
+        strip: ReadonlyMap<string, string>;
+        shown: (name: string) => Displays;
+        logged: string;
+        sent: RunSnapshot;
+      }
+
+      async function exchanged(options: {
+        headers: Record<string, string | string[]>;
+        body?: Record<string, unknown>;
+        captures: string[];
+        consumer: string[];
+        variables?: Partial<RunInput['variables']>;
+      }): Promise<Exchanged> {
+        const api = await track(
+          startHttpServer((request, response) => {
+            if (request.url !== '/login') {
+              response.writeHead(200, { 'Content-Type': 'text/plain' });
+              response.end('done');
+              return;
+            }
+            response.writeHead(200, { 'Content-Type': 'application/json', ...options.headers });
+            response.end(
+              JSON.stringify(
+                options.body ?? { echo: `received ${request.headers.authorization ?? ''}` },
+              ),
+            );
+          }),
+        );
+        const registry = new CaptureRegistry();
+        const lines = [
+          '# @name login',
+          ...options.captures.map((capture) => `# @capture ${capture}`),
+          `POST ${api.url}/login`,
+          'Authorization: Bearer {{$secret token}}',
+          '',
+          '###',
+          '# @name continue',
+          `GET ${api.url}/continue`,
+          ...options.consumer,
+        ];
+        const variables = options.variables ?? { secrets: new Map([['token', 'tok']]) };
+        const login = startRun(capturing(registry, lines, 0, undefined, variables), dependencies);
+        await login.done;
+        await waitFor(() =>
+          registry.forRequest(loginKey).every((entry) => entry.result.state !== 'pending'),
+        );
+        const posted: ToPanel[] = [];
+        const feed = new PanelFeed(login, {
+          readOnly: false,
+          streamView: 'events',
+          post: (message) => posted.push(message),
+          captures: registry,
+          timed: (work) => {
+            work();
+          },
+        });
+        feed.start();
+        feed.pause();
+        const file = parseHttpFile(lines.join('\n'));
+        const lookup = captureLookup(registry, documentUri, file, new Map());
+        const sources: VariableSources = {
+          ...emptyVariables,
+          system: dependencies.system,
+          restricted: false,
+          captures: lookup,
+        };
+        const completions = new Map(
+          captureCompletions(file, sources).map(({ label, detail }) => [label, detail]),
+        );
+        const sent = await startRun(
+          capturing(registry, lines, 1, (key) => (key === loginKey ? login : undefined)),
+          dependencies,
+        ).done;
+        const logged: string[] = [];
+        const record = (line: string): void => {
+          logged.push(line);
+        };
+        logRunEnd({ info: record, warn: record, debug: record }, sent);
+        const strip = new Map(
+          (posted.find((message) => message.type === 'reset')?.captures ?? []).map(
+            (capture) => [capture.name, capture.text] as const,
+          ),
+        );
+        return {
+          registry,
+          strip,
+          logged: logged.join('\n'),
+          sent,
+          shown: (name) => {
+            const hint = captureHint(registry.get(loginKey, name));
+            const hover = describeReference(file, `login.${name}`, sources);
+            return {
+              strip: strip.get(name) ?? '',
+              hint: hint?.label ?? '',
+              tooltip: hint?.tooltip ?? '',
+              hover: hover.kind === 'value' ? hover.value : '',
+              completion: completions.get(`login.${name}`) ?? '',
+            };
+          },
+        };
+      }
+
+      function failureOf(registry: CaptureRegistry, name: string): string {
+        const result = registry.get(loginKey, name)?.result;
+        return result?.state === 'failed' ? result.reason : '';
+      }
+
+      function dateOf(sent: RunSnapshot): string {
+        return sent.head?.headers.find(([name]) => name.toLowerCase() === 'date')?.[1] ?? '';
+      }
+
+      it('cookie_consent=1, viewed_cookie_policy=yes and cookie_notice_accepted=true blank no 1, yes or true in captures, failure reasons or a consumer log', async () => {
+        const { registry, strip, logged, sent } = await exchanged({
+          headers: {
+            'Set-Cookie': [
+              'cookie_consent=1',
+              'viewed_cookie_policy=yes',
+              'cookie_notice_accepted=true',
+            ],
+          },
+          body: { threadId: 'thread-1 yes true', items: [1] },
+          captures: [
+            'threadId = body.threadId',
+            'jar = cookies',
+            'consent = cookies.cookie_consent',
+            'itemReason = body.items[3]',
+            'patternReason = body.threadId | match(/yes-true-1/)',
+            'cookieReason = cookies.viewed_cookie_policy | match(/yes-true-1/)',
+          ],
+          consumer: ['X-Thread: {{login.threadId}}', 'X-Consent: {{login.consent}}'],
+        });
+
+        expect(strip.get('threadId')).toBe('thread-1 yes true');
+        expect(strip.get('jar')).toBe(
+          '{"cookie_consent":"1","viewed_cookie_policy":"yes","cookie_notice_accepted":"true"}',
+        );
+        expect(strip.get('consent')).toBe('1');
+        expect(registry.get(loginKey, 'jar')?.secret).toBe(false);
+        expect(registry.get(loginKey, 'consent')?.secret).toBe(false);
+        expect(captureHint(registry.get(loginKey, 'threadId'))?.label).toBe('= thread-1 yes true');
+        expect(failureOf(registry, 'itemReason')).toContain('(the list has 1 item)');
+        expect(failureOf(registry, 'patternReason')).toContain('/yes-true-1/');
+        expect(failureOf(registry, 'cookieReason')).toContain('/yes-true-1/');
+        expect(strip.get('itemReason')).toContain('(the list has 1 item)');
+        expect(strip.get('cookieReason')).toContain('/yes-true-1/');
+        expect(sent.status).toBe('completed');
+        expect(logged).toContain('X-Thread: thread-1 yes true');
+        expect(logged).toContain('X-Consent: 1');
+        expect(logged).toContain(`Host: ${new URL(sent.sent?.url ?? '').host}`);
+        expect(dateOf(sent)).not.toBe('');
+        expect(logged).toContain(`Date: ${dateOf(sent)}`);
+        expect(logged).not.toContain(maskedValue);
+      });
+
+      it('cookies.consent with value 1 is not secret, shows 1 and leaves a consumer’s 1s alone', async () => {
+        const { registry, shown, logged, sent } = await exchanged({
+          headers: { 'Set-Cookie': ['consent=1', 'theme=dark'] },
+          captures: ['consent = cookies.consent', 'theme = cookies.theme'],
+          consumer: ['X-Consent: {{login.consent}}', 'X-Theme: {{login.theme}}'],
+        });
+
+        expect(registry.get(loginKey, 'consent')?.result).toMatchObject({
+          state: 'resolved',
+          text: '1',
+          secret: false,
+        });
+        expect(shown('consent')).toMatchObject({
+          strip: '1',
+          hint: '= 1',
+          hover: '1',
+          completion: 'login › consent = 1',
+        });
+        expect(shown('theme')).toMatchObject({ strip: 'dark', hint: '= dark', hover: 'dark' });
+        expect(sent.sensitiveValues).toEqual([]);
+        expect(logged).toContain('X-Consent: 1');
+        expect(logged).toContain('X-Theme: dark');
+        expect(logged).toContain(`Host: ${new URL(sent.sent?.url ?? '').host}`);
+      });
+
+      it('cookies.sid with value q7Z and cookies["session"] resolve secret', async () => {
+        const { registry, strip } = await exchanged({
+          headers: { 'Set-Cookie': ['sid=q7Z', 'session=s3s'] },
+          captures: ['sidValue = cookies.sid', 'sessionValue = cookies["session"]'],
+          consumer: [],
+        });
+
+        for (const [name, text] of [
+          ['sidValue', 'q7Z'],
+          ['sessionValue', 's3s'],
+        ] as const) {
+          expect(registry.get(loginKey, name)?.secret, name).toBe(true);
+          expect(registry.get(loginKey, name)?.result, name).toMatchObject({
+            state: 'resolved',
+            text,
+            secret: true,
+          });
+          expect(strip.get(name), name).toBe(maskedValue);
+        }
+      });
+
+      it('PHPSESSID, JSESSIONID, sessionid and csrftoken under 8 characters resolve secret and carry inside a bare cookies capture, while consent, policy and theme cookies blank nothing', async () => {
+        const credentials = [
+          ['PHPSESSID', 'php-01'],
+          ['JSESSIONID', 'js-02'],
+          ['sessionid', 'sid-03'],
+          ['csrftoken', 'csrf04'],
+        ] as const;
+        const { registry, strip, logged, sent } = await exchanged({
+          headers: {
+            'Set-Cookie': [
+              ...credentials.map(([name, value]) => `${name}=${value}`),
+              'cookie_consent=1',
+              'viewed_cookie_policy=yes',
+              'theme=dark',
+            ],
+          },
+          captures: [
+            'phpValue = cookies.PHPSESSID',
+            'javaValue = cookies.JSESSIONID',
+            'djangoValue = cookies.sessionid',
+            'csrfValue = cookies.csrftoken',
+            'jar = cookies',
+            'consent = cookies.cookie_consent',
+            'policy = cookies.viewed_cookie_policy',
+            'theme = cookies.theme',
+          ],
+          consumer: [
+            'X-Consent: {{login.consent}} thread-1',
+            'X-Policy: {{login.policy}}',
+            'X-Theme: {{login.theme}}',
+          ],
+          variables: { secrets: new Map([['token', 'synthetic-bearer']]) },
+        });
+
+        for (const [index, [, value]] of credentials.entries()) {
+          const name = ['phpValue', 'javaValue', 'djangoValue', 'csrfValue'][index] ?? '';
+          expect(registry.get(loginKey, name)?.secret, name).toBe(true);
+          expect(registry.get(loginKey, name)?.result, name).toMatchObject({
+            state: 'resolved',
+            text: value,
+            secret: true,
+          });
+          expect(strip.get(name), name).toBe(maskedValue);
+        }
+        expect(registry.get(loginKey, 'jar')?.result).toMatchObject({
+          state: 'resolved',
+          secret: false,
+          sensitive: credentials.map(([, value]) => value),
+        });
+        expect(strip.get('jar')).toBe(
+          `{"PHPSESSID":"${maskedValue}","JSESSIONID":"${maskedValue}","sessionid":"${maskedValue}","csrftoken":"${maskedValue}","cookie_consent":"1","viewed_cookie_policy":"yes","theme":"dark"}`,
+        );
+        for (const [name, text] of [
+          ['consent', '1'],
+          ['policy', 'yes'],
+          ['theme', 'dark'],
+        ] as const) {
+          expect(registry.get(loginKey, name)?.secret, name).toBe(false);
+          expect(strip.get(name), name).toBe(text);
+        }
+        expect(sent.sensitiveValues).toEqual([]);
+        expect(logged).toContain('X-Consent: 1 thread-1');
+        expect(logged).toContain('X-Policy: yes');
+        expect(logged).toContain('X-Theme: dark');
+        expect(logged).toContain(`Host: ${new URL(sent.sent?.url ?? '').host}`);
+        expect(logged).toContain(`Date: ${dateOf(sent)}`);
+        expect(logged).not.toContain(maskedValue);
+      });
+
+      it('sid=q7Z is not carried into a body.note capture, but is carried and masked inside a bare cookies capture', async () => {
+        const { registry, strip, logged } = await exchanged({
+          headers: { 'Set-Cookie': 'sid=q7Z' },
+          body: { note: 'note q7Z' },
+          captures: ['note = body.note', 'jar = cookies'],
+          consumer: ['X-Note: {{login.note}}'],
+        });
+
+        expect(registry.get(loginKey, 'note')?.result).toMatchObject({ sensitive: [] });
+        expect(strip.get('note')).toBe('note q7Z');
+        expect(logged).toContain('X-Note: note q7Z');
+        expect(registry.get(loginKey, 'jar')?.result).toMatchObject({
+          state: 'resolved',
+          text: '{"sid":"q7Z"}',
+          secret: false,
+          sensitive: ['q7Z'],
+        });
+        expect(strip.get('jar')).toBe(`{"sid":"${maskedValue}"}`);
+        expect(captureHint(registry.get(loginKey, 'jar'))?.label).toBe(
+          `= {"sid":"${maskedValue}"}`,
+        );
+      });
+
+      it('short sensitive header values read through default(…) or a where filter are masked in every display and in the consumer log', async () => {
+        const values = ['k3y-06', 't0k-05', 'a7h-04'];
+        const { shown, logged } = await exchanged({
+          headers: { 'X-Api-Key': 'k3y-06', 'X-Session-Token': 't0k-05', Authorization: 'a7h-04' },
+          captures: [
+            'viaDefault = (headers | default("x"))["x-api-key"]',
+            'viaNull = (headers | default(null))["x-session-token"]',
+            'viaMember = (headers | default("x")).authorization',
+            'viaWhere = headers[?(@ == "k3y-06")]',
+          ],
+          consumer: [
+            'X-Via-Default: {{login.viaDefault}}',
+            'X-Via-Null: {{login.viaNull}}',
+            'X-Via-Member: {{login.viaMember}}',
+            'X-Via-Where: {{login.viaWhere}}',
+          ],
+        });
+
+        for (const name of ['viaDefault', 'viaNull', 'viaMember', 'viaWhere']) {
+          for (const [surface, display] of Object.entries(shown(name))) {
+            expect(display, `${name} ${surface}`).toContain(maskedValue);
+            for (const value of values) {
+              expect(display, `${name} ${surface}`).not.toContain(value);
+            }
+          }
+        }
+        expect(logged).toContain(`X-Via-Default: ${maskedValue}`);
+        expect(logged).toContain(`X-Via-Null: ${maskedValue}`);
+        expect(logged).toContain(`X-Via-Member: ${maskedValue}`);
+        expect(logged).toContain(`X-Via-Where: ["${maskedValue}"]`);
+        for (const value of values) {
+          expect(logged).not.toContain(value);
+        }
+      });
+
+      it('a sensitive header value with a quote is masked inside a bare headers capture and in the consumer log', async () => {
+        const { strip, logged, sent } = await exchanged({
+          headers: { 'X-Api-Key': 'k3y"quoted-08' },
+          captures: ['all = headers'],
+          consumer: ['X-All: {{login.all}}'],
+        });
+
+        expect(sent.sent?.headers.find(([name]) => name === 'X-All')?.[1]).toContain(
+          '"x-api-key":"k3y\\"quoted-08"',
+        );
+        expect(strip.get('all')).toContain(`"x-api-key":"${maskedValue}"`);
+        expect(strip.get('all')).not.toContain('quoted-08');
+        expect(logged).toContain(`"x-api-key":"${maskedValue}"`);
+        expect(logged).not.toContain('quoted-08');
+      });
+
+      it('consent=1 still blanks nothing, and the request’s sensitive values keep masking at any length', async () => {
+        const { strip, logged, sent } = await exchanged({
+          headers: { 'Set-Cookie': 'consent=1' },
+          captures: ['echo = body.echo', 'jar = cookies', 'consent = cookies.consent'],
+          consumer: ['X-Echo: {{login.echo}} thread-1', 'X-Consent: {{login.consent}}'],
+        });
+
+        expect(strip.get('echo')).toBe(`received Bearer ${maskedValue}`);
+        expect(strip.get('jar')).toBe('{"consent":"1"}');
+        expect(strip.get('consent')).toBe('1');
+        expect(sent.sensitiveValues).toEqual(['tok']);
+        expect(logged).toContain(`X-Echo: received Bearer ${maskedValue} thread-1`);
+        expect(logged).toContain('X-Consent: 1');
+        expect(logged).toContain(`Host: ${new URL(sent.sent?.url ?? '').host}`);
+        expect(logged).not.toContain('Bearer tok');
+      });
+    });
   });
 });

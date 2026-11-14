@@ -1,9 +1,11 @@
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { benchmarkEnabled } from '../../benchmark/contract';
+import type { CaptureRegistry } from '../../capture/registry';
+import { CaptureService } from '../../capture/service';
 import type { StreamSession } from '../../events/session';
 import { SpillArea } from '../../events/spill';
-import type { HttpFile, HttpRequest } from '../../http-file/model';
+import type { HttpFile, HttpRequest, Range } from '../../http-file/model';
 import { fileSafeName, formatBytes, requestLabel, saveExtension } from '../../response/labels';
 import { historyItems, type HistoryItem } from '../../response/run-status';
 import type { BodyFileContext } from '../../runs/body-files';
@@ -12,6 +14,7 @@ import { RunHistory } from '../../runs/history';
 import { isActive, RunRegistry } from '../../runs/registry';
 import { sessionShutdown } from '../../runs/shutdown';
 import {
+  findRequest,
   requestKey,
   requestKeyDocument,
   type RunDependencies,
@@ -26,7 +29,7 @@ import { PanelProbe, registerBenchmarkCommands } from '../benchmark/commands';
 import type { EnvironmentStore } from '../environments/environment-store';
 import type { ParseCache } from '../language/parse-cache';
 import { httpSelector } from '../language/register';
-import { logRunEnd, logRunStart } from '../log';
+import { logRunEnd, logRunStart, logRunWaiting, recordingLog, type RunLog } from '../log';
 import { ResponsePanels } from '../response/panels';
 import { closeResponseTabs, ResponsePresenter } from '../response/presenter';
 import { ResponseFileSystem, responseScheme } from '../response/response-file-system';
@@ -34,7 +37,12 @@ import { RequestCodeLenses } from './code-lens';
 import { RunStatusBar } from './status-bar';
 import type { SecretStore } from '../secrets/secret-store';
 import { liveSystemContext } from '../system-context';
-import { readRequestSettings, readSpillLimits, readStreamSettings } from './settings';
+import {
+  readCaptureSettings,
+  readRequestSettings,
+  readSpillLimits,
+  readStreamSettings,
+} from './settings';
 import { variablesFor } from './variables';
 
 interface Target {
@@ -42,6 +50,19 @@ interface Target {
   file: HttpFile;
   request: HttpRequest;
   key: string;
+}
+
+interface RunAction {
+  title: string;
+  label: string;
+  producer: string;
+}
+
+interface BlockedToast {
+  message: string;
+  actions: string[];
+  run: RunAction | undefined;
+  range: Range;
 }
 
 const sendableSchemes: ReadonlySet<string> = new Set(['file', 'untitled']);
@@ -128,21 +149,75 @@ async function openSpillArea(context: vscode.ExtensionContext): Promise<SpillAre
   }
 }
 
-async function showBlocked(document: vscode.TextDocument, run: RunSnapshot): Promise<void> {
+function producerAction(
+  document: vscode.TextDocument,
+  file: HttpFile,
+  producer: string | undefined,
+): RunAction | undefined {
+  if (producer === undefined) {
+    return undefined;
+  }
+  const request = findRequest(document.uri.toString(), file, producer);
+  if (request === undefined) {
+    return undefined;
+  }
+  const label = requestLabel(request);
+  return { title: `Run ${label}`, label, producer };
+}
+
+function blockedToast(
+  document: vscode.TextDocument,
+  file: HttpFile,
+  run: RunSnapshot,
+): BlockedToast | undefined {
   const problem = run.problems[0];
   if (!problem) {
+    return undefined;
+  }
+  const action = producerAction(document, file, problem.producer);
+  return {
+    message: `Not sent: ${problem.message} (line ${String(problem.range.start.line + 1)}).`,
+    actions: action === undefined ? ['Go to Line'] : [action.title, 'Go to Line'],
+    run: action,
+    range: problem.range,
+  };
+}
+
+async function runProducer(uri: vscode.Uri, cache: ParseCache, run: RunAction): Promise<void> {
+  const document = await vscode.workspace.openTextDocument(uri);
+  const request = findRequest(uri.toString(), cache.get(document), run.producer);
+  if (request === undefined) {
+    void vscode.window.showWarningMessage(
+      `${run.label} was not found in ${path.basename(uri.path)}, so it was not sent.`,
+    );
     return;
   }
-  const { start, end } = problem.range;
-  const choice = await vscode.window.showErrorMessage(
-    `Not sent: ${problem.message} (line ${String(start.line + 1)}).`,
-    'Go to Line',
+  await vscode.commands.executeCommand(
+    'streamscope.sendRequest',
+    uri,
+    request.requestLine.range.start.line,
   );
+}
+
+async function showBlocked(
+  document: vscode.TextDocument,
+  toast: BlockedToast,
+  cache: ParseCache,
+): Promise<void> {
+  const choice = await vscode.window.showErrorMessage(toast.message, ...toast.actions);
+  const { start, end } = toast.range;
   if (choice === 'Go to Line') {
     await vscode.window.showTextDocument(document, {
       selection: new vscode.Range(start.line, start.character, end.line, end.character),
     });
+  } else if (toast.run !== undefined && choice === toast.run.title) {
+    await runProducer(document.uri, cache, toast.run);
   }
+}
+
+export interface RequestFeatures {
+  shutdown: () => Promise<void>;
+  hasRun: (key: string) => boolean;
 }
 
 export function registerRequestFeatures(
@@ -151,8 +226,14 @@ export function registerRequestFeatures(
   cache: ParseCache,
   environments: EnvironmentStore,
   secrets: SecretStore,
-): () => Promise<void> {
-  const confirmRestrictedSend = confirmOnce(async () => {
+  captures: CaptureRegistry,
+): RequestFeatures {
+  const testMode = context.extensionMode === vscode.ExtensionMode.Test;
+  const loggedLines: string[] = [];
+  const runLog: RunLog = testMode ? recordingLog(log, loggedLines) : log;
+  const restrictedSends = { checks: 0, questions: 0 };
+  const restrictedAnswers: ((send: boolean) => void)[] = [];
+  const askRestrictedSend = async (): Promise<boolean> => {
     const choice = await vscode.window.showWarningMessage(
       'Send requests from this restricted workspace?',
       {
@@ -163,14 +244,35 @@ export function registerRequestFeatures(
       'Send',
     );
     return choice === 'Send';
-  });
-  const testMode = context.extensionMode === vscode.ExtensionMode.Test;
+  };
+  const confirmRestrictedSend = confirmOnce(
+    testMode
+      ? () => {
+          restrictedSends.questions += 1;
+          return new Promise<boolean>((resolve) => {
+            restrictedAnswers.push(resolve);
+          });
+        }
+      : askRestrictedSend,
+  );
+  const checkRestrictedSend = testMode
+    ? (): Promise<boolean> => {
+        restrictedSends.checks += 1;
+        return confirmRestrictedSend();
+      }
+    : confirmRestrictedSend;
   const spill = openSpillArea(context);
   const files = new ResponseFileSystem();
   const presenter = new ResponsePresenter(
     files,
     vscode.Uri.joinPath(context.extensionUri, 'dist', 'format-worker.js').fsPath,
   );
+  const captureWorker = vscode.Uri.joinPath(
+    context.extensionUri,
+    'dist',
+    'capture-worker.js',
+  ).fsPath;
+  let lastBlocked: { uri: vscode.Uri; toast: BlockedToast } | undefined;
   const dependencies: RunDependencies = {
     transport: new NodeTransport(),
     system: liveSystemContext,
@@ -249,6 +351,7 @@ export function registerRequestFeatures(
     extensionUri: context.extensionUri,
     state: context.globalState,
     presenter,
+    captures,
     benchmark,
     save: (run, documentUri) => saveRun(run, documentUri, undefined),
   });
@@ -342,6 +445,11 @@ export function registerRequestFeatures(
       void vscode.window.showErrorMessage(limits.message);
       return;
     }
+    const captureSettings = readCaptureSettings();
+    if (!captureSettings.ok) {
+      void vscode.window.showErrorMessage(captureSettings.message);
+      return;
+    }
     const { document, file, request, key } = found;
     const prepared = await variablesFor(document, file, request, environments, secrets);
     if (!prepared) {
@@ -349,7 +457,7 @@ export function registerRequestFeatures(
     }
     const restricted = !vscode.workspace.isTrusted;
     const area = await spill;
-    logRunStart(log, request.requestLine.method, request.requestLine.url);
+    logRunStart(runLog, request.requestLine.method, request.requestLine.url);
     const handle = registry.start({
       key,
       label: requestLabel(request),
@@ -359,9 +467,18 @@ export function registerRequestFeatures(
       settings: { ...settings.settings, insecureEnvironment: prepared.insecureEnvironment },
       variables: prepared.variables,
       restricted,
-      confirmSend: restricted ? confirmRestrictedSend : undefined,
+      confirmSend: restricted ? checkRestrictedSend : undefined,
       spill: area,
       limits: limits.limits,
+      captures: new CaptureService({
+        registry: captures,
+        documentUri: document.uri.toString(),
+        file,
+        request,
+        workerFile: captureWorker,
+        runs: (producer) => registry.latest(producer),
+      }),
+      waitTimeoutMs: captureSettings.waitTimeoutMs,
     });
     history.add(handle);
     started?.(handle);
@@ -371,20 +488,30 @@ export function registerRequestFeatures(
         panels.show(handle, document.uri, { reveal: true, readOnly: false });
       }
     };
+    let loggedWait: string | undefined;
     const stopWatching = handle.onUpdate(() => {
-      if (handle.snapshot().status === 'receiving') {
+      const snapshot = handle.snapshot();
+      if (snapshot.status === 'waiting' && snapshot.waitingFor !== loggedWait) {
+        loggedWait = snapshot.waitingFor;
+        logRunWaiting(runLog, snapshot);
+      }
+      if (snapshot.status === 'receiving') {
         showRun();
         stopWatching();
       }
     });
     const run = await handle.done;
     stopWatching();
-    logRunEnd(log, run);
+    logRunEnd(runLog, run);
     if (registry.latest(key) !== handle) {
       return;
     }
     if (run.status === 'blocked') {
-      void showBlocked(document, run);
+      const toast = blockedToast(document, file, run);
+      if (toast !== undefined) {
+        lastBlocked = testMode ? { uri: document.uri, toast } : undefined;
+        void showBlocked(document, toast, cache);
+      }
       return;
     }
     if (hasResponse(run) && !panels.keepsOpenedRun(handle)) {
@@ -584,6 +711,25 @@ export function registerRequestFeatures(
       vscode.commands.registerCommand('streamscope.test.runStatus', (id?: unknown) =>
         typeof id === 'number' ? statuses.get(id) : undefined,
       ),
+      vscode.commands.registerCommand('streamscope.test.blockedActions', () => lastBlocked?.toast),
+      vscode.commands.registerCommand('streamscope.test.runBlockedProducer', async () => {
+        if (lastBlocked?.toast.run !== undefined) {
+          await runProducer(lastBlocked.uri, cache, lastBlocked.toast.run);
+        }
+      }),
+      vscode.commands.registerCommand('streamscope.test.logLines', () => loggedLines.splice(0)),
+      vscode.commands.registerCommand('streamscope.test.restrictedSends', () => ({
+        ...restrictedSends,
+      })),
+      vscode.commands.registerCommand('streamscope.test.answerRestrictedSend', (send?: unknown) => {
+        for (const answer of restrictedAnswers.splice(0)) {
+          answer(send === true);
+        }
+      }),
+      vscode.commands.registerCommand(
+        'streamscope.test.captureListeners',
+        () => captures.listenerCount,
+      ),
       vscode.commands.registerCommand('streamscope.test.closeResponseTabs', closeResponseTabs),
       vscode.commands.registerCommand(
         'streamscope.test.openEvent',
@@ -605,5 +751,11 @@ export function registerRequestFeatures(
     );
   }
 
-  return sessionShutdown(history, spill);
+  return {
+    shutdown: sessionShutdown(history, spill),
+    hasRun: (key) => {
+      const run = registry.latest(key);
+      return run !== undefined && !captures.startedBeforeClear(run.id);
+    },
+  };
 }

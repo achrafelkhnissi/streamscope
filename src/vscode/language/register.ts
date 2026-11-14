@@ -1,6 +1,10 @@
 import * as vscode from 'vscode';
+import { CaptureChanges } from '../../capture/changes';
+import type { CaptureRegistry } from '../../capture/registry';
 import type { HttpFile, HttpRequest, ParseDiagnostic, Range } from '../../http-file/model';
 import { variableDiagnostics } from '../../variables/inspect';
+import { affectedDocuments } from './affected-documents';
+import { CaptureInlayHints } from './captures';
 import type { ParseCache } from './parse-cache';
 import type { LanguageVariables } from './variables';
 
@@ -71,14 +75,14 @@ export function registerLanguageFeatures(
   context: vscode.ExtensionContext,
   cache: ParseCache,
   variables: LanguageVariables,
+  captures: CaptureRegistry,
 ): void {
   const diagnostics = vscode.languages.createDiagnosticCollection('streamscope');
+  const hints = new CaptureInlayHints(cache, captures);
   const pending = new Map<string, ReturnType<typeof setTimeout>>();
 
-  const update = async (document: vscode.TextDocument): Promise<void> => {
+  const updateVariables = async (document: vscode.TextDocument, file: HttpFile): Promise<void> => {
     const version = document.version;
-    const file = cache.get(document);
-    diagnostics.set(document.uri, file.diagnostics.map(toDiagnostic));
     const sources = await variables.sourcesFor(document);
     if (document.isClosed || document.version !== version) {
       return;
@@ -87,6 +91,12 @@ export function registerLanguageFeatures(
       document.uri,
       [...file.diagnostics, ...variableDiagnostics(file, sources)].map(toDiagnostic),
     );
+  };
+
+  const update = async (document: vscode.TextDocument): Promise<void> => {
+    const file = cache.get(document);
+    diagnostics.set(document.uri, file.diagnostics.map(toDiagnostic));
+    await updateVariables(document, file);
   };
 
   const refresh = (document: vscode.TextDocument): void => {
@@ -115,8 +125,29 @@ export function registerLanguageFeatures(
     );
   };
 
+  const changes = new CaptureChanges(captures, (requests, names) => {
+    const documents = vscode.workspace.textDocuments.filter(isSupported);
+    const affected = affectedDocuments(
+      requests,
+      names,
+      new Map(documents.map((document) => [document.uri.toString(), cache.get(document)])),
+    );
+    const stale = new Set(affected.diagnostics);
+    for (const document of documents) {
+      if (stale.has(document.uri.toString())) {
+        void updateVariables(document, cache.get(document));
+      }
+    }
+    if (affected.hints.length > 0) {
+      hints.refresh();
+    }
+  });
+
   context.subscriptions.push(
     diagnostics,
+    hints,
+    changes,
+    vscode.languages.registerInlayHintsProvider(httpSelector, hints),
     vscode.languages.registerDocumentSymbolProvider(httpSelector, {
       provideDocumentSymbols: (document) => documentSymbols(cache.get(document)),
     }),
@@ -151,6 +182,16 @@ export function registerLanguageFeatures(
       },
     },
   );
+
+  if (context.extensionMode === vscode.ExtensionMode.Test) {
+    let hintChanges = 0;
+    context.subscriptions.push(
+      hints.onDidChangeInlayHints(() => {
+        hintChanges += 1;
+      }),
+      vscode.commands.registerCommand('streamscope.test.inlayHintChanges', () => hintChanges),
+    );
+  }
 
   vscode.workspace.textDocuments.forEach(refresh);
 }

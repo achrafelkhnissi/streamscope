@@ -20,7 +20,9 @@ function maskedLabel(run: RunSnapshot): string {
 }
 
 export function describeRunning(run: RunSnapshot): string {
-  return `${maskedLabel(run)} · ${eventCount(run) ?? formatDuration(run.elapsedMs)}`;
+  return run.status === 'waiting'
+    ? `${maskedLabel(run)} · waiting for ${run.waitingFor ?? ''}`
+    : `${maskedLabel(run)} · ${eventCount(run) ?? formatDuration(run.elapsedMs)}`;
 }
 
 export function runStatusText(runs: readonly RunSnapshot[]): string | undefined {

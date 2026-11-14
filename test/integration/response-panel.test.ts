@@ -26,6 +26,7 @@ interface ResponseState {
   title: string | undefined;
   bodyText: string | undefined;
   statusText: string;
+  captures: { name: string; state: string; text: string }[];
   statusBar: string | undefined;
 }
 
@@ -49,6 +50,10 @@ function showHistory(runId: number): Thenable<HistoryEntry[]> {
 
 function listHistory(): Thenable<HistoryEntry[]> {
   return showHistory(0);
+}
+
+function captureListeners(): Thenable<number> {
+  return vscode.commands.executeCommand<number>('streamscope.test.captureListeners');
 }
 
 function bodySource(run: number): Thenable<string | undefined> {
@@ -351,6 +356,88 @@ describe('the response panel', () => {
     assert.equal(shown.run, closed.run);
     assert.equal(shown.status, 'receiving');
     assert.equal(panelTabs().length, 1);
+  });
+
+  it('the strip shows threadId pending, then resolved, during a stream', async function () {
+    this.timeout(30_000);
+    const server = await streamServer();
+    const editor = await open('strip.http', [
+      '# @name startRun',
+      '# @capture threadId = first(type == "RUN_STARTED").threadId',
+      `GET ${server.url}/stream?delayMs=5000&rate=20&seconds=30&size=128`,
+    ]);
+    editor.selection = new vscode.Selection(2, 0, 2, 0);
+
+    start();
+    const pending = await waitForState(
+      (seen) => seen.visible && seen.captures.length > 0,
+      'the strip did not show threadId',
+    );
+    assert.deepEqual(pending.captures, [{ name: 'threadId', state: 'pending', text: '' }]);
+    assert.equal(pending.status, 'receiving');
+    assert.equal(pending.events, 0);
+    const resolved = await waitForState(
+      (seen) => seen.captures[0]?.state === 'resolved',
+      'the strip did not show threadId resolved',
+      15_000,
+    );
+
+    assert.deepEqual(resolved.captures, [
+      { name: 'threadId', state: 'resolved', text: 'thread-1' },
+    ]);
+    assert.equal(resolved.status, 'receiving');
+    await vscode.commands.executeCommand('streamscope.stopRequest');
+  });
+
+  it('a re-run into an open panel leaves exactly one registry listener', async () => {
+    const baseline = await captureListeners();
+    const server = await streamServer();
+    await open('rerun.http', [`GET ${server.url}/stream?rate=20&seconds=30&size=128`]);
+
+    start();
+    const first = await waitForState(
+      (seen) => seen.visible && seen.status === 'receiving',
+      'the panel did not open',
+    );
+    await until(
+      async () => (await captureListeners()) === baseline + 1,
+      'the panel did not listen for captured values',
+    );
+    start();
+    await waitForState(
+      (seen) => seen.run !== first.run && seen.visible && seen.status === 'receiving',
+      'the panel did not move to the new run',
+    );
+    await until(
+      async () => (await captureListeners()) === baseline + 1,
+      'the panel did not listen for the new run',
+    );
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    assert.equal(await captureListeners(), baseline + 1);
+  });
+
+  it('closing the panel removes its registry listener', async () => {
+    const baseline = await captureListeners();
+    const server = await streamServer();
+    await open('listener.http', [`GET ${server.url}/stream?rate=20&seconds=30&size=128`]);
+
+    start();
+    await waitForState(
+      (seen) => seen.visible && seen.status === 'receiving',
+      'the panel did not open',
+    );
+    await until(
+      async () => (await captureListeners()) === baseline + 1,
+      'the panel did not listen for captured values',
+    );
+    await vscode.window.tabGroups.close(panelTabs());
+    await waitForState((seen) => !seen.visible, 'the panel did not close');
+
+    await until(
+      async () => (await captureListeners()) === baseline,
+      'the closed panel kept its registry listener',
+    );
   });
 
   it('a stream that breaks mid-way keeps its events and shows the failure', async () => {

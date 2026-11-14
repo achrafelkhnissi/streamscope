@@ -1,0 +1,57 @@
+import { maskedPreview } from '../masking/masking';
+import { captureProvenance } from '../variables/inspect';
+import { entryValueText } from './display';
+import type { CaptureEntry } from './registry';
+
+export interface CaptureHint {
+  readonly label: string;
+  readonly tooltip: string;
+}
+
+const maxHintLength = 60;
+const lineBreaks = /\r\n|[\r\n\u2028\u2029]/g;
+
+export function hintText(text: string): string {
+  return maskedPreview(text, maxHintLength).replace(lineBreaks, ' ');
+}
+
+function hintLabel(entry: CaptureEntry): string {
+  const { result } = entry;
+  switch (result.state) {
+    case 'pending':
+      return '…';
+    case 'resolved':
+      return `= ${entryValueText(entry, result, maxHintLength).replace(lineBreaks, ' ')}`;
+    case 'failed':
+      return `✗ ${hintText(result.reason)}`;
+  }
+}
+
+function hintTooltip(entry: CaptureEntry): string {
+  const { result, label, name, runId } = entry;
+  const origin = `${label} › ${name} · run ${String(runId)}`;
+  switch (result.state) {
+    case 'pending':
+      return `… has not arrived yet\n${origin}`;
+    case 'resolved':
+      return `= ${entryValueText(entry, result)}\n${captureProvenance({
+        label,
+        name,
+        provenance: result.provenance,
+      })}`;
+    case 'failed':
+      return `✗ ${result.reason}\n${origin}`;
+  }
+}
+
+export function captureHint(entry: CaptureEntry | undefined): CaptureHint | undefined {
+  if (entry === undefined) {
+    return undefined;
+  }
+  return {
+    label: hintLabel(entry),
+    get tooltip() {
+      return hintTooltip(entry);
+    },
+  };
+}

@@ -2,15 +2,20 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { CaptureRegistry } from '../../../src/capture/registry';
+import { CaptureTracker, type CaptureResult } from '../../../src/capture/tracker';
 import { StreamSession } from '../../../src/events/session';
 import { SpillArea, type SpillFile } from '../../../src/events/spill';
 import {
+  captureRefreshMs,
   PanelFeed,
   readBackBytes,
   readsInFlight,
   RowCache,
 } from '../../../src/response/panel-feed';
 import type { StreamEvent } from '../../../src/events/model';
+import { parseExpression } from '../../../src/expressions/parse';
+import { maskedValue } from '../../../src/masking/masking';
 import {
   panelLimits,
   type PanelRow,
@@ -19,6 +24,7 @@ import {
 } from '../../../src/response/panel-protocol';
 import { RawTail } from '../../../src/runs/raw-tail';
 import type { RunSnapshot } from '../../../src/runs/run';
+import { missingWorker } from '../capture/worker';
 import { snapshot } from './fixtures';
 
 const encoder = new TextEncoder();
@@ -29,17 +35,20 @@ afterEach(async () => {
 });
 
 type Update = Extract<ToPanel, { type: 'update' }>;
+type Reset = Extract<ToPanel, { type: 'reset' }>;
 
 interface Harness {
   readRaw: ReturnType<typeof vi.fn<() => Promise<string | undefined>>>;
   readReply: ReturnType<typeof vi.fn<() => Promise<string | undefined>>>;
   posted: ToPanel[];
   feed: PanelFeed;
+  registry: CaptureRegistry;
   write(text: string): void;
   set(overrides: Partial<RunSnapshot>): void;
   session: StreamSession;
   updates(): Update[];
   last(): Update;
+  reset(): Reset;
 }
 
 function lines(from: number, count: number): string {
@@ -62,6 +71,8 @@ function harness(
     spill?: SpillFile;
     readRaw?: () => Promise<string | undefined>;
     readReply?: () => Promise<string | undefined>;
+    registry?: CaptureRegistry;
+    timed?: (work: () => void) => void;
   } = {},
 ): Harness {
   const contentType = options.contentType ?? 'application/x-ndjson';
@@ -91,12 +102,19 @@ function harness(
   const posted: ToPanel[] = [];
   const readRaw = vi.fn(options.readRaw ?? (() => Promise.resolve(raw.text)));
   const readReply = vi.fn(options.readReply ?? (() => Promise.resolve(session.reply.text())));
+  const registry = options.registry ?? new CaptureRegistry();
   const feed = new PanelFeed(
     { id: 7, snapshot: () => current, readRaw, readReply },
     {
       readOnly: options.readOnly ?? false,
       streamView: options.streamView ?? 'events',
       post: (message) => posted.push(message),
+      captures: registry,
+      timed:
+        options.timed ??
+        ((work) => {
+          work();
+        }),
     },
   );
   const updates = (): Update[] =>
@@ -106,6 +124,7 @@ function harness(
     readReply,
     posted,
     feed,
+    registry,
     session,
     write: (text) => {
       const bytes = encoder.encode(text);
@@ -120,6 +139,13 @@ function harness(
       const found = updates().at(-1);
       if (found === undefined) {
         throw new Error('no update was posted');
+      }
+      return found;
+    },
+    reset: () => {
+      const found = posted.findLast((message): message is Reset => message.type === 'reset');
+      if (found === undefined) {
+        throw new Error('no reset was posted');
       }
       return found;
     },
@@ -720,6 +746,266 @@ describe('PanelFeed', () => {
     page.feed.start();
 
     expect(page.posted[0]).toMatchObject({ type: 'reset', readOnly: true });
+  });
+});
+
+describe('PanelFeed captured values', () => {
+  const key = snapshot().key;
+  const shownRun = 7;
+  const threadId = [{ name: 'threadId', secret: false }];
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function begin(
+    registry: CaptureRegistry,
+    definitions: readonly { name: string; secret: boolean }[],
+    id = shownRun,
+  ): void {
+    registry.begin({ id, key, label: 'items', startedAt: id }, definitions);
+  }
+
+  function resolved(text: string, secret = false): CaptureResult {
+    return {
+      state: 'resolved',
+      text,
+      secret,
+      sensitive: [],
+      provenance: { runId: shownRun, event: 1, path: 'threadId', time: 0 },
+    };
+  }
+
+  it("posts the shown run's captures and only the changes", () => {
+    vi.useFakeTimers();
+    const page = harness();
+    begin(page.registry, [...threadId, { name: 'messageId', secret: false }]);
+    page.feed.start();
+
+    expect(page.reset().captures).toEqual([
+      { name: 'threadId', state: 'pending', text: '' },
+      { name: 'messageId', state: 'pending', text: '' },
+    ]);
+    expect(page.last().captures).toBeUndefined();
+
+    const before = page.updates().length;
+    page.registry.update(shownRun, 'threadId', resolved('thread-1'));
+    page.registry.update(shownRun, 'messageId', {
+      state: 'failed',
+      reason: 'no event matched last(type == "RUN_FINISHED") (3 events)',
+    });
+    expect(page.updates()).toHaveLength(before);
+    vi.advanceTimersByTime(captureRefreshMs);
+
+    expect(page.updates()).toHaveLength(before + 1);
+    expect(page.last().captures).toEqual([
+      { name: 'threadId', state: 'resolved', text: 'thread-1' },
+      {
+        name: 'messageId',
+        state: 'failed',
+        text: 'no event matched last(type == "RUN_FINISHED") (3 events)',
+      },
+    ]);
+    page.feed.refresh();
+    expect(page.last().captures).toBeUndefined();
+
+    page.registry.update(shownRun, 'threadId', resolved('thread-1'));
+    vi.advanceTimersByTime(captureRefreshMs);
+    expect(page.last().captures).toBeUndefined();
+
+    const sent = page.updates().length;
+    page.registry.begin(
+      { id: 9, key: 'file:///requests.http\n@other', label: 'other', startedAt: 9 },
+      threadId,
+    );
+    page.registry.update(9, 'threadId', resolved('thread-2'));
+    vi.advanceTimersByTime(captureRefreshMs);
+    expect(page.updates()).toHaveLength(sent);
+  });
+
+  it('masks secret values before posting', () => {
+    vi.useFakeTimers();
+    const page = harness();
+    begin(page.registry, [
+      { name: 'sessionId', secret: true },
+      { name: 'marked', secret: false },
+      { name: 'accessToken', secret: false },
+      { name: 'callback', secret: false },
+      { name: 'later', secret: true },
+    ]);
+    page.registry.update(shownRun, 'sessionId', resolved('synthetic-session-value'));
+    page.registry.update(shownRun, 'marked', resolved('synthetic-marked-value', true));
+    page.registry.update(shownRun, 'accessToken', resolved('synthetic-token-value'));
+    page.registry.update(
+      shownRun,
+      'callback',
+      resolved('https://user:synthetic-password@hooks.example.test/done'),
+    );
+    page.feed.start();
+    page.registry.update(shownRun, 'later', resolved('synthetic-later-value'));
+    vi.advanceTimersByTime(captureRefreshMs);
+
+    expect(page.reset().captures).toEqual([
+      { name: 'sessionId', state: 'resolved', text: maskedValue },
+      { name: 'marked', state: 'resolved', text: maskedValue },
+      { name: 'accessToken', state: 'resolved', text: maskedValue },
+      {
+        name: 'callback',
+        state: 'resolved',
+        text: `https://${maskedValue}@hooks.example.test/done`,
+      },
+      { name: 'later', state: 'pending', text: '' },
+    ]);
+    expect(page.last().captures?.at(-1)).toEqual({
+      name: 'later',
+      state: 'resolved',
+      text: maskedValue,
+    });
+    const sent = JSON.stringify(page.posted);
+    for (const value of [
+      'synthetic-session-value',
+      'synthetic-marked-value',
+      'synthetic-token-value',
+      'synthetic-password',
+      'synthetic-later-value',
+    ]) {
+      expect(sent).not.toContain(value);
+    }
+  });
+
+  it("masks the run's sensitive values in a failure reason, as its status line does", async () => {
+    const secretHost = 'secret-host.example.test';
+    const page = harness();
+    page.set({ sensitiveValues: [secretHost] });
+    begin(page.registry, threadId);
+    const text = 'first(type == "RUN_STARTED").threadId';
+    const parsed = parseExpression(text, 'capture');
+    if (!parsed.ok) {
+      throw new Error(parsed.error.message);
+    }
+    const tracker = new CaptureTracker(
+      { id: shownRun, label: 'items', wallStartedAt: 0, sensitiveValues: [secretHost] },
+      [{ name: 'threadId', secret: false, provenance: false, expression: parsed.expr, text }],
+      (name, result) => {
+        page.registry.update(shownRun, name, result);
+      },
+      missingWorker,
+    );
+    await tracker.end({ kind: 'failed', message: `Could not resolve ${secretHost}.` });
+    page.feed.start();
+
+    expect(page.reset().captures).toEqual([
+      {
+        name: 'threadId',
+        state: 'failed',
+        text: `items failed before threadId resolved: Could not resolve ${maskedValue}`,
+      },
+    ]);
+    expect(JSON.stringify(page.posted)).not.toContain(secretHost);
+  });
+
+  it('cuts text at 200 characters and sends at most 64', () => {
+    const page = harness();
+    begin(
+      page.registry,
+      Array.from({ length: 70 }, (_, at) => ({ name: `value${String(at + 1)}`, secret: false })),
+    );
+    page.registry.update(shownRun, 'value1', resolved('a'.repeat(1000)));
+    page.registry.update(shownRun, 'value2', {
+      state: 'failed',
+      reason: `the body has no value at ${'b'.repeat(500)}`,
+    });
+    page.registry.update(shownRun, 'value3', resolved('c'.repeat(200)));
+    page.feed.start();
+
+    const captures = page.reset().captures;
+    expect(captures).toHaveLength(64);
+    expect(captures.at(-1)?.name).toBe('value64');
+    expect(captures[0]?.text).toBe(`${'a'.repeat(199)}…`);
+    expect(captures[1]?.text).toBe(`the body has no value at ${'b'.repeat(174)}…`);
+    expect(captures[2]?.text).toBe('c'.repeat(200));
+  });
+
+  it("the strip is hidden for a run that is no longer the request's latest", () => {
+    vi.useFakeTimers();
+    const page = harness();
+    begin(page.registry, threadId);
+    page.feed.start();
+    expect(page.reset().captures).toHaveLength(1);
+
+    begin(page.registry, threadId, 8);
+    vi.advanceTimersByTime(captureRefreshMs);
+    expect(page.last().captures).toEqual([]);
+
+    const registry = new CaptureRegistry();
+    begin(registry, threadId, 8);
+    const history = harness({ registry, readOnly: true });
+    history.feed.start();
+    expect(history.reset().captures).toEqual([]);
+  });
+
+  it('cuts names at 200 characters too', () => {
+    const page = harness();
+    const name = `n${'a'.repeat(299)}`;
+    begin(page.registry, [{ name, secret: false }]);
+    page.feed.start();
+
+    expect(page.reset().captures[0]?.name).toBe(`${name.slice(0, 199)}…`);
+  });
+
+  it('shows an empty value as "" in the strip, as the inlay hint does', () => {
+    const page = harness();
+    begin(page.registry, threadId);
+    page.registry.update(shownRun, 'threadId', resolved(''));
+    page.feed.start();
+
+    expect(page.reset().captures).toEqual([{ name: 'threadId', state: 'resolved', text: '""' }]);
+  });
+
+  it("refreshes for a capture change through the panel's timed path", () => {
+    vi.useFakeTimers();
+    const timed = vi.fn((work: () => void) => {
+      work();
+    });
+    const page = harness({ timed });
+    begin(page.registry, threadId);
+    page.feed.start();
+
+    page.registry.update(shownRun, 'threadId', resolved('thread-1'));
+    vi.advanceTimersByTime(captureRefreshMs);
+
+    expect(timed).toHaveBeenCalledTimes(1);
+    expect(page.last().captures).toEqual([
+      { name: 'threadId', state: 'resolved', text: 'thread-1' },
+    ]);
+  });
+
+  it('removes its registry listener and pending refresh when the panel is hidden or disposed', () => {
+    vi.useFakeTimers();
+    const page = harness();
+    begin(page.registry, threadId);
+    expect(page.registry.listenerCount).toBe(0);
+
+    page.feed.start();
+    page.feed.start();
+    expect(page.registry.listenerCount).toBe(1);
+    expect(vi.getTimerCount()).toBe(0);
+    page.registry.update(shownRun, 'threadId', resolved('thread-1'));
+    expect(vi.getTimerCount()).toBe(1);
+
+    const sent = page.posted.length;
+    page.feed.pause();
+    expect(page.registry.listenerCount).toBe(0);
+    expect(vi.getTimerCount()).toBe(0);
+    page.registry.update(shownRun, 'threadId', resolved('thread-2'));
+    vi.advanceTimersByTime(captureRefreshMs);
+    expect(page.posted).toHaveLength(sent);
+
+    page.feed.start();
+    expect(page.registry.listenerCount).toBe(1);
+    expect(page.reset().captures).toEqual([
+      { name: 'threadId', state: 'resolved', text: 'thread-2' },
+    ]);
   });
 });
 

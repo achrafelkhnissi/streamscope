@@ -8,6 +8,7 @@ export function snapshot(overrides: Partial<RunSnapshot> = {}): RunSnapshot {
     key: 'file:///requests.http\n@items',
     label: 'items',
     status: 'completed',
+    waitingFor: undefined,
     startedAt: 0,
     wallStartedAt: new Date(2026, 10, 12, 9, 5, 7).getTime(),
     elapsedMs: 120,

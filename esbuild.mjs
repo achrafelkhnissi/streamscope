@@ -33,6 +33,7 @@ const contexts = await Promise.all([
     entryPoints: {
       extension: 'src/extension.ts',
       'format-worker': 'src/response/format-worker.ts',
+      'capture-worker': 'src/capture/body-worker.ts',
     },
     outdir: 'dist',
     bundle: true,

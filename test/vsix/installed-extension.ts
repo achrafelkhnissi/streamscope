@@ -96,6 +96,9 @@ export async function run(): Promise<void> {
 
   for (const file of [
     'dist/format-worker.js',
+    'dist/capture-worker.js',
+    'dist/response-view.js',
+    'ThirdPartyNotices.txt',
     'syntaxes/http.tmLanguage.json',
     'language-configuration.json',
   ]) {

@@ -176,7 +176,10 @@ export class ResponsePresenter {
       return;
     }
     const snapshot = run.snapshot();
-    const finished = snapshot.status !== 'sending' && snapshot.status !== 'receiving';
+    const finished =
+      snapshot.status !== 'waiting' &&
+      snapshot.status !== 'sending' &&
+      snapshot.status !== 'receiving';
     if (documents.body === undefined && finished) {
       await this.body(run);
     }

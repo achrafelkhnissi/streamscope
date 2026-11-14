@@ -7,6 +7,7 @@ Benchmark runs for the streaming pipeline, kept so later changes can be compared
 ```bash
 npm run bench -- throughput --format ndjson
 npm run bench -- throughput --format sse
+npm run bench -- throughput --format ndjson --captures 4
 npm run bench -- soak --format ndjson --rate 1000 --minutes 30
 npm run bench -- soak --format sse --rate 5000 --minutes 1
 ```
@@ -14,6 +15,7 @@ npm run bench -- soak --format sse --rate 5000 --minutes 1
 `npm run bench` bundles `test/benchmark/main.ts` with esbuild and runs it with `node --expose-gc`.
 
 - **`throughput`** parses events of `--size` bytes (default 1,024) from memory through a `StreamSession` without a spill file. It reports events per second.
+- **`--captures N`** adds a `CaptureTracker` to `throughput`, wired as a run wires it: N `first(…)` captures whose condition never matches and one `count(…)` that matches every event, so each capture tests every event. When the capture queue is congested, writing waits for it to drain, as the socket would. The time includes the end of the run, when the captures settle. The result adds `counted`, the value of the `count(…)` capture, `unmatched`, the number of `first(…)` captures that failed for lack of a match, and `pauses`, the number of times writing waited for the queue to drain.
 - **`soak`** sends a real request through `NodeTransport` to the synthetic stream server (`test/support/stream-server.ts`) and feeds a `StreamSession` with a spill file. It reports:
   - **Memory:** sampled every 5 s after a forced garbage collection. "Heap plus array buffers" counts the JavaScript heap and the typed-array event index, which is what the 150 MB budget covers.
   - **Lag:** the time from the server stamping an event to the batched update that delivers it. It includes up to 50 ms of batching.
@@ -266,3 +268,118 @@ Two things seen in the first walkthroughs were fixed in `5b09974`. All four walk
 
 - **No selection marker in Default High Contrast.** In the first walkthrough's `m6-hc-detail` and `m6-hc-stopped` screenshots, which were not kept, the selected row has no fill and no outline. The panel styled a selected row only with `list.activeSelectionBackground`, which Default High Contrast leaves unset, and set no `contrastActiveBorder`. The border of the open detail still marks the event. In Default High Contrast Light the row has a light fill.
 - **Low contrast for event labels in the light themes.** The labels used `symbolIcon.classForeground`, which is `#D67E00` in both light themes. On white that is about 3.1 to 1 by calculation, below the 4.5 to 1 that WCAG asks of normal text. This is calculated from the colour value, not measured on screen.
+
+## 2026-11-14: M7 captures
+
+Branch `m7-captures` at `c98b194`, with this section's `--captures` option. Apple M3 Pro, 18 GB, macOS 27.2.1, Node 24.18.0. Events are AG-UI `TEXT_MESSAGE_CONTENT` of 1,024 bytes each. MB means 10⁶ bytes, as in the earlier sections. Before the first run, `uptime` showed load averages of 3.20, 4.02 and 5.06 over 1, 5 and 15 minutes, and `ps` showed a virtual machine process at 61.9% CPU. The load was not measured during the runs.
+
+### Throughput
+
+Five rounds per format, each round a plain run and a `--captures 4` run, one after the other. `--captures 4` runs four `first(…)` captures that never match and one `count(…)`, so five captures test every event.
+
+| Run                                | Runs (events/s)                             | Median  | Budget                  |
+| ---------------------------------- | ------------------------------------------- | ------- | ----------------------- |
+| NDJSON, 100,000 events             | 399,451, 391,490, 414,437, 420,957, 413,315 | 413,315 | at least 5,000 events/s |
+| NDJSON, 100,000 events, captures 4 | 342,498, 315,806, 332,737, 334,627, 335,766 | 334,627 | at least 5,000 events/s |
+| SSE, 100,000 events                | 353,955, 361,319, 359,331, 357,419, 359,456 | 359,331 | at least 5,000 events/s |
+| SSE, 100,000 events, captures 4    | 299,160, 300,398, 296,316, 290,290, 299,269 | 299,160 | at least 5,000 events/s |
+
+- **What the captures cost.** The captures lower the median by 19% for NDJSON and 17% for SSE. Per event that is 2.99 µs instead of 2.42 µs for NDJSON, and 3.34 µs instead of 2.78 µs for SSE: 0.57 and 0.56 µs for five captures. Every capture run counted 100,000 events and left the four `first(…)` captures unmatched. These runs came before the result reported `pauses`. Five later capture runs of the same size, three NDJSON and two SSE, each waited for the queue to drain 3 times.
+- **The plain run against M7's starting point.** Before M7 changed `src/events`, Task 5 measured a mean of 440,867 events/s for NDJSON and 380,635 for SSE. Today's plain medians are 6.2% and 5.6% lower. The code is not the cause: five interleaved rounds of the same benchmark, built from `origin/main` (M6, before M7) and from `c98b194`, gave means of 402,499 and 406,173 events/s for NDJSON and 356,348 and 358,531 for SSE. Both builds ran slower on the machine today.
+
+### Soak
+
+NDJSON at 1,000 events/s with a spill file, without captures.
+
+| Run                                      | Events                   | Heap peak | Heap plus array buffers | Lag p95 / max |
+| ---------------------------------------- | ------------------------ | --------- | ----------------------- | ------------- |
+| 1 minute                                 | 60,002 of 60,002 (all)   | 20.6 MB   | 29.1 MB                 | 49 / 61 ms    |
+| 5 minutes                                | 300,002 of 300,002 (all) | 20.6 MB   | 47.5 MB                 | 49 / 63 ms    |
+| 1 minute, M6 (`origin/main`)             | 60,002 of 60,002 (all)   | 19.9 MB   | 27.8 MB                 | 49 / 54 ms    |
+| 1 minute, `c98b194` without `--captures` | 60,002 of 60,002 (all)   | 19.9 MB   | 25.5 MB                 | 49 / 52 ms    |
+
+- **The heap is flat.** It peaked at 20,613,552 bytes after 1 minute and 20,621,064 bytes after 5 minutes, five times as many events. The array buffers grew from 8.7 to 27.1 MB with the event index and the spill file's write buffers, as in M4. Every run stayed far under the 150 MB budget.
+- **M7 adds no heap to a stream without captures.** The benchmark built from M6 and from `c98b194`, before the `--captures` option existed, peaked at 19.9 MB in both. The benchmark built with the option loads the capture code, although the soak runs no captures, and both of its soak runs peaked at 20.6 MB. That the loaded code makes the difference was not measured.
+- **Captures are not soaked.** The soak has no capture option. Unit tests pin the capture queue's backpressure limits instead:
+  - `test/unit/capture/tracker.test.ts`, "is congested past 5,000 queued events and drains once fewer than 1,000 remain";
+  - the same file, "is congested past 8 MiB of queued event bytes and drains below 2 MiB";
+  - `test/unit/capture/stream-captures.test.ts`, which checks over a real socket that the queue stays within 5,000 events plus one 64 KiB chunk.
+
+### Package
+
+| Measure                                      | Result        | Budget                                                                  |
+| -------------------------------------------- | ------------- | ----------------------------------------------------------------------- |
+| VSIX from `npm run verify:vsix` at `fe5dd8d` | 177,834 bytes | under 400 KB; `scripts/verify-vsix.mjs` fails a VSIX over 409,600 bytes |
+
+The VSIX holds 13 files, and `verify:vsix` installed and activated it in an isolated profile.
+
+Raw results, the median throughput runs and the two soak runs after this change:
+
+```json
+[
+  {
+    "format": "ndjson",
+    "events": 100000,
+    "eventBytes": 1024,
+    "captures": 0,
+    "seconds": 0.24194608400000003,
+    "eventsPerSecond": 413315.2243952003
+  },
+  {
+    "format": "ndjson",
+    "events": 100000,
+    "eventBytes": 1024,
+    "captures": 4,
+    "counted": 100000,
+    "unmatched": 4,
+    "seconds": 0.29884054200000004,
+    "eventsPerSecond": 334626.6183655897
+  },
+  {
+    "format": "sse",
+    "events": 100000,
+    "eventBytes": 1024,
+    "captures": 0,
+    "seconds": 0.278294584,
+    "eventsPerSecond": 359331.46295078454
+  },
+  {
+    "format": "sse",
+    "events": 100000,
+    "eventBytes": 1024,
+    "captures": 4,
+    "counted": 100000,
+    "unmatched": 4,
+    "seconds": 0.334269167,
+    "eventsPerSecond": 299160.10769847647
+  },
+  {
+    "format": "ndjson",
+    "rate": 1000,
+    "seconds": 60,
+    "events": 60002,
+    "maxHeapBytes": 20613552,
+    "maxExternalBytes": 15591018,
+    "maxRssBytes": 156303360,
+    "maxArrayBuffersBytes": 8675439,
+    "maxMemoryBytes": 29074775,
+    "lagP95Ms": 49,
+    "lagMaxMs": 61.175048828125,
+    "spillBytes": 61442048
+  },
+  {
+    "format": "ndjson",
+    "rate": 1000,
+    "seconds": 300,
+    "events": 300002,
+    "maxHeapBytes": 20621064,
+    "maxExternalBytes": 33538786,
+    "maxRssBytes": 162562048,
+    "maxArrayBuffersBytes": 27070735,
+    "maxMemoryBytes": 47532031,
+    "lagP95Ms": 49,
+    "lagMaxMs": 62.838623046875,
+    "spillBytes": 307202048
+  }
+]
+```

@@ -8,7 +8,7 @@ import {
 
 export function isActive(handle: RunHandle): boolean {
   const { status } = handle.snapshot();
-  return status === 'sending' || status === 'receiving';
+  return status === 'waiting' || status === 'sending' || status === 'receiving';
 }
 
 export class RunRegistry {

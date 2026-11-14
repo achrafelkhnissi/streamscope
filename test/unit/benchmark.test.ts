@@ -4,19 +4,43 @@ import { runSoak } from '../benchmark/soak';
 import { measureThroughput } from '../benchmark/throughput';
 
 describe('benchmark harness', () => {
-  it('measures parser throughput', () => {
+  it('measures parser throughput', async () => {
     for (const format of ['ndjson', 'sse'] as const) {
-      const result = measureThroughput({
+      const result = await measureThroughput({
         format,
         events: 10_000,
         eventBytes: 1024,
         chunkBytes: 16 * 1024,
+        captures: 0,
       });
 
       expect(result.format).toBe(format);
       expect(result.events).toBe(10_000);
       expect(result.eventBytes).toBe(1024);
+      expect(result.captures).toBe(0);
+      expect(result.counted).toBeUndefined();
+      expect(result.pauses).toBe(0);
       expect(result.seconds).toBeGreaterThan(0);
+      expect(result.eventsPerSecond).toBeGreaterThan(0);
+    }
+  });
+
+  it('evaluates every event against the captures', async () => {
+    for (const format of ['ndjson', 'sse'] as const) {
+      const result = await measureThroughput({
+        format,
+        events: 100_000,
+        eventBytes: 256,
+        chunkBytes: 16 * 1024,
+        captures: 4,
+      });
+
+      expect(result.format).toBe(format);
+      expect(result.events).toBe(100_000);
+      expect(result.captures).toBe(4);
+      expect(result.counted).toBe(100_000);
+      expect(result.unmatched).toBe(4);
+      expect(result.pauses).toBeGreaterThan(0);
       expect(result.eventsPerSecond).toBeGreaterThan(0);
     }
   });

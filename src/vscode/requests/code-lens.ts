@@ -12,7 +12,7 @@ function toRange(request: HttpRequest): vscode.Range {
 }
 
 function isActive(run: RunSnapshot): boolean {
-  return run.status === 'sending' || run.status === 'receiving';
+  return run.status === 'waiting' || run.status === 'sending' || run.status === 'receiving';
 }
 
 export class RequestCodeLenses implements vscode.CodeLensProvider, vscode.Disposable {
