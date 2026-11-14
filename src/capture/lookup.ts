@@ -10,6 +10,11 @@ interface Producer {
 }
 
 const producers = new WeakMap<HttpFile, ReadonlyMap<string, Producer>>();
+const declarers = new WeakMap<
+  HttpFile,
+  { documentUri: string; keys: ReadonlyMap<string, ReadonlySet<string>> }
+>();
+const noKeys: ReadonlySet<string> = new Set();
 
 export function namedRequestKey(documentUri: string, requestName: string): string {
   return `${documentUri}\n@${requestName}`;
@@ -19,14 +24,37 @@ export function responseKey(requestName: string, reference: string): string {
   return `${requestName}\n${reference}`;
 }
 
-export function inDocument(documentUri: string): (request: string) => boolean {
-  const prefix = `${documentUri}\n`;
-  return (request) => request.startsWith(prefix);
-}
-
 function producerIdentity(documentUri: string, { request, index }: Producer): string {
   const { method, url } = request.requestLine;
   return request.name ?? `${documentUri}\n#${String(index)} ${method.toUpperCase()} ${url}`;
+}
+
+export function declaringKeys(
+  documentUri: string,
+  file: HttpFile,
+  name: string,
+): ReadonlySet<string> {
+  const known = declarers.get(file);
+  if (known?.documentUri === documentUri) {
+    return known.keys.get(name) ?? noKeys;
+  }
+  const keys = new Map<string, Set<string>>();
+  for (const [index, request] of file.requests.entries()) {
+    const key =
+      request.name === undefined
+        ? producerIdentity(documentUri, { request, index })
+        : namedRequestKey(documentUri, request.name);
+    for (const capture of request.captures) {
+      const declaring = keys.get(capture.name);
+      if (declaring === undefined) {
+        keys.set(capture.name, new Set([key]));
+      } else {
+        declaring.add(key);
+      }
+    }
+  }
+  declarers.set(file, { documentUri, keys });
+  return keys.get(name) ?? noKeys;
 }
 
 function producerLabel(request: HttpRequest): string {
@@ -80,15 +108,18 @@ export function captureLookup(
   file: HttpFile,
   responses: ReadonlyMap<string, CaptureLookupResult>,
 ): CaptureLookup {
-  const local = inDocument(documentUri);
   const found = (entry: CaptureEntry | undefined): CaptureLookupResult | undefined =>
     entry === undefined ? undefined : lookupResult(entry, registry.hasPendingSecret(entry.runId));
   return {
     request: (requestName, captureName) =>
       found(registry.get(namedRequestKey(documentUri, requestName), captureName)),
-    bare: (captureName) => found(registry.latest(captureName, local)),
+    bare: (captureName) => {
+      const declared = declaringKeys(documentUri, file, captureName);
+      return found(registry.latest(captureName, (request) => declared.has(request)));
+    },
     elsewhere: (captureName) => {
-      const entry = found(registry.latest(captureName, (request) => !local(request)));
+      const declared = declaringKeys(documentUri, file, captureName);
+      const entry = found(registry.latest(captureName, (request) => !declared.has(request)));
       if (entry !== undefined) {
         return entry;
       }

@@ -920,6 +920,52 @@ describe('the order of a bare name', () => {
     expect(resolveIn(registry, lines)).toMatchObject({ ok: true, sensitiveValues: [] });
   });
 
+  it('a capture of a request deleted from this document no longer outranks the file variable, in sending or in the hover', () => {
+    const registry = new CaptureRegistry();
+    const pasted = ['###', '# @capture baseUrl = body.u', 'GET https://probe.invalid/config'];
+    const withPasted = parseHttpFile([...apiLines, '', ...pasted].join('\n'));
+    const producer = withPasted.requests[1];
+    if (!producer) {
+      throw new Error('expected the pasted producer');
+    }
+    const pastedKey = requestKey(apiUri, producer, 1);
+    registry.begin({ id: 97, key: pastedKey, label: 'GET probe', startedAt: 97 }, [
+      { name: 'baseUrl', secret: false },
+    ]);
+    registry.update(97, 'baseUrl', resolved('https://attacker.invalid/collect', 97));
+    const secrets = new Map([['token', 'synthetic-token-55aa']]);
+
+    const whilePasted = resolveIn(registry, [
+      ...apiLines,
+      '',
+      ...pasted,
+      '',
+      '###',
+      'GET {{baseUrl}}/me',
+    ]);
+    const deleted = resolveIn(registry, apiLines, { secrets });
+    const parsed = parseHttpFile(apiLines.join('\n'));
+
+    expect(whilePasted).toMatchObject({
+      ok: true,
+      request: { url: 'https://attacker.invalid/collect/me' },
+    });
+    expect(deleted).toMatchObject({
+      ok: true,
+      request: {
+        url: 'https://api.example.test/me',
+        headers: [{ name: 'Authorization', value: 'Bearer synthetic-token-55aa' }],
+      },
+    });
+    expect(
+      describeReference(
+        parsed,
+        'baseUrl',
+        testSources({ captures: captureLookup(registry, apiUri, parsed, new Map()) }),
+      ),
+    ).toMatchObject({ kind: 'value', value: 'https://api.example.test', origin: 'file variable' });
+  });
+
   it("another document's capture still applies when nothing else defines the name", () => {
     const registry = new CaptureRegistry();
     seed(registry, 'tenant');

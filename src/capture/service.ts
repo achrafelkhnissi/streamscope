@@ -10,7 +10,7 @@ import type { ResponseHead } from '../transport/model';
 import { responseSelector } from '../variables/references';
 import { waitKey, type CaptureWait, type ResolutionProblem } from '../variables/resolve';
 import type { CaptureLookup, CaptureLookupResult } from '../variables/sources';
-import { captureLookup, inDocument, lookupResult, namedRequestKey, responseKey } from './lookup';
+import { captureLookup, declaringKeys, lookupResult, namedRequestKey, responseKey } from './lookup';
 import {
   captureFailedMessage,
   ownCaptureReason,
@@ -195,13 +195,12 @@ export class CaptureService implements RunCaptures {
     );
     this.names = new Set(this.definitions.map((definition) => definition.name));
     const base = captureLookup(options.registry, options.documentUri, options.file, this.responses);
-    const local = inDocument(options.documentUri);
     this.lookup = {
       request: (requestName, captureName) => {
         const result = base.request(requestName, captureName);
         return this.isOwn(result) ? this.previousValue(result.label, captureName) : result;
       },
-      bare: (captureName) => this.newestInDocument(captureName, local),
+      bare: (captureName) => this.newestInDocument(captureName),
       elsewhere: (captureName) => {
         const result = base.elsewhere(captureName);
         return this.label !== undefined &&
@@ -344,14 +343,10 @@ export class CaptureService implements RunCaptures {
       : lookupResult(previous, this.previousSecretPending);
   }
 
-  private newestInDocument(
-    name: string,
-    local: (request: string) => boolean,
-  ): CaptureLookupResult | undefined {
-    const other = this.options.registry.latest(
-      name,
-      (request) => request !== this.key && local(request),
-    );
+  private newestInDocument(name: string): CaptureLookupResult | undefined {
+    const { registry, documentUri, file } = this.options;
+    const declared = declaringKeys(documentUri, file, name);
+    const other = registry.latest(name, (request) => request !== this.key && declared.has(request));
     const previous = this.previous.get(name);
     if (previous !== undefined && (other === undefined || startedLater(previous, other))) {
       return lookupResult(previous, this.previousSecretPending);

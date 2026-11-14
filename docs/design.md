@@ -449,11 +449,11 @@ Capture evaluation (`src/capture/tracker.ts`, `body.ts`, `task-budget.ts`):
 
 For `{{x}}` without a request prefix, the first of these that applies:
 
-1. A capture named `x` from a request in the same file, the one whose run started most recently, including the request's own previous value when it re-captures the name it consumes. A resolved value is used, a pending one is waited for and a failed one blocks the request. A capture with no value yet, because its producer has not run or because the request captures `x` itself and has no earlier value, goes on to the next step.
+1. A capture named `x` from a request that the file, as it is now, has with a `# @capture x` line, the one whose run started most recently, including the request's own previous value when it re-captures the name it consumes. A resolved value is used, a pending one is waited for and a failed one blocks the request. A capture with no value yet, because its producer has not run or because the request captures `x` itself and has no earlier value, goes on to the next step.
 2. File variable `x`.
 3. Active environment `x`.
 4. `$shared` `x`.
-5. A capture named `x` from a request in another file of the workspace session, the newest, with the same rules as step 1.
+5. Any other capture named `x` in the workspace session, the newest, with the same rules as step 1: one from another file, or one left by a request of this file that was deleted, renamed, lost its `# @capture x` line, or whose position, method or URL changed since it ran.
 6. Nothing defines `x`. When a request in the file declares the capture, the request is blocked because that producer has not run, or, for a request that captures `x` itself, because it cannot use its own capture (see Waiting). Otherwise `x` is undefined.
 
 A value taken from another file's response therefore never replaces a value written in the file, the environment or `$shared`, and a file variable can seed a request that captures the name it consumes: with `@cursor = start` and `# @capture cursor = body.next`, the first send uses `start` and each later send uses the captured cursor.

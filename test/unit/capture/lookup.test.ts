@@ -123,29 +123,46 @@ describe('captureLookup', () => {
     });
   });
 
-  it("a bare name reads this document's newest capture, and elsewhere reads the newest of other documents", () => {
+  it('a bare name reads the newest capture of a request this file declares it on, and elsewhere reads every other one', () => {
+    const twice = parseHttpFile(
+      [
+        '# @name startRun',
+        '# @capture threadId = body.a',
+        'POST https://api.example.test/a',
+        '',
+        '###',
+        '# @name again',
+        '# @capture threadId = body.b',
+        'POST https://api.example.test/b',
+      ].join('\n'),
+    );
     const registry = new CaptureRegistry();
     const threadOnly = [{ name: 'threadId', secret: false }];
-    registry.begin({ id: 7, key: startKey, label: 'startRun', startedAt: 10 }, declared);
-    registry.update(7, 'threadId', resolved('thread-1', 7));
-    registry.begin(
-      { id: 8, key: 'file:///other.http\n@restart', label: 'restart', startedAt: 20 },
-      threadOnly,
-    );
-    registry.update(8, 'threadId', resolved('thread-2', 8));
-    const lookup = lookupOf(registry);
+    const runs: [number, string, string][] = [
+      [7, startKey, 'thread-1'],
+      [8, 'file:///other.http\n@restart', 'thread-2'],
+      [9, `${documentUri}\n@again`, 'thread-3'],
+      [10, `${documentUri}\n@removed`, 'thread-4'],
+    ];
+    const lookup = captureLookup(registry, documentUri, twice, new Map());
+    const seen: [string | undefined, string | undefined][] = [];
+    for (const [id, key, text] of runs) {
+      registry.begin({ id, key, label: key, startedAt: id }, threadOnly);
+      registry.update(id, 'threadId', resolved(text, id));
+      const bare = lookup.bare('threadId');
+      const elsewhere = lookup.elsewhere('threadId');
+      seen.push([
+        bare?.kind === 'value' ? bare.text : undefined,
+        elsewhere?.kind === 'value' ? elsewhere.text : undefined,
+      ]);
+    }
 
-    expect(lookup.bare('threadId')).toMatchObject({ kind: 'value', text: 'thread-1' });
-    expect(lookup.elsewhere('threadId')).toMatchObject({ kind: 'value', text: 'thread-2' });
-
-    registry.begin(
-      { id: 9, key: 'file:///agent.http\n@again', label: 'again', startedAt: 30 },
-      threadOnly,
-    );
-    registry.update(9, 'threadId', resolved('thread-3', 9));
-
-    expect(lookup.bare('threadId')).toMatchObject({ kind: 'value', text: 'thread-3' });
-    expect(lookup.elsewhere('threadId')).toMatchObject({ kind: 'value', text: 'thread-2' });
+    expect(seen).toEqual([
+      ['thread-1', undefined],
+      ['thread-1', 'thread-2'],
+      ['thread-3', 'thread-2'],
+      ['thread-3', 'thread-4'],
+    ]);
   });
 
   it('a bare name nobody captured yet comes from the first request in this file that declares it', () => {
