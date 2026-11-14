@@ -1,5 +1,6 @@
 import type { JsonValue, StreamEvent } from '../events/model';
 import { parseExpression } from '../expressions/parse';
+import { isSensitiveName, sensitiveValuesIn } from '../masking/masking';
 import type { PathSegment, PositionProblem } from '../response/json-position';
 import {
   captureExpression,
@@ -20,6 +21,7 @@ export type ValuePlan =
       expression: string;
       condition: EventCondition | undefined;
       suggestedName: string;
+      sensitive: boolean;
     }
   | { ok: false; message: string }
   | { ok: false; cancelled: true };
@@ -28,6 +30,8 @@ const noValueMessage = 'There is no value at this position.';
 const streamBodyMessage =
   'This response is an event stream; capture a value from one of its events instead.';
 const invalidMessage = 'Streamscope could not write a valid capture for this value.';
+const secretInPathMessage =
+  'The path to this value or its event type contains a secret this request sent, so Streamscope will not write it into the file.';
 
 const positionMessages: Record<PositionProblem, string> = {
   'not-json': 'Capture This Value needs a JSON value, and the text here is not JSON.',
@@ -79,11 +83,21 @@ function hasPath(value: JsonValue, segments: readonly PathSegment[]): boolean {
   return true;
 }
 
+function isSensitivePath(
+  segments: readonly PathSegment[],
+  condition: EventCondition | undefined,
+): boolean {
+  return (
+    segments.some((segment) => typeof segment === 'string' && isSensitiveName(segment)) ||
+    (condition?.kind === 'field' && isSensitiveName(condition.field))
+  );
+}
+
 function finish(
   built: BuiltExpression,
   segments: readonly PathSegment[],
   condition: EventCondition | undefined,
-  taken: ReadonlySet<string>,
+  context: { taken: ReadonlySet<string>; sensitiveValues: readonly string[] },
 ): ValuePlan {
   if (!built.ok) {
     return built;
@@ -91,11 +105,15 @@ function finish(
   if (!parseExpression(built.text, 'capture').ok) {
     return { ok: false, message: invalidMessage };
   }
+  if (sensitiveValuesIn(built.text, context.sensitiveValues).length > 0) {
+    return { ok: false, message: secretInPathMessage };
+  }
   return {
     ok: true,
     expression: built.text,
     condition,
-    suggestedName: suggestedCaptureName(segments, condition, taken),
+    suggestedName: suggestedCaptureName(segments, condition, context.taken),
+    sensitive: isSensitivePath(segments, condition),
   };
 }
 
@@ -104,17 +122,19 @@ export async function planValueCapture(input: {
   segments: readonly PathSegment[];
   stream: { events: OccurrenceEvents; typeFields: readonly string[] } | undefined;
   taken: ReadonlySet<string>;
+  sensitiveValues: readonly string[];
   signal: AbortSignal;
   clock?: TaskClock;
 }): Promise<ValuePlan> {
-  const { target, stream, taken, signal } = input;
+  const { target, stream, signal } = input;
+  const context = { taken: input.taken, sensitiveValues: input.sensitiveValues };
   if (target.kind === 'body') {
     return stream === undefined
       ? finish(
           captureExpression({ kind: 'body' }, input.segments),
           input.segments,
           undefined,
-          taken,
+          context,
         )
       : { ok: false, message: streamBodyMessage };
   }
@@ -141,7 +161,9 @@ export async function planValueCapture(input: {
     index: event.index,
     condition: parsed,
     label:
-      condition?.kind === 'field' && condition.field === stream.typeFields[0]
+      condition?.kind === 'field' &&
+      typeof condition.value === 'string' &&
+      condition.field === stream.typeFields[0]
         ? stream.events.summary(event.index)?.label
         : undefined,
     signal,
@@ -156,6 +178,6 @@ export async function planValueCapture(input: {
     captureExpression({ kind: 'event', occurrence: counted.occurrence, condition }, segments),
     segments,
     condition,
-    taken,
+    context,
   );
 }

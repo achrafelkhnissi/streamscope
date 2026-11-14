@@ -351,9 +351,11 @@ export function registerRequestFeatures(
   const nameAnswers: (string | undefined)[] = [];
   const nameWaiters: ((answer: string | undefined) => void)[] = [];
   let namesAsked = 0;
+  let lastQuestion: NameQuestion | undefined;
   const askName = testMode
-    ? (): Promise<string | undefined> => {
+    ? (question: NameQuestion): Promise<string | undefined> => {
         namesAsked += 1;
+        lastQuestion = question;
         if (nameAnswers.length > 0) {
           return Promise.resolve(nameAnswers.shift());
         }
@@ -371,7 +373,15 @@ export function registerRequestFeatures(
             validateInput: question.validate,
           }),
         );
-  const valueCapture = new ValueCapture({ cache, presenter, askName });
+  const definedNames = async (document: vscode.TextDocument): Promise<ReadonlySet<string>> => {
+    const catalog = await environments.catalogFor(document.uri);
+    return new Set([
+      ...cache.get(document).fileVariables.map(({ name }) => name),
+      ...catalog.variables.keys(),
+      ...catalog.shared.keys(),
+    ]);
+  };
+  const valueCapture = new ValueCapture({ cache, presenter, askName, definedNames });
   const panels = new ResponsePanels({
     extensionUri: context.extensionUri,
     state: context.globalState,
@@ -787,6 +797,15 @@ export function registerRequestFeatures(
         }
       }),
       vscode.commands.registerCommand('streamscope.test.captureNamesAsked', () => namesAsked),
+      vscode.commands.registerCommand('streamscope.test.lastCaptureQuestion', (input?: unknown) =>
+        lastQuestion === undefined
+          ? undefined
+          : {
+              value: lastQuestion.value,
+              prompt: lastQuestion.prompt,
+              validation: typeof input === 'string' ? lastQuestion.validate(input) : undefined,
+            },
+      ),
       vscode.commands.registerCommand(
         'streamscope.test.openEvent',
         async (key?: unknown, index?: unknown) => {

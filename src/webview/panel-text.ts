@@ -18,6 +18,10 @@ export const stateLabels: Record<PanelRunState, string> = {
 export const eventCaptureHint =
   'Click a value in the event first, or open the event in the editor and run Capture This Value there.';
 
+export const captureWhereHint = 'Capture This Value works on an expanded event or a JSON Body.';
+
+export const notJsonHint = 'Capture This Value needs a JSON value, and the text here is not JSON.';
+
 export const bodyCaptureHint =
   'Click a value in the body first, or open the body in the editor and run Capture This Value there.';
 

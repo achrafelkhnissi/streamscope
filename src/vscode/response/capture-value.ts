@@ -1,6 +1,10 @@
 import * as path from 'node:path';
 import * as vscode from 'vscode';
-import { parseCaptureNameInput } from '../../capture/capture-line';
+import {
+  captureNameProblem,
+  invalidNameMessage,
+  parseCaptureNameInput,
+} from '../../capture/capture-line';
 import { planValueCapture, positionMessage, type ValueTarget } from '../../capture/value-capture';
 import type { StreamEvent } from '../../events/model';
 import { capturedNames, placeCapture } from '../../http-file/capture-placement';
@@ -13,7 +17,7 @@ import {
 } from '../../response/json-position';
 import { detailText, isEventStream } from '../../response/panel-content';
 import type { FromPanel, PanelBody } from '../../response/panel-protocol';
-import { findRequest, requestKeyDocument, type RunHandle } from '../../runs/run';
+import { findRequest, requestKey, requestKeyDocument, type RunHandle } from '../../runs/run';
 import type { ParseCache } from '../language/parse-cache';
 import type { ResponsePresenter } from './presenter';
 
@@ -22,21 +26,20 @@ export type PanelCaptureMessage = Extract<FromPanel, { type: 'capture' }>;
 export interface NameQuestion {
   value: string;
   prompt: string;
-  validate: (input: string) => string | undefined;
+  validate: (input: string) => string | vscode.InputBoxValidationMessage | undefined;
 }
 
 export interface ValueCaptureOptions {
   cache: ParseCache;
   presenter: ResponsePresenter;
   askName(question: NameQuestion): Promise<string | undefined>;
+  definedNames(document: vscode.TextDocument): Promise<ReadonlySet<string>>;
 }
 
 type Located = { ok: true; segments: PathSegment[] } | { ok: false; message: string };
 
 export const captureWhereMessage = 'Capture This Value works in an event or Body document.';
 const releasedMessage = 'This response is no longer available.';
-const invalidNameMessage =
-  'A capture name starts with a letter or _ and has only letters, digits and _.';
 const progressDelayMs = 500;
 const scanChars = 1_048_576;
 const promptExpressionLength = 200;
@@ -204,8 +207,16 @@ export class ValueCapture {
         ? { events: snapshot.stream.store, typeFields: snapshot.stream.typeFields }
         : undefined;
     const taken = capturedNames(request);
+    const defined = await this.options.definedNames(document);
     const plan = await withDelayedProgress((signal) =>
-      planValueCapture({ target, segments: found.segments, stream, taken, signal }),
+      planValueCapture({
+        target,
+        segments: found.segments,
+        stream,
+        taken: new Set([...taken, ...defined]),
+        sensitiveValues: snapshot.sensitiveValues,
+        signal,
+      }),
     );
     if (!plan.ok) {
       if ('message' in plan) {
@@ -228,11 +239,13 @@ export class ValueCapture {
       value: plan.suggestedName,
       prompt: `Name for ${cut(plan.expression, promptExpressionLength)}. Start with "secret " to mask the value.`,
       validate: (input) => {
-        const parsed = parseCaptureNameInput(input);
-        if (parsed === undefined) {
-          return invalidNameMessage;
+        const problem = captureNameProblem(input, taken, defined);
+        if (problem === undefined) {
+          return undefined;
         }
-        return taken.has(parsed.name) ? `This request already captures ${parsed.name}.` : undefined;
+        return problem.warning
+          ? { message: problem.message, severity: vscode.InputBoxValidationSeverity.Warning }
+          : problem.message;
       },
     });
     if (answer === undefined) {
@@ -252,7 +265,7 @@ export class ValueCapture {
       request: current,
       lines: documentLines(document),
       name: chosen.name,
-      secret: chosen.secret,
+      secret: chosen.secret || plan.sensitive,
       expression: plan.expression,
     });
     if (!placement.ok) {
@@ -282,6 +295,11 @@ export class ValueCapture {
   }
 
   private request(document: vscode.TextDocument, key: string): HttpRequest | undefined {
-    return findRequest(document.uri.toString(), this.options.cache.get(document), key);
+    const uri = document.uri.toString();
+    const file = this.options.cache.get(document);
+    const matching = file.requests.filter(
+      (request, index) => requestKey(uri, request, index) === key,
+    );
+    return matching.length > 1 ? undefined : findRequest(uri, file, key);
   }
 }

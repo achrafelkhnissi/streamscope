@@ -1,6 +1,6 @@
 import type { JsonValue, SseFields } from '../events/model';
 import { isKeyword } from '../expressions/lexer';
-import { looksLikeCredential } from '../masking/masking';
+import { isSensitiveName, looksLikeCredential } from '../masking/masking';
 import type { PathSegment } from '../response/json-position';
 
 export type EventCondition =
@@ -17,15 +17,18 @@ const maxNameLength = 64;
 const tooLongMessage =
   'The path to this value is too long for a capture (more than 4,096 characters).';
 const identifier = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
-const invisible = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu;
+const invisible =
+  /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Co}\p{Cn}\p{Default_Ignorable_Code_Point}\u00a0\u1680\u2000-\u200a\u202f\u205f\u3000]/gu;
 const nameInput = /^(?:secret\s+)?([A-Za-z_]\w*)$/;
 const wordSeparator = /[^A-Za-z0-9]+/;
 const capitals = /^[A-Z0-9]+$/;
 
 function stringLiteral(text: string): string {
-  return JSON.stringify(text).replace(
-    invisible,
-    (char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, '0')}`,
+  return JSON.stringify(text).replace(invisible, (char) =>
+    Array.from(
+      { length: char.length },
+      (_, at) => `\\u${char.charCodeAt(at).toString(16).padStart(4, '0')}`,
+    ).join(''),
   );
 }
 
@@ -52,7 +55,7 @@ function pathText(segments: readonly PathSegment[]): string {
 function isTypeValue(value: JsonValue | undefined): value is string | number | bigint {
   return (
     (typeof value === 'string' && value !== '') ||
-    typeof value === 'number' ||
+    (typeof value === 'number' && Number.isFinite(value)) ||
     typeof value === 'bigint'
   );
 }
@@ -148,5 +151,32 @@ export function parseCaptureNameInput(
   if (name === undefined) {
     return undefined;
   }
-  return { name, secret: trimmed !== name || looksLikeCredential(name) };
+  return {
+    name,
+    secret: trimmed !== name || looksLikeCredential(name) || isSensitiveName(name),
+  };
+}
+
+export const invalidNameMessage =
+  'A capture name starts with a letter or _ and has only letters, digits and _.';
+
+export function captureNameProblem(
+  input: string,
+  taken: ReadonlySet<string>,
+  defined: ReadonlySet<string>,
+): { message: string; warning: boolean } | undefined {
+  const parsed = parseCaptureNameInput(input);
+  if (parsed === undefined) {
+    return { message: invalidNameMessage, warning: false };
+  }
+  const { name } = parsed;
+  if (taken.has(name)) {
+    return { message: `This request already captures ${name}.`, warning: false };
+  }
+  return defined.has(name)
+    ? {
+        message: `${name} is also a file or environment variable; after this request runs, {{${name}}} in this file reads the captured value instead.`,
+        warning: true,
+      }
+    : undefined;
 }

@@ -26,7 +26,15 @@ const agentEvents = [
   { type: 'TEXT_MESSAGE_CONTENT', messageId: 'msg-1', delta: '!' },
   { type: 'RUN_FINISHED', threadId: 'thread-1', runId: 'run-1' },
 ];
-const itemsBody = '{"items":[{"id":"a-1"},{"id":"b-2"}],"sessionToken":"synthetic-token"}';
+const itemsBody =
+  '{"items":[{"id":"a-1"},{"id":"b-2"}],"sessionToken":"synthetic-token","auth":{"value":"synthetic-auth"}}';
+const echoedSecret = 'synthetic-echo-secret';
+
+interface CaptureQuestion {
+  value: string;
+  prompt: string;
+  validation: string | { message: string; severity: number } | undefined;
+}
 
 async function waitFor(
   condition: () => boolean | Promise<boolean>,
@@ -57,6 +65,13 @@ function namesAsked(): Thenable<number> {
   return vscode.commands.executeCommand<number>('streamscope.test.captureNamesAsked');
 }
 
+function lastQuestion(input?: string): Thenable<CaptureQuestion | undefined> {
+  return vscode.commands.executeCommand<CaptureQuestion | undefined>(
+    'streamscope.test.lastCaptureQuestion',
+    input,
+  );
+}
+
 function panelMessage(key: string, message: unknown): Thenable<unknown> {
   return vscode.commands.executeCommand('streamscope.test.panelMessage', key, message);
 }
@@ -73,6 +88,11 @@ describe('Capture This Value', () => {
   before(async () => {
     folder = mkdtempSync(path.join(tmpdir(), 'streamscope-capture-value-'));
     server = await startHttpServer((request, response) => {
+      if (request.url === '/echo') {
+        response.writeHead(200, { 'Content-Type': 'application/json' });
+        response.end(`{"${echoedSecret}":"x"}`);
+        return;
+      }
       if (request.url === '/stream') {
         response.writeHead(200, { 'Content-Type': 'application/x-ndjson' });
         response.end(agentEvents.map((event) => JSON.stringify(event)).join('\n') + '\n');
@@ -94,7 +114,7 @@ describe('Capture This Value', () => {
     removeTemporaryFolder(folder);
   });
 
-  async function open(name: string): Promise<Opened> {
+  async function open(name: string, extra: readonly string[] = []): Promise<Opened> {
     const file = path.join(folder, name);
     writeFileSync(
       file,
@@ -109,6 +129,7 @@ describe('Capture This Value', () => {
         '# @name items',
         'GET {{baseUrl}}/items',
         '',
+        ...extra,
       ].join('\n'),
     );
     const document = await vscode.workspace.openTextDocument(vscode.Uri.file(file));
@@ -312,6 +333,115 @@ describe('Capture This Value', () => {
 
     assert.equal(await namesAsked(), asked);
     assert.equal(opened.document.getText(), text);
+  });
+
+  it('refuses when two requests share the name of the one that ran', async () => {
+    const opened = await open('duplicate.http', [
+      '### Again',
+      '# @name startRun',
+      'POST {{baseUrl}}/stream',
+      '',
+    ]);
+    const key = `${opened.uri.toString()}\n@startRun`;
+    const state = await sendAndWait(opened, 'startRun', 'POST {{baseUrl}}/stream');
+    const text = opened.document.getText();
+    const asked = await namesAsked();
+
+    await panelMessage(key, {
+      type: 'capture',
+      run: state.run,
+      target: 'event',
+      index: 1,
+      offset: prettyEvent(1).indexOf('"thread-1"'),
+    });
+
+    assert.equal(await namesAsked(), asked);
+    assert.equal(opened.document.getText(), text);
+  });
+
+  it('suggests a name no variable of the file has, and warns when one is typed', async () => {
+    const opened = await open('shadow.http', ['@threadId = seeded', '']);
+    const key = `${opened.uri.toString()}\n@startRun`;
+    const state = await sendAndWait(opened, 'startRun', 'POST {{baseUrl}}/stream');
+    const text = opened.document.getText();
+
+    await answerName(undefined);
+    await panelMessage(key, {
+      type: 'capture',
+      run: state.run,
+      target: 'event',
+      index: 1,
+      offset: prettyEvent(1).indexOf('"thread-1"'),
+    });
+
+    const question = await lastQuestion('threadId');
+    assert.ok(question);
+    assert.equal(question.value, 'threadId2');
+    assert.deepEqual(question.validation, {
+      message:
+        'threadId is also a file or environment variable; after this request runs, {{threadId}} in this file reads the captured value instead.',
+      severity: vscode.InputBoxValidationSeverity.Warning,
+    });
+    assert.equal((await lastQuestion('threadId2'))?.validation, undefined);
+    assert.equal(opened.document.getText(), text);
+  });
+
+  it('writes secret for a value under a sensitive key', async () => {
+    const opened = await open('sensitive.http');
+    const key = `${opened.uri.toString()}\n@items`;
+    const state = await sendAndWait(opened, 'items', 'GET {{baseUrl}}/items');
+    await waitFor(
+      async () => (await responseState(key))?.bodyText !== undefined,
+      'the Body never arrived',
+    );
+    const bodyText = (await responseState(key))?.bodyText ?? '';
+
+    await answerName('loginValue');
+    await panelMessage(key, {
+      type: 'capture',
+      run: state.run,
+      target: 'body',
+      offset: bodyText.indexOf('"synthetic-auth"'),
+    });
+
+    assert.equal(
+      opened.document.lineAt(line(opened, 'GET {{baseUrl}}/items') - 1).text,
+      '# @capture secret loginValue = body.auth.value',
+    );
+  });
+
+  it('refuses a value whose path holds a secret the request sent', async () => {
+    await vscode.commands.executeCommand('streamscope.setSecret', 'echoKey', echoedSecret);
+    try {
+      const opened = await open('echo.http', [
+        '### Echo',
+        '# @name echo',
+        'GET {{baseUrl}}/echo',
+        'X-Echo: {{$secret echoKey}}',
+        '',
+      ]);
+      const key = `${opened.uri.toString()}\n@echo`;
+      const state = await sendAndWait(opened, 'echo', 'GET {{baseUrl}}/echo');
+      await waitFor(
+        async () => (await responseState(key))?.bodyText !== undefined,
+        'the Body never arrived',
+      );
+      const bodyText = (await responseState(key))?.bodyText ?? '';
+      const text = opened.document.getText();
+      const asked = await namesAsked();
+
+      await panelMessage(key, {
+        type: 'capture',
+        run: state.run,
+        target: 'body',
+        offset: bodyText.indexOf('"x"'),
+      });
+
+      assert.equal(await namesAsked(), asked);
+      assert.equal(opened.document.getText(), text);
+    } finally {
+      await vscode.commands.executeCommand('streamscope.clearSecret', 'echoKey');
+    }
   });
 
   it('does nothing when the name prompt is dismissed', async () => {

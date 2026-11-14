@@ -116,6 +116,7 @@ export function panelHtml(options: PanelHtmlOptions): string {
 <header class="bar"><span class="pill" id="state"></span><span id="status"></span><button type="button" id="open" hidden>Open in Editor</button><button type="button" id="capture" hidden>Capture This Value…</button><button type="button" id="save" disabled>Save Response</button><button type="button" id="stop" disabled>Stop</button></header>
 <p id="history-note" hidden></p>
 <div class="tabs" role="tablist" aria-label="Response views">${panelViews.map(tabButton).join('')}</div>
+<p id="capture-note" hidden></p>
 <ul class="captures" id="captures" aria-label="Captured values" hidden></ul>
 ${panelViews.map(panel).join('\n')}
 <div class="visually-hidden" id="announce" role="status" aria-live="polite"></div>

@@ -214,6 +214,7 @@ describe('planValueCapture', () => {
               segments,
               stream: { events: session.store, typeFields: session.typeFields },
               taken: new Set(),
+              sensitiveValues: [],
               signal: new AbortController().signal,
             }),
           );
@@ -254,6 +255,7 @@ describe('planValueCapture', () => {
           segments,
           stream: undefined,
           taken: new Set(),
+          sensitiveValues: [],
           signal: new AbortController().signal,
         }),
       );
@@ -281,6 +283,7 @@ describe('planValueCapture', () => {
         segments,
         stream: { events: store, typeFields },
         taken: new Set(),
+        sensitiveValues: [],
         signal: new AbortController().signal,
       });
 
@@ -306,6 +309,7 @@ describe('planValueCapture', () => {
         segments: ['a'],
         stream: { events: store, typeFields },
         taken: new Set(),
+        sensitiveValues: [],
         signal: new AbortController().signal,
       }),
     ).toEqual({
@@ -330,6 +334,7 @@ describe('planValueCapture', () => {
         segments: ['type'],
         stream: { events: gone, typeFields },
         taken: new Set(),
+        sensitiveValues: [],
         signal: new AbortController().signal,
       }),
     ).toEqual({
@@ -346,6 +351,7 @@ describe('planValueCapture', () => {
         segments: ['type'],
         stream: { events: store, typeFields },
         taken: new Set(),
+        sensitiveValues: [],
         signal: controller.signal,
       }),
     ).toEqual({ ok: false, cancelled: true });
@@ -358,6 +364,7 @@ describe('planValueCapture', () => {
       segments: ['threadId'],
       stream: { events: memoryStore(events), typeFields },
       taken: new Set(['threadId']),
+      sensitiveValues: [],
       signal: new AbortController().signal,
     });
 
@@ -366,6 +373,102 @@ describe('planValueCapture', () => {
       expression: 'first(type == "RUN_STARTED").threadId',
       condition: { kind: 'field', field: 'type', value: 'RUN_STARTED' },
       suggestedName: 'threadId2',
+      sensitive: false,
     });
+  });
+
+  it('marks a plan sensitive when a key or the type field has a sensitive word', async () => {
+    const body = (segments: PathSegment[]) =>
+      planValueCapture({
+        target: { kind: 'body' },
+        segments,
+        stream: undefined,
+        taken: new Set(),
+        sensitiveValues: [],
+        signal: new AbortController().signal,
+      });
+    for (const segments of [
+      ['headers', 'Authorization'],
+      ['sessionId'],
+      ['auth', 'value'],
+      ['jwt'],
+    ]) {
+      expect(await body(segments), JSON.stringify(segments)).toMatchObject({
+        ok: true,
+        sensitive: true,
+      });
+    }
+    expect(await body(['threadId'])).toMatchObject({ ok: true, sensitive: false });
+    const events = [streamEvent(1, { session: 'opened', id: 'x' }, 'json')];
+    expect(
+      await planValueCapture({
+        target: { kind: 'event', event: events[0] as StreamEvent },
+        segments: ['id'],
+        stream: { events: memoryStore(events), typeFields: ['session'] },
+        taken: new Set(),
+        sensitiveValues: [],
+        signal: new AbortController().signal,
+      }),
+    ).toMatchObject({ ok: true, expression: 'first(session == "opened").id', sensitive: true });
+  });
+
+  it('refuses a capture whose expression would contain a secret the request sent', async () => {
+    const refused = {
+      ok: false,
+      message:
+        'The path to this value or its event type contains a secret this request sent, so Streamscope will not write it into the file.',
+    };
+    expect(
+      await planValueCapture({
+        target: { kind: 'body' },
+        segments: ['synthetic-secret-value'],
+        stream: undefined,
+        taken: new Set(),
+        sensitiveValues: ['synthetic-secret-value'],
+        signal: new AbortController().signal,
+      }),
+    ).toEqual(refused);
+    const events = [streamEvent(1, { type: 'synthetic-secret-value', id: 'x' }, 'json')];
+    expect(
+      await planValueCapture({
+        target: { kind: 'event', event: events[0] as StreamEvent },
+        segments: ['id'],
+        stream: { events: memoryStore(events), typeFields },
+        taken: new Set(),
+        sensitiveValues: ['synthetic-secret-value'],
+        signal: new AbortController().signal,
+      }),
+    ).toEqual(refused);
+  });
+
+  it('counts numeric discriminators by value and skips ones that are not finite', async () => {
+    const numeric = [
+      streamEvent(1, { type: 1e21, id: 'a' }, 'json'),
+      streamEvent(2, { type: 1000000000000000000000n, id: 'b' }, 'json'),
+    ];
+    expect(
+      await planValueCapture({
+        target: { kind: 'event', event: numeric[1] as StreamEvent },
+        segments: ['id'],
+        stream: { events: memoryStore(numeric), typeFields },
+        taken: new Set(),
+        sensitiveValues: [],
+        signal: new AbortController().signal,
+      }),
+    ).toMatchObject({ ok: true, expression: 'nth(2, type == 1000000000000000000000).id' });
+    const infinite = [
+      streamEvent(1, { other: 1 }, 'json'),
+      streamEvent(2, { type: Number.POSITIVE_INFINITY, id: 'c' }, 'json'),
+    ];
+    expect(
+      await planValueCapture({
+        target: { kind: 'event', event: infinite[1] as StreamEvent },
+        segments: ['id'],
+        stream: { events: memoryStore(infinite), typeFields },
+        taken: new Set(),
+        sensitiveValues: [],
+        signal: new AbortController().signal,
+      }),
+    ).toMatchObject({ ok: true, expression: 'nth(2).id' });
   });
 });

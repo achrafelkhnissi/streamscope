@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   isCredentialCookie,
   isSensitiveHeader,
+  isSensitiveName,
   looksLikeCredential,
   maskedPreview,
   maskedValue,
@@ -301,6 +302,33 @@ describe('masking', () => {
       'api_key',
     ]) {
       expect(isCredentialCookie(name), name).toBe(false);
+    }
+  });
+});
+
+describe('isSensitiveName', () => {
+  it('finds a sensitive word in a camel-case or separated name', () => {
+    for (const name of [
+      'sessionId',
+      'authorization',
+      'jwt',
+      'apiKey',
+      'x-session-token',
+      'Cookie',
+      'access_token',
+      'clientSecret',
+    ]) {
+      expect(isSensitiveName(name), name).toBe(true);
+    }
+    for (const name of [
+      'threadId',
+      'monkey',
+      'keyboardLayout',
+      'authorName',
+      'tokenizer',
+      'messageId',
+    ]) {
+      expect(isSensitiveName(name), name).toBe(false);
     }
   });
 });

@@ -22,8 +22,10 @@ import {
 import {
   bodyCaptureHint,
   bodyNote,
+  captureWhereHint,
   captureText,
   eventCaptureHint,
+  notJsonHint,
   historyNote,
   rawNote,
   replyNote,
@@ -114,6 +116,7 @@ const headersText = element('headers', HTMLPreElement);
 const noteText = element('body-note', HTMLParagraphElement);
 const bodyText = element('body', HTMLPreElement);
 const captureHint = element('capture-hint', HTMLParagraphElement);
+const captureNote = element('capture-note', HTMLParagraphElement);
 const views = panelViews.map((name) => ({
   name,
   tab: element(`tab-${name}`, HTMLButtonElement),
@@ -236,6 +239,9 @@ function queueRender(): void {
 function showView(next: PanelView, picked: boolean): void {
   const changed = next !== view;
   view = next;
+  if (changed) {
+    captureNote.hidden = true;
+  }
   for (const entry of views) {
     const on = entry.name === next;
     entry.tab.setAttribute('aria-selected', String(on));
@@ -663,6 +669,7 @@ function reset(message: Extract<ToPanel, { type: 'reset' }>): void {
     pendingScroll = undefined;
   }
   run = message.run;
+  captureNote.hidden = true;
   announcedState = undefined;
   ownScrollTop = undefined;
   count = 0;
@@ -747,11 +754,7 @@ function receive(message: ToPanel): void {
       expand(message.index);
       return;
     case 'captureSelection':
-      if (view === 'body') {
-        captureBody();
-      } else {
-        captureEvent();
-      }
+      captureSelected();
       return;
   }
 }
@@ -792,6 +795,21 @@ function showHint(node: HTMLParagraphElement | undefined, text: string): void {
     node.hidden = false;
   }
   announce(text);
+}
+
+function captureSelected(): void {
+  captureNote.hidden = true;
+  if (view === 'events' && detail !== undefined) {
+    captureEvent();
+  } else if (view === 'body' && !captureButton.hidden) {
+    captureBody();
+  } else if (view === 'events') {
+    showHint(captureNote, eventCaptureHint);
+  } else if (view === 'body' && (body.kind === 'text' || body.kind === 'preview')) {
+    showHint(captureNote, notJsonHint);
+  } else {
+    showHint(captureNote, captureWhereHint);
+  }
 }
 
 function captureEvent(): void {

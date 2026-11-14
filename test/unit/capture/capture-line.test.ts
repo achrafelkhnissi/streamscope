@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   captureExpression,
+  captureNameProblem,
   conditionText,
   eventCondition,
   parseCaptureNameInput,
@@ -13,7 +14,8 @@ import { captureLine } from '../../../src/http-file/capture-placement';
 import { parseExpression } from '../../../src/expressions/parse';
 
 const runStarted: EventCondition = { kind: 'field', field: 'type', value: 'RUN_STARTED' };
-const invisible = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u;
+const invisible =
+  /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Co}\p{Cn}\p{Default_Ignorable_Code_Point}\u00a0\u1680\u2000-\u200a\u202f\u205f\u3000]/u;
 
 function built(result: ReturnType<typeof captureExpression>): string {
   if (!result.ok) {
@@ -99,6 +101,15 @@ describe('captureExpression', () => {
       '\ud800',
       'tab\there',
       'quote"and\\slash',
+      '🏴\u{E0067}\u{E0062}\u{E0065}\u{E006E}\u{E0067}\u{E007F}',
+      'a\u{1D173}b',
+      '\u3164',
+      'x\u00a0y',
+      'x\ufe0fy',
+      'x\u3000y',
+      'x\u{E0100}y',
+      'x\u2065y',
+      'x\ue000y',
     ];
     for (const key of keys) {
       const body = Object.defineProperty({}, key, {
@@ -146,6 +157,23 @@ describe('captureExpression', () => {
     const sse: EventCondition = { kind: 'sse', value: 'x\u0000y' };
     expect(conditionText(sse)).not.toMatch(invisible);
     expect(conditionHolds(sse, {}, { event: 'x\u0000y' })).toBe(true);
+    const tagged: EventCondition = { kind: 'sse', value: 'x\u{E0001}' };
+    expect(conditionText(tagged)).not.toMatch(invisible);
+    expect(conditionHolds(tagged, {}, { event: 'x\u{E0001}' })).toBe(true);
+    expect(conditionHolds(tagged, {}, { event: 'x\udb40' })).toBe(false);
+  });
+
+  it('never uses a number that is not finite as a discriminator', () => {
+    const fields = ['type', 'event'];
+    const sse = { event: 'x', id: undefined, retry: undefined };
+    expect(eventCondition({ type: Number.POSITIVE_INFINITY }, undefined, fields)).toBeUndefined();
+    expect(
+      eventCondition({ type: Number.NEGATIVE_INFINITY, event: 'B' }, undefined, fields),
+    ).toEqual({ kind: 'field', field: 'event', value: 'B' });
+    expect(eventCondition({ type: Number.POSITIVE_INFINITY }, sse, fields)).toEqual({
+      kind: 'sse',
+      value: 'x',
+    });
   });
 
   it('picks the discriminator the way eventLabel does', () => {
@@ -225,5 +253,42 @@ describe('parseCaptureNameInput', () => {
     expect(parseCaptureNameInput('a b')).toBeUndefined();
     expect(parseCaptureNameInput('a$')).toBeUndefined();
     expect(parseCaptureNameInput('')).toBeUndefined();
+  });
+
+  it('writes secret for names with a sensitive word', () => {
+    for (const name of [
+      'sessionId',
+      'authorization',
+      'jwt',
+      'apiKey',
+      'csrfCookie',
+      'auth_value',
+    ]) {
+      expect(parseCaptureNameInput(name), name).toEqual({ name, secret: true });
+    }
+    for (const name of ['threadId', 'monkey', 'keyboardLayout', 'authorName']) {
+      expect(parseCaptureNameInput(name), name).toEqual({ name, secret: false });
+    }
+  });
+});
+
+describe('captureNameProblem', () => {
+  it('refuses invalid and taken names and warns about a name a variable already has', () => {
+    const taken = new Set(['threadId']);
+    const defined = new Set(['authHost']);
+    expect(captureNameProblem('runId', taken, defined)).toBeUndefined();
+    expect(captureNameProblem('2x', taken, defined)).toEqual({
+      message: 'A capture name starts with a letter or _ and has only letters, digits and _.',
+      warning: false,
+    });
+    expect(captureNameProblem('threadId', taken, defined)).toEqual({
+      message: 'This request already captures threadId.',
+      warning: false,
+    });
+    expect(captureNameProblem('secret authHost', taken, defined)).toEqual({
+      message:
+        'authHost is also a file or environment variable; after this request runs, {{authHost}} in this file reads the captured value instead.',
+      warning: true,
+    });
   });
 });
