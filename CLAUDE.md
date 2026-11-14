@@ -25,7 +25,7 @@ The product is **Streamscope** (`achrafelkhnissi.streamscope`, display name "Str
 | `src/environments/`                | REST Client and JetBrains environments, the merged catalog, and `.env` parsing and lookup order                              |
 | `src/variables/`                   | Variable resolution from every source, sensitive values, and reference descriptions for hovers                               |
 | `src/expressions/`                 | Capture expression language: lexer, parser, evaluator with work budgets, value insertion, linear-time regex, JSONPath        |
-| `src/capture/`                     | Capture tracking per run, body evaluation in a child process, the capture registry and waits, response references, hints     |
+| `src/capture/`                     | Capture tracking per run, evaluation on the host or in a child process, the capture registry and waits, response references  |
 | `src/secrets/`                     | Secret storage key format                                                                                                    |
 | `src/transport/`                   | `node:http`/`node:https` exchange, decompression, TLS options and redirects                                                  |
 | `src/runs/`                        | Outgoing request building, body files, durations, runs and the run registry                                                  |

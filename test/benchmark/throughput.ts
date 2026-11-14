@@ -15,6 +15,7 @@ export interface ThroughputResult {
   captures: number;
   counted?: number;
   unmatched?: number;
+  pauses: number;
   seconds: number;
   eventsPerSecond: number;
 }
@@ -110,9 +111,11 @@ export async function measureThroughput(options: {
     { httpVersion: '1.1', status: 200, statusText: 'OK', headers: [['content-type', contentType]] },
     { spillPath: () => Promise.resolve(undefined), signal },
   );
+  let pauses = 0;
   const startedAt = performance.now();
   for (let start = 0; start < bytes.length; start += options.chunkBytes) {
     if (!session.write(bytes.subarray(start, start + options.chunkBytes))) {
+      pauses += 1;
       await drained(session);
     }
   }
@@ -136,6 +139,7 @@ export async function measureThroughput(options: {
     eventBytes: options.eventBytes,
     captures: options.captures,
     ...(tracker === undefined ? {} : captureCounts(results)),
+    pauses,
     seconds,
     eventsPerSecond: session.store.count / seconds,
   };

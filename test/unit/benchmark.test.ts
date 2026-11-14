@@ -19,6 +19,7 @@ describe('benchmark harness', () => {
       expect(result.eventBytes).toBe(1024);
       expect(result.captures).toBe(0);
       expect(result.counted).toBeUndefined();
+      expect(result.pauses).toBe(0);
       expect(result.seconds).toBeGreaterThan(0);
       expect(result.eventsPerSecond).toBeGreaterThan(0);
     }
@@ -39,6 +40,7 @@ describe('benchmark harness', () => {
       expect(result.captures).toBe(4);
       expect(result.counted).toBe(100_000);
       expect(result.unmatched).toBe(4);
+      expect(result.pauses).toBeGreaterThan(0);
       expect(result.eventsPerSecond).toBeGreaterThan(0);
     }
   });

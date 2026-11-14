@@ -240,12 +240,12 @@ flowchart LR
 
 Rules:
 
-- The socket is read at full speed. The UI never slows it down. The only backpressure is the spill-file write; if the disk cannot keep up, the socket pauses.
+- The socket is read at full speed. The UI never slows it down. Only bounded sinks pause the socket: the decompressor, the spill-file write when the disk cannot keep up, and the capture queue when captures cannot keep up (section 10, Limits).
 - The framer splits bytes on LF, CRLF and lone CR, carrying a pending CR across chunk boundaries. Each line records its exact byte offset and length in the decompressed stream. A leading BOM belongs to no line.
 - Each complete line is then decoded as UTF-8. CR and LF never occur inside a multi-byte sequence, so a character split across chunks is rebuilt as the line accumulates. Invalid bytes become U+FFFD and one warning per stream, carrying the byte offset of the first invalid byte. Bodies that are not parsed into events (text, single JSON, raw) go through one `TextDecoder` in streaming mode, flushed at end of stream.
 - The framer holds at most `maxEventSize` bytes of one line, and an undecided body at most 64 KiB plus one chunk. While the format is still being detected, lines up to 64 KiB are accepted whatever `maxEventSize` says, so a small limit never truncates a sniffed body.
 - Small chunks are gathered: a line arriving in many pieces is copied into one growing buffer, and the spill file stages writes smaller than 64 KiB.
-- Captures and checks evaluate on every event synchronously and cheaply; UI updates are batched: the first update goes out as soon as the current chunk has been parsed (in a microtask, never inside a parser callback), then at most every 50 ms, and immediately on end, error or cancel.
+- Captures evaluate events in arrival order: as each event arrives while the task's 10 ms slice of capture work lasts, then from the capture queue in later tasks (section 10, Limits). UI updates are batched: the first update goes out as soon as the current chunk has been parsed (in a microtask, never inside a parser callback), then at most every 50 ms, and immediately on end, error or cancel.
 - The format detector runs once, but may upgrade single JSON to NDJSON (section 8).
 
 ## 8. NDJSON and SSE parsing
@@ -610,7 +610,7 @@ Captures add these rules (`src/masking/masking.ts`). A sensitive header below is
 - **Failure reasons** are masked with the producer run's sensitive values when they are created, so blocked messages, notifications, hints and the summary show them masked.
 - **Carried values.** A resolved capture carries the producer's sensitive values that occur in its text: those of the producer request, and values from its response headers. Every display of the capture masks them, and a request that inserts the capture adds them to its own sensitive values.
 - **Source-aware carry.** From the response, only sensitive header values and cookie values are carried. When the capture's expression reads `headers` or `cookies` in any form, they are carried at any length, except a cookie value whose name has no credential word. That one, and every response value carried for a capture that reads neither, is carried only from 8 characters, so a `consent=1` cookie does not mask every `1`.
-- **JSON text.** A sensitive value that contains `"` or `\` is also found in its JSON-escaped form.
+- **JSON text.** A sensitive value that JSON escapes, one with `"`, `\`, a control character such as a newline, or a lone surrogate, is also found in its JSON-escaped form.
 - **Response references.** A `{{x.response…}}` value is sensitive when the selector's last name looks like a credential, when it reads a sensitive header, or when it equals a secret capture of the producer's run. While a secret capture of that run is pending, the value may equal it, so it is masked.
 - **Previews.** Hovers and inlay hint tooltips show at most 4,096 characters of a value.
 

@@ -15,7 +15,7 @@ npm run bench -- soak --format sse --rate 5000 --minutes 1
 `npm run bench` bundles `test/benchmark/main.ts` with esbuild and runs it with `node --expose-gc`.
 
 - **`throughput`** parses events of `--size` bytes (default 1,024) from memory through a `StreamSession` without a spill file. It reports events per second.
-- **`--captures N`** adds a `CaptureTracker` to `throughput`, wired as a run wires it: N `first(…)` captures whose condition never matches and one `count(…)` that matches every event, so each capture tests every event. When the capture queue is congested, writing waits for it to drain, as the socket would. The time includes the end of the run, when the captures settle. The result adds `counted`, the value of the `count(…)` capture, and `unmatched`, the number of `first(…)` captures that failed for lack of a match.
+- **`--captures N`** adds a `CaptureTracker` to `throughput`, wired as a run wires it: N `first(…)` captures whose condition never matches and one `count(…)` that matches every event, so each capture tests every event. When the capture queue is congested, writing waits for it to drain, as the socket would. The time includes the end of the run, when the captures settle. The result adds `counted`, the value of the `count(…)` capture, `unmatched`, the number of `first(…)` captures that failed for lack of a match, and `pauses`, the number of times writing waited for the queue to drain.
 - **`soak`** sends a real request through `NodeTransport` to the synthetic stream server (`test/support/stream-server.ts`) and feeds a `StreamSession` with a spill file. It reports:
   - **Memory:** sampled every 5 s after a forced garbage collection. "Heap plus array buffers" counts the JavaScript heap and the typed-array event index, which is what the 150 MB budget covers.
   - **Lag:** the time from the server stamping an event to the batched update that delivers it. It includes up to 50 ms of batching.
@@ -271,7 +271,7 @@ Two things seen in the first walkthroughs were fixed in `5b09974`. All four walk
 
 ## 2026-11-14: M7 captures
 
-Branch `m7-captures` at `c98b194`, with this section's `--captures` option. Apple M3 Pro, 18 GB, macOS 27.2.1, Node 24.18.0. Events are AG-UI `TEXT_MESSAGE_CONTENT` of 1,024 bytes each. MB means 10⁶ bytes, as in the earlier sections. During the runs the load average was 3 to 5 and a virtual machine used about 60% of one core.
+Branch `m7-captures` at `c98b194`, with this section's `--captures` option. Apple M3 Pro, 18 GB, macOS 27.2.1, Node 24.18.0. Events are AG-UI `TEXT_MESSAGE_CONTENT` of 1,024 bytes each. MB means 10⁶ bytes, as in the earlier sections. Before the first run, `uptime` showed load averages of 3.20, 4.02 and 5.06 over 1, 5 and 15 minutes, and `ps` showed a virtual machine process at 61.9% CPU. The load was not measured during the runs.
 
 ### Throughput
 
@@ -284,7 +284,7 @@ Five rounds per format, each round a plain run and a `--captures 4` run, one aft
 | SSE, 100,000 events                | 353,955, 361,319, 359,331, 357,419, 359,456 | 359,331 | at least 5,000 events/s |
 | SSE, 100,000 events, captures 4    | 299,160, 300,398, 296,316, 290,290, 299,269 | 299,160 | at least 5,000 events/s |
 
-- **What the captures cost.** The captures lower the median by 19% for NDJSON and 17% for SSE. Per event that is 2.99 µs instead of 2.42 µs for NDJSON, and 3.34 µs instead of 2.78 µs for SSE: 0.57 and 0.56 µs for five captures. Every capture run counted 100,000 events and left the four `first(…)` captures unmatched.
+- **What the captures cost.** The captures lower the median by 19% for NDJSON and 17% for SSE. Per event that is 2.99 µs instead of 2.42 µs for NDJSON, and 3.34 µs instead of 2.78 µs for SSE: 0.57 and 0.56 µs for five captures. Every capture run counted 100,000 events and left the four `first(…)` captures unmatched. These runs came before the result reported `pauses`. Five later capture runs of the same size, three NDJSON and two SSE, each waited for the queue to drain 3 times.
 - **The plain run against M7's starting point.** Before M7 changed `src/events`, Task 5 measured a mean of 440,867 events/s for NDJSON and 380,635 for SSE. Today's plain medians are 6.2% and 5.6% lower. The code is not the cause: five interleaved rounds of the same benchmark, built from `origin/main` (M6, before M7) and from `c98b194`, gave means of 402,499 and 406,173 events/s for NDJSON and 356,348 and 358,531 for SSE. Both builds ran slower on the machine today.
 
 ### Soak
@@ -299,8 +299,19 @@ NDJSON at 1,000 events/s with a spill file, without captures.
 | 1 minute, `c98b194` without `--captures` | 60,002 of 60,002 (all)   | 19.9 MB   | 25.5 MB                 | 49 / 52 ms    |
 
 - **The heap is flat.** It peaked at 20,613,552 bytes after 1 minute and 20,621,064 bytes after 5 minutes, five times as many events. The array buffers grew from 8.7 to 27.1 MB with the event index and the spill file's write buffers, as in M4. Every run stayed far under the 150 MB budget.
-- **M7 adds no heap to a stream without captures.** The benchmark built from M6 and from `c98b194`, before `--captures` existed, peaked at 19.9 MB in both. The benchmark with `--captures` also loads the capture code, and its runs peaked at 20.6 MB. That the loaded code makes the difference was not measured.
-- **Captures are not soaked.** The soak has no capture option. The capture queue that a run with captures adds is bounded by its backpressure limits, 5,000 events or 8 MiB, which `test/unit/capture/stream-captures.test.ts` pins.
+- **M7 adds no heap to a stream without captures.** The benchmark built from M6 and from `c98b194`, before the `--captures` option existed, peaked at 19.9 MB in both. The benchmark built with the option loads the capture code, although the soak runs no captures, and both of its soak runs peaked at 20.6 MB. That the loaded code makes the difference was not measured.
+- **Captures are not soaked.** The soak has no capture option. Unit tests pin the capture queue's backpressure limits instead:
+  - `test/unit/capture/tracker.test.ts`, "is congested past 5,000 queued events and drains once fewer than 1,000 remain";
+  - the same file, "is congested past 8 MiB of queued event bytes and drains below 2 MiB";
+  - `test/unit/capture/stream-captures.test.ts`, which checks over a real socket that the queue stays within 5,000 events plus one 64 KiB chunk.
+
+### Package
+
+| Measure                                      | Result        | Budget                                                                  |
+| -------------------------------------------- | ------------- | ----------------------------------------------------------------------- |
+| VSIX from `npm run verify:vsix` at `fe5dd8d` | 177,834 bytes | under 400 KB; `scripts/verify-vsix.mjs` fails a VSIX over 409,600 bytes |
+
+The VSIX holds 13 files, and `verify:vsix` installed and activated it in an isolated profile.
 
 Raw results, the median throughput runs and the two soak runs after this change:
 
