@@ -1,0 +1,63 @@
+name: Bug report
+description: Something in Streamscope does not work as described
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Use made-up URLs and values. Never paste tokens, secrets, real ids or real URLs.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: A request with a made-up URL that shows the problem, and what you did with it.
+      render: http
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+  - type: input
+    id: streamscope-version
+    attributes:
+      label: Streamscope version
+      placeholder: 0.1.0
+    validations:
+      required: true
+  - type: input
+    id: vscode-version
+    attributes:
+      label: VS Code version
+      description: Help → About, or `code --version`
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - macOS
+        - Windows
+        - Linux
+        - Remote (SSH, WSL or container)
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: Log excerpt
+      description: 'From **Streamscope: Show Log**.'
+      render: text
+  - type: checkboxes
+    id: no-secrets
+    attributes:
+      label: Before you submit
+      options:
+        - label: I removed tokens, secrets and real URLs from everything above
+          required: true
