@@ -2462,6 +2462,71 @@ describe('waiting for captured values', () => {
     expect(registry.waitCount).toBe(0);
   });
 
+  describe('a secret capture whose text has a lone surrogate', () => {
+    const loginKey = `${documentUri}\n@login`;
+    const token = 'synthetic-\ud800-token';
+    const body =
+      '{"access_token":"synthetic-\\ud800-token","data":{"token":"synthetic-\\ud800-token"}}';
+    const orders = ['the secret declared first', 'the secret declared last'] as const;
+
+    it.each(orders)(
+      'with %s, every capture resolves, the sibling masks the token and a consumer sends it',
+      async (order) => {
+        const api = await track(
+          startHttpServer((request, response) => {
+            response.writeHead(200, { 'Content-Type': 'application/json' });
+            response.end(request.url === '/login' ? body : 'ok');
+          }),
+        );
+        const secret = '# @capture secret token = body.access_token';
+        const sibling = '# @capture data = body.data';
+        const lines = [
+          '# @name login',
+          ...(order === orders[0] ? [secret, sibling] : [sibling, secret]),
+          `POST ${api.url}/login`,
+          '',
+          '###',
+          '# @name continue',
+          `POST ${api.url}/continue`,
+          'Content-Type: application/json',
+          '',
+          '{"token":"{{login.token}}"}',
+        ];
+        const registry = new CaptureRegistry();
+
+        const login = await startRun(capturing(registry, lines, 0), dependencies).done;
+        await waitFor(
+          () =>
+            registry.get(loginKey, 'token')?.result.state !== 'pending' &&
+            registry.get(loginKey, 'data')?.result.state !== 'pending',
+        );
+        const sent = await startRun(capturing(registry, lines, 1), dependencies).done;
+        const logged: string[] = [];
+        const record = (line: string): void => {
+          logged.push(line);
+        };
+        logRunEnd({ info: record, warn: record, debug: record }, sent);
+
+        expect(login.status).toBe('completed');
+        expect(registry.get(loginKey, 'token')?.result).toMatchObject({
+          state: 'resolved',
+          text: token,
+        });
+        expect(registry.get(loginKey, 'data')?.result).toMatchObject({
+          state: 'resolved',
+          sensitive: [token],
+        });
+        expect(captureHint(registry.get(loginKey, 'data'))?.label).toBe(
+          `= {"token":"${maskedValue}"}`,
+        );
+        expect(sent.status).toBe('completed');
+        expect(sent.sensitiveValues).toContain(token);
+        expect(api.requests[1]?.body.toString()).toBe('{"token":"synthetic-\uFFFD-token"}');
+        expect(describeOutcome(sent)).not.toContain(token);
+      },
+    );
+  });
+
   describe('a secret capture and the captures beside it in one run', () => {
     const files = useCaptureWorker();
     const loginKey = `${documentUri}\n@login`;

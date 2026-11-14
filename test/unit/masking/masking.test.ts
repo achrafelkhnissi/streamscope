@@ -245,6 +245,16 @@ describe('masking', () => {
     expect(sensitiveValuesIn(json, [value, 'absent"value'])).toEqual([value]);
   });
 
+  it('finds and masks a value with a lone surrogate, raw or JSON-escaped, without throwing', () => {
+    const high = 'synthetic-\ud800-token';
+    const low = 'synthetic-\udc00-token';
+    const text = `raw ${high} raw ${low} json ${JSON.stringify(high)}`;
+
+    expect(sensitiveValuesIn(text, [high, low, 'absent-\ud800'])).toEqual([high, low]);
+    expect(sensitiveValuesIn('{"t":"synthetic-\\ud800-token"}', [high])).toEqual([high]);
+    expect(maskValues(text, [high, low])).toBe('raw •••••• raw •••••• json "••••••"');
+  });
+
   it('recognises credential cookie names by case-insensitive substrings', () => {
     for (const name of [
       'session',

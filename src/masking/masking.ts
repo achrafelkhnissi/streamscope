@@ -88,9 +88,14 @@ export function isCredentialCookie(name: string): boolean {
   return cookieCredentialWords.some((word) => lower.includes(word));
 }
 
+const loneSurrogate = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+
 function encodedForms(value: string): string[] {
-  const component = encodeURIComponent(value);
-  const forms = [value, component, component.replace(/%20/g, '+'), encodeURI(value)];
+  const forms = [value];
+  if (!loneSurrogate.test(value)) {
+    const component = encodeURIComponent(value);
+    forms.push(component, component.replace(/%20/g, '+'), encodeURI(value));
+  }
   const escaped = JSON.stringify(value).slice(1, -1);
   if (escaped !== value) {
     forms.push(escaped);
