@@ -73,6 +73,25 @@ Content-Type: application/json
 
 Expressions also filter and reshape values: `body.items[?status == "ok"].id | join(",")`, `count(type == "TEXT_MESSAGE_CONTENT")`, `headers["location"] | match(/orders\/(\d+)/)`, `jsonpath("$.items[0].id")` and `body.next | default("none")`. REST Client's `{{login.response.body.$.token}}` and `{{login.response.headers.X-Token}}` work as well. The full syntax is in [section 10 of the design](docs/design.md#10-variable-extraction-and-resolution).
 
+## Checks
+
+A `# @expect` line states what a response must satisfy. It uses the capture language plus `exists(…)`, `count(…)`, `before(…)` and `unique(…)`:
+
+```http
+### Start agent run
+# @name startRun
+# @expect status == 200
+# @expect exists(first(type == "RUN_STARTED"))
+# @expect count(type == "TEXT_MESSAGE_CONTENT") > 2
+# @expect before(type == "RUN_STARTED", type == "RUN_FINISHED")
+# @expect !exists(first(type == "RUN_ERROR"))
+POST {{baseUrl}}/agent/run
+```
+
+- **Live:** each check settles at the first event that decides it, while the stream is still running, and never changes afterwards. `count(…) > 2` passes at the third match; `!exists(first(type == "RUN_ERROR"))` fails at the first error. A failed check does not stop the stream or block captures.
+- **Results:** the response view's Checks tab lists every check with its expected and actual values, such as `status == 201` got 500. The status line shows `4/5 checks`, the CodeLens shows `✓ 200 OK · 120 events · 4.3 s · 5/5 checks`, and a ✓ or ✗ appears after each `# @expect` line, with the detail on hover.
+- **Secrets:** values in a check's detail are masked the same way capture failures are.
+
 ## Restricted workspaces
 
 In a workspace you have not trusted, Streamscope still colours, outlines and checks `.http` files. Before sending, it asks once per session. It never reads secrets, `.env` files, `http-client.private.env.json`, environments from your user settings, process variables or body files there, and ignores `# @insecure` and environment TLS opt-outs. It uses only your own `streamscope.request.caFile` setting, and only when it is an absolute path. When you trust the workspace, the values captured and the responses received until then are no longer used by later requests, so run their requests again.

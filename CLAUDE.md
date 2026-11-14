@@ -26,6 +26,7 @@ The product is **Streamscope** (`achrafelkhnissi.streamscope`, display name "Str
 | `src/variables/`                   | Variable resolution from every source, sensitive values, and reference descriptions for hovers                               |
 | `src/expressions/`                 | Capture expression language: lexer, parser, evaluator with work budgets, value insertion, linear-time regex, JSONPath        |
 | `src/capture/`                     | Capture tracking per run, evaluation on the host or in a child process, the capture registry and waits, response references  |
+| `src/checks/`                      | `# @expect` checks: compilation into terms, three-valued verdicts, the per-run check tracker, the check registry and service |
 | `src/secrets/`                     | Secret storage key format                                                                                                    |
 | `src/transport/`                   | `node:http`/`node:https` exchange, decompression, TLS options and redirects                                                  |
 | `src/runs/`                        | Outgoing request building, body files, durations, runs and the run registry                                                  |
