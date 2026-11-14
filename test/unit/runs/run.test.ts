@@ -1797,7 +1797,11 @@ describe('waiting for captured values', () => {
 
     expect(blocked.status).toBe('blocked');
     expect(blocked.problems).toEqual([
-      { message: 'startRun › threadId did not arrive within 30 s.', range: at(6, 37, 58) },
+      {
+        message: 'startRun › threadId did not arrive within 30 s.',
+        range: at(6, 37, 58),
+        producerRun: -1,
+      },
     ]);
     expect(blocked.sent).toBeUndefined();
     expect(registry.waitCount).toBe(0);
@@ -2566,7 +2570,11 @@ describe('waiting for captured values', () => {
     const blocked = await consumer.done;
 
     expect(blocked.problems).toEqual([
-      { message: 'startRun › threadId did not arrive within 30 s.', range: at(9, 3, 18) },
+      {
+        message: 'startRun › threadId did not arrive within 30 s.',
+        range: at(9, 3, 18),
+        producerRun: -1,
+      },
     ]);
   });
 

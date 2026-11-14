@@ -98,6 +98,7 @@ describe('captureLookup', () => {
       kind: 'failed',
       message:
         'startRun › threadId failed: no event matched first(type == "RUN_STARTED") (12 events, 1 malformed).',
+      runId: 7,
     });
   });
 

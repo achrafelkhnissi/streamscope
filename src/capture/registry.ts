@@ -23,6 +23,7 @@ export class CaptureWaitError extends Error {
   constructor(
     readonly kind: CaptureWaitKind,
     message: string,
+    readonly runId?: number,
   ) {
     super(message);
     this.name = 'CaptureWaitError';
@@ -258,7 +259,13 @@ export class CaptureRegistry {
       };
       const timer = setTimeout(() => {
         end();
-        reject(new CaptureWaitError('timeout', waitTimeoutReason(label, name, timeoutMs)));
+        reject(
+          new CaptureWaitError(
+            'timeout',
+            waitTimeoutReason(label, name, timeoutMs),
+            this.requests.get(request)?.runId,
+          ),
+        );
       }, timeoutMs);
       signal.addEventListener('abort', cancel, { once: true });
       this.remember(wait);

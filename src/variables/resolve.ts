@@ -19,6 +19,7 @@ export interface ResolutionProblem {
   message: string;
   range: Range;
   producer?: string;
+  producerRun?: number;
 }
 
 export type CaptureWait = (
@@ -77,6 +78,7 @@ interface Failure {
   range: Range | undefined;
   inEnvironment: boolean;
   producer?: string;
+  producerRun?: number;
   wait?: CaptureWait;
 }
 
@@ -142,7 +144,7 @@ function substitutedValue(substituted: Substituted): Evaluated {
 function failure(
   expression: string,
   message: string,
-  cause: Pick<Failure, 'producer' | 'wait'> = {},
+  cause: Pick<Failure, 'producer' | 'producerRun' | 'wait'> = {},
 ): Evaluated {
   return {
     ok: false,
@@ -199,11 +201,15 @@ class Scope implements VariableScope {
     }
     const problems = new Map<string, Omit<ResolutionProblem, 'range'>>();
     const waits = new Map<string, CaptureWait>();
-    for (const { message, producer, wait } of substituted.failures) {
+    for (const { message, producer, producerRun, wait } of substituted.failures) {
       if (wait !== undefined) {
         waits.set(waitKey(wait), wait);
       } else if (!problems.has(message)) {
-        problems.set(message, producer === undefined ? { message } : { message, producer });
+        problems.set(message, {
+          message,
+          ...(producer === undefined ? {} : { producer }),
+          ...(producerRun === undefined ? {} : { producerRun }),
+        });
       }
     }
     return { ok: false, problems: [...problems.values()], waits: [...waits.values()] };
@@ -287,7 +293,11 @@ class Scope implements VariableScope {
           },
         });
       case 'failed':
-        return failure(expression, result.message);
+        return failure(
+          expression,
+          result.message,
+          result.runId === undefined ? {} : { producerRun: result.runId },
+        );
       case 'not-run':
         return failure(
           expression,
@@ -576,11 +586,12 @@ function locate(failures: readonly Failure[], request: HttpRequest): ResolutionP
       const key = `${failure.message}@${String(range.start.line)}:${String(range.start.character)}`;
       if (!seen.has(key)) {
         seen.add(key);
-        problems.push(
-          failure.producer === undefined
-            ? { message: failure.message, range }
-            : { message: failure.message, range, producer: failure.producer },
-        );
+        problems.push({
+          message: failure.message,
+          range,
+          ...(failure.producer === undefined ? {} : { producer: failure.producer }),
+          ...(failure.producerRun === undefined ? {} : { producerRun: failure.producerRun }),
+        });
       }
     }
   }

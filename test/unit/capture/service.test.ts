@@ -238,6 +238,7 @@ describe('CaptureService', () => {
       problem: {
         message: 'startRun › threadId did not arrive within 30 s.',
         range: { start: { line: 9, character: 10 }, end: { line: 9, character: 31 } },
+        producerRun: 7,
       },
     });
     expect(registry.waitCount).toBe(0);
@@ -313,6 +314,7 @@ describe('CaptureService', () => {
     expect(answer(62)).toEqual({
       kind: 'failed',
       message: 'startRun › threadId failed: the stream ended.',
+      runId: 60,
     });
 
     registry.update(62, 'threadId', resolved('thread-own', 62));
@@ -326,6 +328,7 @@ describe('CaptureService', () => {
     expect(answer(66)).toEqual({
       kind: 'failed',
       message: 'continue › threadId failed: the body has no threadId.',
+      runId: 65,
     });
   });
 
@@ -460,6 +463,7 @@ describe('CaptureService', () => {
       kind: 'failed',
       message:
         'startRun › response.headers.X-Session failed: startRun was cancelled before response.headers.X-Session resolved.',
+      runId: 19,
     });
   });
 
@@ -507,6 +511,7 @@ describe('CaptureService', () => {
       kind: 'failed',
       message:
         'startRun › response.headers.X-Session failed: startRun was cancelled before response.headers.X-Session resolved.',
+      runId: 73,
     });
   });
 
@@ -583,6 +588,7 @@ describe('CaptureService', () => {
     expect(captures.lookup.request('continue', 'threadId')).toEqual({
       kind: 'failed',
       message: 'continue › threadId failed: the body has no threadId.',
+      runId: 26,
     });
   });
 
@@ -600,6 +606,7 @@ describe('CaptureService', () => {
       problem: {
         message: 'startRun › response.headers.X-Session did not arrive within 30 s.',
         range: { start: { line: 10, character: 11 }, end: { line: 10, character: 50 } },
+        producerRun: 22,
       },
     });
     expect(vi.getTimerCount()).toBe(0);
@@ -1089,5 +1096,143 @@ describe('the order of a bare name', () => {
         testSources({ captures: captureLookup(registry, apiUri, parsed, new Map()) }),
       ),
     ).toEqual([]);
+  });
+});
+
+describe('the producer run of a problem', () => {
+  const flowUri = 'file:///flow.http';
+  const flowLines = [
+    '# @name startRun',
+    '# @capture threadId = first(type == "RUN_STARTED").threadId',
+    'POST https://api.example.test/agent/run',
+    '',
+    '###',
+    '# @name bare',
+    'GET https://api.example.test/bare?thread={{threadId}}',
+    '',
+    '###',
+    '# @name named',
+    'GET https://api.example.test/named?thread={{startRun.threadId}}',
+    '',
+    '###',
+    '# @name nothing',
+    'GET https://api.example.test/nothing?value={{undefinedName}}',
+  ];
+  const flow = parseHttpFile(flowLines.join('\n'));
+
+  function flowService(registry: CaptureRegistry, index: number): CaptureService {
+    const request = flow.requests[index];
+    if (!request) {
+      throw new Error(`expected request ${String(index)}`);
+    }
+    return new CaptureService({
+      registry,
+      documentUri: flowUri,
+      file: flow,
+      request,
+      workerFile: missingWorker,
+      runs: () => undefined,
+    });
+  }
+
+  function resolveFlow(registry: CaptureRegistry, index: number): Resolution {
+    const request = flow.requests[index];
+    if (!request) {
+      throw new Error(`expected request ${String(index)}`);
+    }
+    const captures = flowService(registry, index);
+    captures.begin({
+      id: 50 + index,
+      key: requestKey(flowUri, request, index),
+      label: request.name ?? 'request',
+      startedAt: 50 + index,
+    });
+    return resolveRequest(flow, request, testSources({ captures: captures.lookup }));
+  }
+
+  function beginProducer(registry: CaptureRegistry, id: number): CaptureService {
+    const producer = flowService(registry, 0);
+    const request = flow.requests[0];
+    if (!request) {
+      throw new Error('expected the producer');
+    }
+    producer.begin({
+      id,
+      key: requestKey(flowUri, request, 0),
+      label: 'startRun',
+      startedAt: id,
+    });
+    return producer;
+  }
+
+  function producerRuns(resolution: Resolution): (number | undefined)[] {
+    return resolution.ok ? [] : resolution.problems.map(({ producerRun }) => producerRun);
+  }
+
+  it('names the producer run of a failed capture', () => {
+    const registry = new CaptureRegistry();
+    beginProducer(registry, 7);
+    registry.update(7, 'threadId', { state: 'failed', reason: 'no event matched' });
+
+    expect(producerRuns(resolveFlow(registry, 1))).toEqual([7]);
+    expect(producerRuns(resolveFlow(registry, 2))).toEqual([7]);
+  });
+
+  it('names the producer run of a failed response reference', async () => {
+    const producer = producerRun(19);
+    const captures = service(new CaptureRegistry(), 1, () => producer);
+    captures.begin({ id: 20, key: continueKey, label: 'continue', startedAt: 20 });
+    producer.end('cancelled');
+
+    await captures.wait([sessionWait], 20, { timeoutMs: 30_000, signal: signal() });
+
+    expect(captures.lookup.response('startRun', 'response.headers.X-Session')).toMatchObject({
+      kind: 'failed',
+      runId: 19,
+    });
+  });
+
+  it('names the producer run when waiting for its capture times out', async () => {
+    vi.useFakeTimers();
+    const registry = new CaptureRegistry();
+    service(registry, 0).begin({ id: 7, key: startKey, label: 'startRun', startedAt: 7 });
+    const captures = service(registry, 1);
+    captures.begin({ id: 8, key: continueKey, label: 'continue', startedAt: 8 });
+
+    const waiting = captures.wait([threadWait], 8, { timeoutMs: 30_000, signal: signal() });
+    await vi.advanceTimersByTimeAsync(30_000);
+
+    expect(await waiting).toMatchObject({ ok: false, problem: { producerRun: 7 } });
+  });
+
+  it('names the blocked producer run whose captures were not sent', async () => {
+    const registry = new CaptureRegistry();
+    const producer = beginProducer(registry, 9);
+    producer
+      .observer({ id: 9, label: 'startRun', wallStartedAt: 0, sensitiveValues: [] })
+      ?.end({ kind: 'blocked', message: 'Missing value.' });
+    await vi.waitFor(() => {
+      expect(registry.get(`${flowUri}\n@startRun`, 'threadId')?.result.state).toBe('failed');
+    });
+
+    expect(producerRuns(resolveFlow(registry, 1))).toEqual([9]);
+  });
+
+  it('leaves producerRun unset for an undefined variable, an own capture and a producer that never ran', () => {
+    const registry = new CaptureRegistry();
+    const undefinedName = resolveFlow(registry, 3);
+    expect(undefinedName.ok).toBe(false);
+    expect(producerRuns(undefinedName)).toEqual([undefined]);
+
+    const neverRan = resolveFlow(new CaptureRegistry(), 2);
+    expect(neverRan.ok).toBe(false);
+    expect(producerRuns(neverRan)).toEqual([undefined]);
+
+    const own = service(new CaptureRegistry(), 1);
+    own.begin({ id: 27, key: continueKey, label: 'continue', startedAt: 27 });
+    expect(own.lookup.request('continue', 'threadId')).toEqual({
+      kind: 'failed',
+      message: 'continue cannot use its own capture threadId.',
+    });
   });
 });
