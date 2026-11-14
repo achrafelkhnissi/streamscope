@@ -4,6 +4,7 @@ import {
   type FromPanel,
   type PanelBody,
   type PanelCapture,
+  type PanelCheck,
   type PanelRow,
   type PanelRunState,
   type PanelStatus,
@@ -117,6 +118,8 @@ const noteText = element('body-note', HTMLParagraphElement);
 const bodyText = element('body', HTMLPreElement);
 const captureHint = element('capture-hint', HTMLParagraphElement);
 const captureNote = element('capture-note', HTMLParagraphElement);
+const checkList = element('check-list', HTMLUListElement);
+const checksEmpty = element('checks', HTMLParagraphElement);
 const views = panelViews.map((name) => ({
   name,
   tab: element(`tab-${name}`, HTMLButtonElement),
@@ -318,6 +321,41 @@ function captureItem(capture: PanelCapture): HTMLLIElement {
   item.dataset.state = capture.state;
   item.textContent = captureText(capture);
   return item;
+}
+
+const checkMarks: Record<PanelCheck['state'], string> = {
+  passed: '✓',
+  failed: '✗',
+  pending: '…',
+};
+
+function checkItem(check: PanelCheck): HTMLLIElement {
+  const item = document.createElement('li');
+  item.dataset.state = check.state;
+  item.setAttribute(
+    'aria-label',
+    `${check.state}: ${check.text}${check.detail === '' ? '' : `, ${check.detail}`}`,
+  );
+  const mark = document.createElement('span');
+  mark.className = 'mark';
+  mark.setAttribute('aria-hidden', 'true');
+  mark.textContent = `${checkMarks[check.state]} `;
+  const text = document.createElement('span');
+  text.textContent = check.text;
+  item.append(mark, text);
+  if (check.detail !== '') {
+    const detail = document.createElement('span');
+    detail.className = 'detail-text';
+    detail.textContent = ` ${check.detail}`;
+    item.append(detail);
+  }
+  return item;
+}
+
+function showChecks(checks: readonly PanelCheck[]): void {
+  checkList.replaceChildren(...checks.map(checkItem));
+  checkList.hidden = checks.length === 0;
+  checksEmpty.hidden = checks.length > 0;
 }
 
 function showCaptures(captures: readonly PanelCapture[]): void {
@@ -693,6 +731,7 @@ function reset(message: Extract<ToPanel, { type: 'reset' }>): void {
   showHeaders(message.headers);
   showBody(message.body);
   showCaptures(message.captures);
+  showChecks(message.checks);
   stopButton.hidden = message.readOnly;
   showStatus(message.status);
   showView(effectiveView(message.view, message.status), false);
@@ -724,6 +763,9 @@ function update(message: Extract<ToPanel, { type: 'update' }>): void {
   }
   if (message.captures !== undefined) {
     showCaptures(message.captures);
+  }
+  if (message.checks !== undefined) {
+    showChecks(message.checks);
   }
 }
 

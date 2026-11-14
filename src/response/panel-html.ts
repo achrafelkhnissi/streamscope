@@ -23,7 +23,8 @@ const panelContents: Record<PanelView, string> = {
   raw: '<pre id="raw"></pre><p id="raw-note" hidden></p>',
   headers: '<pre id="headers"></pre>',
   body: '<p id="body-note"></p><p id="capture-hint" hidden></p><pre id="body"></pre>',
-  checks: '<p id="checks">No checks for this request.</p>',
+  checks:
+    '<ul class="checks" id="check-list" aria-label="Checks" hidden></ul><p id="checks">No checks for this request.</p>',
 };
 
 const styles = `
@@ -41,6 +42,9 @@ button:focus-visible, .list:focus-visible { outline: 1px solid var(--vscode-focu
 .tab { background: none; color: var(--vscode-panelTitle-inactiveForeground); border: none; border-bottom: 1px solid transparent; border-radius: 0; padding: 6px 10px; }
 .tab:hover { background: none; color: var(--vscode-panelTitle-activeForeground); }
 .tab[aria-selected="true"] { color: var(--vscode-panelTitle-activeForeground); border-bottom-color: var(--vscode-panelTitle-activeBorder); }
+.checks { margin: 0; padding: 8px 12px; list-style: none; font-family: var(--vscode-editor-font-family); font-size: var(--vscode-editor-font-size); }
+.checks li { padding: 2px 0; overflow-wrap: anywhere; }
+.checks li[data-state="pending"] .mark, .checks .detail-text { color: var(--vscode-descriptionForeground); }
 .captures { display: flex; flex-wrap: wrap; gap: 6px; margin: 0; padding: 5px 12px; list-style: none; max-height: 30vh; overflow-y: auto; border-bottom: 1px solid var(--vscode-panel-border); }
 .captures::before { content: "Captured:" / ""; color: var(--vscode-descriptionForeground); font-size: 11px; }
 .captures li { padding: 0 6px; border: 1px solid var(--vscode-panel-border); border-radius: 3px; font-family: var(--vscode-editor-font-family); font-size: 11px; color: var(--vscode-foreground); overflow-wrap: anywhere; }

@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import type { CheckRegistry, CheckSummary } from '../../checks/registry';
 import type { HttpRequest } from '../../http-file/model';
 import { describeOutcome } from '../../response/labels';
 import type { RunRegistry } from '../../runs/registry';
@@ -20,10 +21,12 @@ export class RequestCodeLenses implements vscode.CodeLensProvider, vscode.Dispos
   readonly onDidChangeCodeLenses = this.changed.event;
   private readonly ticker: LiveTicker;
   private readonly unsubscribe: () => void;
+  private readonly unsubscribeChecks: () => void;
 
   constructor(
     private readonly cache: ParseCache,
     private readonly registry: RunRegistry,
+    private readonly checks: Pick<CheckRegistry, 'summary' | 'onDidChange'>,
   ) {
     this.ticker = new LiveTicker(
       () => registry.isRunning(),
@@ -32,6 +35,9 @@ export class RequestCodeLenses implements vscode.CodeLensProvider, vscode.Dispos
       },
     );
     this.unsubscribe = registry.onDidChange(() => {
+      this.refresh();
+    });
+    this.unsubscribeChecks = checks.onDidChange(() => {
       this.refresh();
     });
   }
@@ -68,13 +74,16 @@ export class RequestCodeLenses implements vscode.CodeLensProvider, vscode.Dispos
         command: 'streamscope.sendRequest',
         arguments: [document.uri, line],
       });
-      return run ? [send, this.outcome(range, run, document.uri, line)] : [send];
+      return run
+        ? [send, this.outcome(range, run, document.uri, line, this.checks.summary(key))]
+        : [send];
     });
   }
 
   dispose(): void {
     this.ticker.dispose();
     this.unsubscribe();
+    this.unsubscribeChecks();
     this.changed.dispose();
   }
 
@@ -83,8 +92,9 @@ export class RequestCodeLenses implements vscode.CodeLensProvider, vscode.Dispos
     run: RunSnapshot,
     documentUri: vscode.Uri,
     line: number,
+    checks: CheckSummary | undefined,
   ): vscode.CodeLens {
-    const title = describeOutcome(run);
+    const title = describeOutcome(run, checks);
     const problem = run.problems[0];
     if (run.status === 'blocked' && problem) {
       const { start, end } = problem.range;

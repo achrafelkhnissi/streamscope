@@ -283,7 +283,7 @@ export function registerRequestFeatures(
     clock: () => performance.now(),
   };
   const registry = new RunRegistry(dependencies);
-  const lenses = new RequestCodeLenses(cache, registry);
+  const lenses = new RequestCodeLenses(cache, registry, checks);
   const statusBar = new RunStatusBar(registry);
 
   const saveStream = async (stream: StreamSession, chosen: vscode.Uri): Promise<void> => {
@@ -390,6 +390,7 @@ export function registerRequestFeatures(
     state: context.globalState,
     presenter,
     captures,
+    checks,
     benchmark,
     save: (run, documentUri) => saveRun(run, documentUri, undefined),
     capture: (run, message, body) => valueCapture.fromPanel(run, message, body),

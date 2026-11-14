@@ -258,6 +258,17 @@ describe('panelStatus', () => {
   });
 });
 
+describe('panelStatus with checks', () => {
+  it('adds the checks summary to the panel status line', () => {
+    expect(panelStatus(snapshot(), { passed: 4, failed: 1, total: 5 }).text).toBe(
+      '200 OK · 1.2 KB · 120 ms · 4/5 checks',
+    );
+    expect(panelStatus(snapshot(), { passed: 0, failed: 0, total: 0 }).text).toBe(
+      '200 OK · 1.2 KB · 120 ms',
+    );
+  });
+});
+
 describe('panelBody', () => {
   it('shows a body within the inline limit in full', () => {
     const text = '{\n  "items": []\n}';

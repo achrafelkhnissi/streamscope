@@ -1,5 +1,6 @@
 import { entryValueText } from '../capture/display';
 import type { CaptureEntry, CaptureRegistry } from '../capture/registry';
+import type { CheckEntry, CheckRegistry } from '../checks/registry';
 import type { StreamEvent } from '../events/model';
 import type { EventStore } from '../events/store';
 import { maskedPreview } from '../masking/masking';
@@ -11,6 +12,7 @@ import {
   panelLimits,
   type PanelBody,
   type PanelCapture,
+  type PanelCheck,
   type PanelRow,
   type PanelStatus,
   type PanelView,
@@ -25,6 +27,7 @@ export const readsInFlight = 16;
 export const captureRefreshMs = 50;
 
 const maxPanelCaptures = 64;
+const maxPanelChecks = 64;
 const captureTextLength = 200;
 const partBytes = panelLimits.messageBytes / 2;
 
@@ -101,12 +104,14 @@ export class RowCache {
 }
 
 export type PanelCaptureSource = Pick<CaptureRegistry, 'forRequest' | 'onDidChange'>;
+export type PanelCheckSource = Pick<CheckRegistry, 'forRequest' | 'onDidChange' | 'summary'>;
 
 export interface PanelFeedOptions {
   readOnly: boolean;
   streamView: PanelView;
   post(message: ToPanel): void;
   captures: PanelCaptureSource;
+  checks: PanelCheckSource;
   timed(work: () => void): void;
 }
 
@@ -147,6 +152,29 @@ function panelCapture(entry: CaptureEntry): PanelCapture {
     case 'failed':
       return { name, state: 'failed', text: maskedPreview(result.reason, captureTextLength) };
   }
+}
+
+function panelCheck({ text, result }: CheckEntry): PanelCheck {
+  return {
+    text,
+    state: result.state,
+    detail: result.state === 'failed' ? result.detail : '',
+  };
+}
+
+function sameChecks(left: readonly PanelCheck[], right: readonly PanelCheck[]): boolean {
+  return (
+    left.length === right.length &&
+    left.every((check, index) => {
+      const other = right[index];
+      return (
+        other !== undefined &&
+        check.text === other.text &&
+        check.state === other.state &&
+        check.detail === other.detail
+      );
+    })
+  );
 }
 
 function sameCaptures(left: readonly PanelCapture[], right: readonly PanelCapture[]): boolean {
@@ -192,6 +220,9 @@ export class PanelFeed {
   private capturesChanged = false;
   private captureTimer: ReturnType<typeof setTimeout> | undefined;
   private stopListening: () => void = () => undefined;
+  private sentChecks: PanelCheck[] = [];
+  private checksChanged = false;
+  private stopChecks: () => void = () => undefined;
 
   constructor(
     readonly run: FeedRun,
@@ -236,10 +267,20 @@ export class PanelFeed {
     return this.sentCaptures;
   }
 
+  get checks(): readonly PanelCheck[] {
+    return this.sentChecks;
+  }
+
   start(): void {
     this.stopCaptures();
     this.stopListening = this.options.captures.onDidChange((request) => {
       if (request === this.key) {
+        this.scheduleCaptureRefresh();
+      }
+    });
+    this.stopChecks = this.options.checks.onDidChange((request) => {
+      if (request === this.key) {
+        this.checksChanged = true;
         this.scheduleCaptureRefresh();
       }
     });
@@ -262,6 +303,8 @@ export class PanelFeed {
     this.bodyChanged = false;
     this.capturesChanged = false;
     this.sentCaptures = this.shownCaptures();
+    this.checksChanged = false;
+    this.sentChecks = this.shownChecks();
     this.options.post({
       type: 'reset',
       run: this.run.id,
@@ -271,6 +314,7 @@ export class PanelFeed {
       headers: this.headers,
       body: this.bodyState,
       captures: this.sentCaptures,
+      checks: this.sentChecks,
     });
     this.refresh();
     if (this.expanding !== undefined) {
@@ -317,6 +361,7 @@ export class PanelFeed {
       body,
       headers,
       captures: this.changedCaptures(),
+      checks: this.changedChecks(),
     });
     if (switched || announce) {
       this.options.post({ type: 'select', view: next });
@@ -423,6 +468,8 @@ export class PanelFeed {
   private stopCaptures(): void {
     this.stopListening();
     this.stopListening = () => undefined;
+    this.stopChecks();
+    this.stopChecks = () => undefined;
     clearTimeout(this.captureTimer);
     this.captureTimer = undefined;
   }
@@ -448,8 +495,33 @@ export class PanelFeed {
     return captures;
   }
 
+  private shownChecks(): PanelCheck[] {
+    const entries = this.options.checks.forRequest(this.key);
+    if (entries[0]?.runId !== this.run.id) {
+      return [];
+    }
+    return entries.slice(0, maxPanelChecks).map(panelCheck);
+  }
+
+  private changedChecks(): PanelCheck[] | undefined {
+    if (!this.checksChanged) {
+      return undefined;
+    }
+    this.checksChanged = false;
+    const checks = this.shownChecks();
+    if (sameChecks(checks, this.sentChecks)) {
+      return undefined;
+    }
+    this.sentChecks = checks;
+    return checks;
+  }
+
   private statusOf(snapshot: RunSnapshot): PanelStatus {
-    const status = panelStatus(snapshot);
+    const ownChecks = this.options.checks.forRequest(this.key)[0]?.runId === this.run.id;
+    const status = panelStatus(
+      snapshot,
+      ownChecks ? this.options.checks.summary(this.key) : undefined,
+    );
     return {
       ...status,
       rawGone: status.rawGone || this.lost.raw,

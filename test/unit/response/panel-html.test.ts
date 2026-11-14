@@ -249,6 +249,12 @@ describe('panelHtml', () => {
     );
   });
 
+  it('has a Checks list in the Checks tab and the empty text', () => {
+    expect(html()).toContain(
+      '<ul class="checks" id="check-list" aria-label="Checks" hidden></ul><p id="checks">No checks for this request.</p>',
+    );
+  });
+
   it('has a Save Response button next to Stop, disabled until there is something to save', () => {
     const page = html();
 

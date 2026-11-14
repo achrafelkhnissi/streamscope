@@ -1,3 +1,4 @@
+import type { CheckSummary } from '../checks/registry';
 import type { HttpRequest } from '../http-file/model';
 import { maskUrl, maskValues } from '../masking/masking';
 import type { RunSnapshot } from '../runs/run';
@@ -102,8 +103,20 @@ export function waitingText(run: RunSnapshot): string {
   return `Waiting for ${run.waitingFor ?? ''}`;
 }
 
-export function describeOutcome(run: RunSnapshot): string {
-  return maskValues(outcomeText(run), run.sensitiveValues);
+export function checksText(checks: CheckSummary | undefined): string | undefined {
+  return checks === undefined || checks.total === 0
+    ? undefined
+    : `${String(checks.passed)}/${String(checks.total)} checks`;
+}
+
+export function describeOutcome(run: RunSnapshot, checks?: CheckSummary): string {
+  const text = outcomeText(run);
+  const summary = checksText(checks);
+  if (run.status !== 'completed' || checks === undefined || summary === undefined) {
+    return maskValues(text, run.sensitiveValues);
+  }
+  const mark = checks.failed > 0 ? '✗ ' : checks.passed === checks.total ? '✓ ' : '';
+  return maskValues(`${mark}${text} · ${summary}`, run.sensitiveValues);
 }
 
 export function eventCount(run: RunSnapshot): string | undefined {
