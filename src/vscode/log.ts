@@ -6,18 +6,26 @@ import type { Headers } from '../transport/model';
 
 export type RunLog = Pick<vscode.LogOutputChannel, 'info' | 'warn' | 'debug'>;
 
+const maxRecordedLines = 1_000;
+
 export function recordingLog(log: RunLog, lines: string[]): RunLog {
+  const record = (message: string): void => {
+    lines.push(message);
+    if (lines.length > maxRecordedLines) {
+      lines.splice(0, lines.length - maxRecordedLines);
+    }
+  };
   return {
     info: (message) => {
-      lines.push(message);
+      record(message);
       log.info(message);
     },
     warn: (message) => {
-      lines.push(message);
+      record(message);
       log.warn(message);
     },
     debug: (message) => {
-      lines.push(message);
+      record(message);
       log.debug(message);
     },
   };
