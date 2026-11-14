@@ -60,6 +60,13 @@ describe('changelogSection', () => {
     expect(changelogSection(changelog, '0.3.0')).toBe('### Added\n\n- Newer.');
   });
 
+  it('finds a dated section and leaves the date out', () => {
+    const dated = changelog.replace('## [0.1.0]', '## [0.1.0] - 2026-11-16');
+    expect(changelogSection(dated, '0.1.0')).toBe(
+      'The first pre-release.\n\n### Added\n\n- Streaming.',
+    );
+  });
+
   it('refuses a version the changelog does not describe', () => {
     expect(() => changelogSection(changelog, '0.2.0')).toThrow(
       'CHANGELOG.md has no section for 0.2.0.',

@@ -483,18 +483,14 @@ describe('README and changelog', () => {
     expect(readme).toContain('[SECURITY.md](SECURITY.md)');
   });
 
-  it('has a 0.1.0 changelog section with Keep a Changelog headings', () => {
+  it('has a dated 0.1.0 changelog section with only Added', () => {
     const start = changelog.search(/^## \[0\.1\.0\]/m);
     expect(start).toBeGreaterThanOrEqual(0);
     const rest = changelog.slice(start + 1);
     const end = rest.search(/^## /m);
     const section = end === -1 ? rest : rest.slice(0, end);
-    expect(section.match(/^### \w+$/gm)).toEqual([
-      '### Added',
-      '### Changed',
-      '### Fixed',
-      '### Security',
-    ]);
+    expect(section.match(/^### \w+$/gm)).toEqual(['### Added']);
+    expect(changelog).toMatch(/^## \[0\.1\.0\] - \d{4}-\d{2}-\d{2}$/m);
     expect(changelog).toMatch(
       /^\[0\.1\.0\]: https:\/\/github\.com\/achrafelkhnissi\/streamscope\/releases\/tag\/v0\.1\.0$/m,
     );
