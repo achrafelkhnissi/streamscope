@@ -255,6 +255,14 @@ describe('masking', () => {
     expect(maskValues(text, [high, low])).toBe('raw •••••• raw •••••• json "••••••"');
   });
 
+  it('masks a value with a lone surrogate in the forms the wire sends it, with U+FFFD for the surrogate', () => {
+    const value = 'synthetic-\ud800-token';
+    const text = 'a=synthetic-%EF%BF%BD-token&b=synthetic-\uFFFD-token';
+
+    expect(sensitiveValuesIn(text, [value])).toEqual([value]);
+    expect(maskValues(text, [value])).toBe('a=••••••&b=••••••');
+  });
+
   it('recognises credential cookie names by case-insensitive substrings', () => {
     for (const name of [
       'session',

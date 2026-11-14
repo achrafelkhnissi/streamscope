@@ -88,13 +88,14 @@ export function isCredentialCookie(name: string): boolean {
   return cookieCredentialWords.some((word) => lower.includes(word));
 }
 
-const loneSurrogate = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+const loneSurrogates = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
 
 function encodedForms(value: string): string[] {
-  const forms = [value];
-  if (!loneSurrogate.test(value)) {
-    const component = encodeURIComponent(value);
-    forms.push(component, component.replace(/%20/g, '+'), encodeURI(value));
+  const wellFormed = value.replace(loneSurrogates, '\uFFFD');
+  const component = encodeURIComponent(wellFormed);
+  const forms = [value, component, component.replace(/%20/g, '+'), encodeURI(wellFormed)];
+  if (wellFormed !== value) {
+    forms.push(wellFormed);
   }
   const escaped = JSON.stringify(value).slice(1, -1);
   if (escaped !== value) {

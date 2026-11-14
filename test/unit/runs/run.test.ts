@@ -22,6 +22,7 @@ import type { SpillFile } from '../../../src/events/spill';
 import { parseHttpFile } from '../../../src/http-file/parse';
 import { maskedValue } from '../../../src/masking/masking';
 import { describeOutcome, formatBytes, requestLabel } from '../../../src/response/labels';
+import { renderHeadersDocument } from '../../../src/response/headers-document';
 import { PanelFeed } from '../../../src/response/panel-feed';
 import type { ToPanel } from '../../../src/response/panel-protocol';
 import type { RunAccess, RunEnd, RunObserver } from '../../../src/runs/observer';
@@ -2640,6 +2641,48 @@ describe('waiting for captured values', () => {
         expect(describeOutcome(sent)).not.toContain(token);
       },
     );
+  });
+
+  it('a secret with a lone surrogate inserted into a URL query is masked in the log and in the URL as sent', async () => {
+    const loginKey = `${documentUri}\n@login`;
+    const sentForm = 'synthetic-%EF%BF%BD-token';
+    const api = await track(
+      startHttpServer((request, response) => {
+        if (request.url === '/login') {
+          response.writeHead(200, { 'Content-Type': 'application/json' });
+          response.end('{"access_token":"synthetic-\\ud800-token"}');
+          return;
+        }
+        response.writeHead(200, { 'X-Echo-Url': request.url ?? '' });
+        response.end('ok');
+      }),
+    );
+    const lines = [
+      '# @name login',
+      '# @capture secret token = body.access_token',
+      `POST ${api.url}/login`,
+      '',
+      '###',
+      '# @name continue',
+      `GET ${api.url}/continue?token={{login.token}}`,
+    ];
+    const registry = new CaptureRegistry();
+    await startRun(capturing(registry, lines, 0), dependencies).done;
+    await waitFor(() => registry.get(loginKey, 'token')?.result.state === 'resolved');
+
+    const sent = await startRun(capturing(registry, lines, 1), dependencies).done;
+    const logged: string[] = [];
+    const record = (line: string): void => {
+      logged.push(line);
+    };
+    logRunEnd({ info: record, warn: record, debug: record }, sent);
+    const headers = renderHeadersDocument(sent);
+
+    expect(api.requests[1]?.url).toBe(`/continue?token=${sentForm}`);
+    expect(logged.join('\n')).toContain(`X-Echo-Url: /continue?token=${maskedValue}`);
+    expect(logged.join('\n')).not.toContain(sentForm);
+    expect(headers).toContain(`/continue?token=${maskedValue}`);
+    expect(headers).not.toContain(sentForm);
   });
 
   describe('a secret capture and the captures beside it in one run', () => {
