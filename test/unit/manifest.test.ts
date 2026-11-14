@@ -12,6 +12,13 @@ interface Manifest {
   repository: { type: string; url: string };
   bugs: { url: string };
   homepage: string;
+  version: string;
+  icon: string;
+  pricing: string;
+  preview: boolean;
+  galleryBanner: { color: string; theme: string };
+  categories: string[];
+  keywords: string[];
   extensionKind: string[];
   main: string;
   files: string[];
@@ -107,6 +114,38 @@ describe('extension manifest', () => {
       'CHANGELOG.md',
       'LICENSE',
       'ThirdPartyNotices.txt',
+      'images/icon.png',
+    ]);
+  });
+
+  it('ships a 256×256 PNG icon', () => {
+    expect(manifest.icon).toBe('images/icon.png');
+    const icon = readFileSync(new URL(`../../${manifest.icon}`, import.meta.url));
+    expect([...icon.subarray(0, 8)]).toEqual([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    expect(icon.toString('latin1', 12, 16)).toBe('IHDR');
+    expect([icon.readUInt32BE(16), icon.readUInt32BE(20)]).toEqual([256, 256]);
+  });
+
+  it('carries the Marketplace listing fields', () => {
+    expect(manifest.version).toBe('0.1.0');
+    expect(manifest.pricing).toBe('Free');
+    expect(manifest.preview).toBe(true);
+    expect(manifest.galleryBanner.color).toMatch(/^#[0-9A-F]{6}$/);
+    expect(['dark', 'light']).toContain(manifest.galleryBanner.theme);
+    expect(manifest.categories).toEqual(['Programming Languages', 'Testing', 'Other']);
+    expect(manifest.keywords).toEqual([
+      'http',
+      'rest',
+      'rest client',
+      'api',
+      'sse',
+      'server-sent events',
+      'ndjson',
+      'streaming',
+      'llm',
+      'agent',
+      'ag-ui',
+      'api testing',
     ]);
   });
 

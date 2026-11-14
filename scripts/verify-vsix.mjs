@@ -15,7 +15,9 @@ import {
   resolveCliArgsFromVSCodeExecutablePath,
   runTests,
 } from '@vscode/test-electron';
+import { listFiles, PackageManager } from '@vscode/vsce';
 import { maxVsixBytes, vsixBudgetProblem } from './vsix-budget.mjs';
+import { vsixContentsProblem } from './vsix-contents.mjs';
 
 const root = path.resolve(import.meta.dirname, '..');
 const manifest = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8'));
@@ -27,6 +29,12 @@ console.log(`VSIX is ${String(vsixBytes)} bytes (limit ${String(maxVsixBytes)})`
 const budgetProblem = vsixBudgetProblem(vsixBytes);
 if (budgetProblem !== undefined) {
   throw new Error(budgetProblem);
+}
+const contentsProblem = vsixContentsProblem(
+  await listFiles({ cwd: root, packageManager: PackageManager.None }),
+);
+if (contentsProblem !== undefined) {
+  throw new Error(contentsProblem);
 }
 
 const sandbox = realpathSync(mkdtempSync(path.join(tmpdir(), 'vsix-verify-')));

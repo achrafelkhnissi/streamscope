@@ -2,10 +2,16 @@
   "name": "streamscope",
   "displayName": "Streamscope: HTTP Client with Live Streaming",
   "description": "Send requests from .http files and watch streaming responses (NDJSON, SSE, LLM streams) arrive event by event. Capture values from any event and reuse them.",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "publisher": "achrafelkhnissi",
   "private": true,
   "license": "MIT",
+  "icon": "images/icon.png",
+  "galleryBanner": {
+    "color": "#2B2A6B",
+    "theme": "dark"
+  },
+  "pricing": "Free",
   "repository": {
     "type": "git",
     "url": "https://github.com/achrafelkhnissi/streamscope.git"
@@ -56,7 +62,8 @@
     "language-configuration.json",
     "CHANGELOG.md",
     "LICENSE",
-    "ThirdPartyNotices.txt"
+    "ThirdPartyNotices.txt",
+    "images/icon.png"
   ],
   "capabilities": {
     "untrustedWorkspaces": {
