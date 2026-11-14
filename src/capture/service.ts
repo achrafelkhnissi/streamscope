@@ -20,7 +20,12 @@ import {
 } from './messages';
 import { evaluateResponseReference, type ReferencedRun } from './references';
 import { CaptureWaitError, type CaptureEntry, type CaptureRegistry } from './registry';
-import { CaptureTracker, readsSensitiveHead, type CaptureDefinition } from './tracker';
+import {
+  CaptureTracker,
+  readsHeadersOrCookies,
+  readsSensitiveHead,
+  type CaptureDefinition,
+} from './tracker';
 
 interface ProducerSnapshot {
   label: string;
@@ -181,17 +186,15 @@ export class CaptureService implements RunCaptures {
 
   constructor(private readonly options: CaptureServiceOptions) {
     this.definitions = options.request.captures.flatMap(
-      ({ name, secret, expression, expressionText }) =>
-        expression === undefined
-          ? []
-          : [
-              {
-                name,
-                secret: secret || readsSensitiveHead(expression),
-                expression,
-                text: expressionText,
-              },
-            ],
+      ({ name, secret, expression, expressionText }) => {
+        if (expression === undefined) {
+          return [];
+        }
+        const provenance = !secret && readsSensitiveHead(expression);
+        return [
+          { name, secret: secret || provenance, provenance, expression, text: expressionText },
+        ];
+      },
     );
     this.names = new Set(this.definitions.map((definition) => definition.name));
     const base = captureLookup(options.registry, options.documentUri, options.file, this.responses);
@@ -227,7 +230,12 @@ export class CaptureService implements RunCaptures {
     }
     registry.begin(
       run,
-      this.definitions.map(({ name, secret }) => ({ name, secret })),
+      this.definitions.map(({ name, secret, provenance, expression }) => ({
+        name,
+        secret,
+        provenance,
+        readsHead: readsHeadersOrCookies(expression),
+      })),
     );
   }
 

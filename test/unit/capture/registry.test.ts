@@ -287,6 +287,29 @@ describe('CaptureRegistry', () => {
     expect(changes).toEqual(['token', 'profile']);
   });
 
+  it('a secret by provenance alone covers earlier captures from 8 characters, or at any length when they read headers or cookies', () => {
+    const registry = new CaptureRegistry();
+    registry.begin(run(1, startKey, 'startRun'), [
+      { name: 'items', secret: false },
+      { name: 'jar', secret: false, readsHead: true },
+      { name: 'remember', secret: true, provenance: true },
+      { name: 'session', secret: true, provenance: true },
+      { name: 'pin', secret: true },
+    ]);
+    registry.update(1, 'items', resolved('[1,2,11] synthetic-sid-0001 7', 1));
+    registry.update(1, 'jar', resolved('{"remember_me":"1"}', 1));
+
+    registry.update(1, 'remember', resolved('1', 1, true));
+    registry.update(1, 'session', resolved('synthetic-sid-0001', 1, true));
+    registry.update(1, 'pin', resolved('7', 1, true));
+
+    expect(registry.get(startKey, 'items')?.result).toMatchObject({
+      sensitive: ['synthetic-sid-0001', '7'],
+    });
+    expect(registry.get(startKey, 'jar')?.result).toMatchObject({ sensitive: ['1'] });
+    expect(registry.secretsOf(1)).toStrictEqual(['synthetic-sid-0001', '7']);
+  });
+
   it('the secret texts of a run live as long as its entries: replaced, evicted or cleared, they go', () => {
     const registry = new CaptureRegistry(2);
     const secretToken = [{ name: 'token', secret: true }];

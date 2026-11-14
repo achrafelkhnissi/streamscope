@@ -2578,6 +2578,54 @@ describe('waiting for captured values', () => {
     });
   });
 
+  it('a one-character cookie captured by provenance blanks no 1 in a body sibling, a consumer log or a response reference', async () => {
+    const loginKey = `${documentUri}\n@login`;
+    const api = await track(
+      startHttpServer((request, response) => {
+        if (request.url === '/login') {
+          response.writeHead(200, {
+            'Content-Type': 'application/json',
+            'Set-Cookie': 'remember_me=1',
+          });
+          response.end('{"items":[1,2,11]}');
+          return;
+        }
+        response.end('ok');
+      }),
+    );
+    const lines = [
+      '# @name login',
+      '# @capture remember = cookies.remember_me',
+      '# @capture items = body.items',
+      `POST ${api.url}/login`,
+      '',
+      '###',
+      '# @name continue',
+      `GET ${api.url}/continue`,
+      'X-Items: {{items}}',
+      'X-Body: {{login.response.body.*}}',
+    ];
+    const registry = new CaptureRegistry();
+    const login = startRun(capturing(registry, lines, 0), dependencies);
+    await login.done;
+    await waitFor(() => registry.get(loginKey, 'items')?.result.state === 'resolved');
+
+    const sent = await startRun(
+      capturing(registry, lines, 1, (key) => (key === loginKey ? login : undefined)),
+      dependencies,
+    ).done;
+    const logged: string[] = [];
+    const record = (line: string): void => {
+      logged.push(line);
+    };
+    logRunEnd({ info: record, warn: record, debug: record }, sent);
+
+    expect(captureHint(registry.get(loginKey, 'remember'))?.label).toBe(`= ${maskedValue}`);
+    expect(captureHint(registry.get(loginKey, 'items'))?.label).toBe('= [1,2,11]');
+    expect(logged.join('\n')).toContain('X-Items: [1,2,11]');
+    expect(logged.join('\n')).toContain('X-Body: {"items":[1,2,11]}');
+  });
+
   describe('a secret capture whose text has a lone surrogate', () => {
     const loginKey = `${documentUri}\n@login`;
     const token = 'synthetic-\ud800-token';

@@ -7,6 +7,7 @@ import {
   isCredentialCookie,
   isSensitiveHeader,
   maskValues,
+  minimumHeaderValueLength,
   sensitiveHeaderValues,
   sensitiveValuesIn,
 } from '../masking/masking';
@@ -57,6 +58,7 @@ import { hostBudget, type TaskBudget } from './task-budget';
 export interface CaptureDefinition {
   name: string;
   secret: boolean;
+  provenance: boolean;
   expression: Expr;
   text: string;
 }
@@ -292,6 +294,10 @@ function readsHeadSource(sources: readonly SourceNode[]): boolean {
   );
 }
 
+export function readsHeadersOrCookies(expression: Expr): boolean {
+  return readsHeadSource(sourcesOf(expression));
+}
+
 export function headValues(head: ResponseHead): HeadValues {
   const headers = new Map<string, string>();
   const cookies = new Map<string, string>();
@@ -433,7 +439,7 @@ export class CaptureTracker {
   private idle: (() => void) | undefined;
   private readonly drainListeners = new Set<() => void>();
   private sensitive: { head: readonly string[]; other: readonly string[] };
-  private readonly secrets: string[] = [];
+  private readonly secrets: { head: string[]; other: string[] } = { head: [], other: [] };
 
   constructor(
     private readonly run: {
@@ -1115,8 +1121,12 @@ export class CaptureTracker {
         time: this.settledAt(tracked, result.event),
       },
     });
-    if (tracked.definition.secret && result.text !== '' && !this.secrets.includes(result.text)) {
-      this.secrets.push(result.text);
+    const { secret, provenance } = tracked.definition;
+    if (secret && result.text !== '' && !this.secrets.head.includes(result.text)) {
+      this.secrets.head.push(result.text);
+      if (!provenance || result.text.length >= minimumHeaderValueLength) {
+        this.secrets.other.push(result.text);
+      }
     }
   }
 
@@ -1129,7 +1139,8 @@ export class CaptureTracker {
 
   private sensitiveOf(tracked: Tracked): readonly string[] {
     const carried = tracked.readsHead ? this.sensitive.head : this.sensitive.other;
-    return this.secrets.length === 0 ? carried : [...new Set([...carried, ...this.secrets])];
+    const secrets = tracked.readsHead ? this.secrets.head : this.secrets.other;
+    return secrets.length === 0 ? carried : [...new Set([...carried, ...secrets])];
   }
 
   private fail(tracked: Tracked, reason: string): void {

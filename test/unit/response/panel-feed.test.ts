@@ -885,7 +885,7 @@ describe('PanelFeed captured values', () => {
     }
     const tracker = new CaptureTracker(
       { id: shownRun, label: 'items', wallStartedAt: 0, sensitiveValues: [secretHost] },
-      [{ name: 'threadId', secret: false, expression: parsed.expr, text }],
+      [{ name: 'threadId', secret: false, provenance: false, expression: parsed.expr, text }],
       (name, result) => {
         page.registry.update(shownRun, name, result);
       },

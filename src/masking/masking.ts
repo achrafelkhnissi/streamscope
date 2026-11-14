@@ -117,7 +117,7 @@ export function sensitiveValuesIn(text: string, values: readonly string[]): stri
   );
 }
 
-const minimumHeaderValueLength = 8;
+export const minimumHeaderValueLength = 8;
 
 function cookieValue(setCookie: string, shortest: number): string | undefined {
   const pair = setCookie.split(';', 1)[0] ?? '';

@@ -1,4 +1,4 @@
-import { sensitiveValuesIn } from '../masking/masking';
+import { minimumHeaderValueLength, sensitiveValuesIn } from '../masking/masking';
 import {
   ownCaptureReason,
   waitCancelledReason,
@@ -37,7 +37,20 @@ interface RequestCaptures {
   readonly runId: number;
   readonly startedAt: number;
   readonly entries: Map<string, CaptureEntry>;
+  readonly carry: ReadonlyMap<string, Carry>;
   readonly secrets: string[];
+}
+
+interface Carry {
+  readonly provenance: boolean;
+  readonly readsHead: boolean;
+}
+
+export interface CaptureDeclaration {
+  name: string;
+  secret: boolean;
+  provenance?: boolean;
+  readsHead?: boolean;
 }
 
 interface Wait {
@@ -96,7 +109,7 @@ export class CaptureRegistry {
 
   begin(
     run: { id: number; key: string; label: string; startedAt: number },
-    definitions: readonly { name: string; secret: boolean }[],
+    definitions: readonly CaptureDeclaration[],
   ): void {
     this.newestRun = Math.max(this.newestRun, run.id);
     const earlier = this.requests.get(run.key);
@@ -115,6 +128,12 @@ export class CaptureRegistry {
       runId: run.id,
       startedAt: run.startedAt,
       entries: new Map(),
+      carry: new Map(
+        definitions.map(({ name, provenance = false, readsHead = false }) => [
+          name,
+          { provenance, readsHead },
+        ]),
+      ),
       secrets: [],
     };
     for (const { name, secret } of definitions) {
@@ -276,14 +295,19 @@ export class CaptureRegistry {
   }
 
   private coverSecret(captures: RequestCaptures, name: string, secret: string): void {
-    if (secret === '' || captures.secrets.includes(secret)) {
+    if (secret === '') {
       return;
     }
-    captures.secrets.push(secret);
+    const anyLength =
+      captures.carry.get(name)?.provenance !== true || secret.length >= minimumHeaderValueLength;
+    if (anyLength && !captures.secrets.includes(secret)) {
+      captures.secrets.push(secret);
+    }
     for (const [other, sibling] of captures.entries) {
       const { result } = sibling;
       if (
         other !== name &&
+        (anyLength || captures.carry.get(other)?.readsHead === true) &&
         result.state === 'resolved' &&
         !result.sensitive.includes(secret) &&
         sensitiveValuesIn(result.text, [secret]).length > 0

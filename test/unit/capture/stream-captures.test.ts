@@ -26,7 +26,7 @@ function capture(name: string, text: string): CaptureDefinition {
   if (!parsed.ok) {
     throw new Error(`${text}: ${parsed.error.message}`);
   }
-  return { name, secret: false, expression: parsed.expr, text };
+  return { name, secret: false, provenance: false, expression: parsed.expr, text };
 }
 
 function agentStream(bytes: number): { body: string; chunks: number; events: number } {

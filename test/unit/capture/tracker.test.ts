@@ -23,12 +23,17 @@ import { expectNoChild, longestStall, missingWorker, useCaptureWorker } from './
 const encoder = new TextEncoder();
 const mebibyte = 1_048_576;
 
-function capture(name: string, text: string, secret = false): CaptureDefinition {
+function capture(
+  name: string,
+  text: string,
+  secret = false,
+  provenance = false,
+): CaptureDefinition {
   const parsed = parseExpression(text, 'capture');
   if (!parsed.ok) {
     throw new Error(`${text}: ${parsed.error.message}`);
   }
-  return { name, secret, expression: parsed.expr, text };
+  return { name, secret, provenance, expression: parsed.expr, text };
 }
 
 interface EventOptions {
@@ -356,6 +361,43 @@ describe('CaptureTracker', () => {
     const reason = missing?.state === 'failed' ? missing.reason : '';
     expect(reason).toContain(`/${maskedValue}-x/`);
     expect(reason).not.toContain(token);
+  });
+
+  it('a secret by provenance alone carries into captures that read neither headers nor cookies only from 8 characters', async () => {
+    const run = harness([
+      capture('authRequired', 'headers["x-auth-required"]', true, true),
+      capture('remember', 'cookies.remember_me', true, true),
+      capture('session', 'cookies.sessionid', true, true),
+      capture('pin', 'body.pin', true),
+      capture('flags', 'body.flags'),
+      capture('note', 'body.note'),
+    ]);
+    const sensitive = (name: string): string[] => {
+      const result = run.results.get(name);
+      return result?.state === 'resolved' ? [...result.sensitive].sort() : [];
+    };
+
+    run.tracker.head(
+      head('application/json', [
+        ['X-Auth-Required', 'true'],
+        ['Set-Cookie', 'remember_me=1'],
+        ['Set-Cookie', 'sessionid=synthetic-sid-0001'],
+      ]),
+    );
+    await run.tracker.end(
+      completed('json', {
+        body: JSON.stringify({
+          pin: '7',
+          flags: { beta: true },
+          note: 'code 7, sid synthetic-sid-0001, 1 item',
+        }),
+        contentType: 'application/json',
+      }),
+    );
+
+    expect(run.results.get('flags')).toMatchObject({ state: 'resolved', text: '{"beta":true}' });
+    expect(sensitive('flags')).toEqual([]);
+    expect(sensitive('note')).toEqual(['7', 'synthetic-sid-0001']);
   });
 
   it('carries short sensitive header and credential cookie values only into captures that read the headers or the cookies', async () => {
