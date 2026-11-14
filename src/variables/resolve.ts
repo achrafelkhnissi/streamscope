@@ -373,11 +373,7 @@ class Scope implements VariableScope {
     return { ok: true, value };
   }
 
-  private indirect(
-    name: string,
-    indirection: boolean,
-    stack: readonly string[],
-  ): { ok: true; value: string } | Evaluated {
+  private indirect(name: string, indirection: boolean, stack: readonly string[]): Evaluated {
     if (!indirection) {
       return { ok: true, value: name };
     }
@@ -433,7 +429,14 @@ class Scope implements VariableScope {
         `${quoted(expression)}: ${lookedUp(match[2], match[1] !== undefined, name.value, 'key')} is not in ${dotenv.path}.`,
       );
     }
-    return looksLikeCredential(name.value) ? this.sensitiveValue(value) : { ok: true, value };
+    return this.lookedUpValue(name, value);
+  }
+
+  private lookedUpValue(name: Extract<Evaluated, { ok: true }>, value: string): Evaluated {
+    if (looksLikeCredential(name.value) && value !== '') {
+      this.sensitive.add(value);
+    }
+    return name.usesCapture === true ? { ok: true, value, usesCapture: true } : { ok: true, value };
   }
 
   private processVariable(expression: string, stack: readonly string[]): Evaluated {
@@ -455,7 +458,7 @@ class Scope implements VariableScope {
         `${quoted(expression)}: ${lookedUp(match[2], match[1] !== undefined, name.value, 'variable')} is not set in VS Code's environment.`,
       );
     }
-    return looksLikeCredential(name.value) ? this.sensitiveValue(value) : { ok: true, value };
+    return this.lookedUpValue(name, value);
   }
 
   private remember(name: string, evaluated: Evaluated): Evaluated {

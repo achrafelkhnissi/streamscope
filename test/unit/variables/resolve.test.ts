@@ -237,6 +237,47 @@ describe('resolveRequest', () => {
     ).toEqual([{ path: './report.txt', usesCapture: false }]);
   });
 
+  it('marks a body file path that a captured value chose through %name indirection', () => {
+    const kind: CaptureLookupResult = {
+      kind: 'value',
+      text: 'KEYFILE',
+      secret: false,
+      sensitive: [],
+      label: 'kinds',
+      provenance: { runId: 1, event: undefined, path: 'kind', time: 0 },
+    };
+    const paths = (body: string): { path: string; usesCapture: boolean }[] => {
+      const result = resolveWith(
+        {
+          captures: inMemoryCaptures({ bare: { kind } }),
+          environmentName: 'dev',
+          environment: sourced({ which: '{{kind}}' }, 'dev environment (settings)'),
+          dotenv: {
+            kind: 'loaded',
+            values: new Map([['KEYFILE', './secrets/service-key.json']]),
+            path: '/synthetic/.env',
+          },
+          processEnv: { KEYFILE: './secrets/service-key.json' },
+        },
+        'POST https://api.example.test/upload',
+        '',
+        body,
+      );
+      return result.ok
+        ? result.request.body.flatMap((part) =>
+            part.kind === 'file' ? [{ path: part.path, usesCapture: part.usesCapture }] : [],
+          )
+        : [];
+    };
+
+    expect(paths('< {{$dotenv %which}}')).toEqual([
+      { path: './secrets/service-key.json', usesCapture: true },
+    ]);
+    expect(paths('< {{$processEnv %which}}')).toEqual([
+      { path: './secrets/service-key.json', usesCapture: true },
+    ]);
+  });
+
   it('scope.resolveText resolves file and system variables in file contents', () => {
     const { scope } = resolved('@name = Ada', 'POST https://api.example.test/items');
 

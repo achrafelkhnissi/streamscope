@@ -2387,6 +2387,53 @@ describe('waiting for captured values', () => {
       expect(api.requests.map((request) => request.url)).toEqual(['/names']);
     });
 
+    it('is refused when a captured value chose it through {{$dotenv %name}}, and nothing is read', async () => {
+      const { api, folder } = await uploads();
+      mkdirSync(path.join(folder, 'secrets'));
+      const keyFile = path.join(folder, 'secrets', 'service-key.json');
+      writeFileSync(keyFile, '{"key":"synthetic-service-key"}');
+      chmodSync(keyFile, 0o000);
+      const registry = new CaptureRegistry();
+      registry.begin({ id: -7, key: `${documentUri}\n@kinds`, label: 'kinds', startedAt: 0 }, [
+        { name: 'kind', secret: false },
+      ]);
+      registry.update(-7, 'kind', resolved('KEYFILE', -7));
+      const lines = [
+        '# @name kinds',
+        '# @capture kind = body.kind',
+        `POST ${api.url}/kinds`,
+        '',
+        '###',
+        '# @name upload',
+        `POST ${api.url}/upload`,
+        'Content-Type: application/json',
+        '',
+        '< {{$dotenv %which}}',
+      ];
+
+      const blocked = await startRun(
+        {
+          ...capturing(registry, lines, 1, undefined, {
+            environmentName: 'dev',
+            environment: new Map([
+              ['which', { value: '{{kind}}', origin: 'dev environment (settings)' }],
+            ]),
+            dotenv: {
+              kind: 'loaded',
+              values: new Map([['KEYFILE', './secrets/service-key.json']]),
+              path: path.join(folder, '.env'),
+            },
+          }),
+          bodyFiles: { documentDir: folder, containmentRoot: folder },
+        },
+        dependencies,
+      ).done;
+
+      expect(blocked.status).toBe('blocked');
+      expect(blocked.problems.map((problem) => problem.message)).toEqual([refused]);
+      expect(api.requests).toEqual([]);
+    });
+
     it('still works when a file variable chose it', async () => {
       const { api, folder } = await uploads();
       const lines = upload(api, '{{report}}', ['@report = report.txt', '']);
