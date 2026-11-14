@@ -5,6 +5,7 @@ import { formatLabel } from '../streaming/detect';
 import { formatBody } from './format-body';
 import { formatBytes, formatDuration, waitingText } from './labels';
 import { panelLimits, type PanelBody, type PanelStatus } from './panel-protocol';
+import { capText } from './panel-rows';
 
 type JsonObject = { readonly [key: string]: JsonValue };
 
@@ -262,6 +263,17 @@ export function detailNote(event: StreamEvent, index: number): string | undefine
     return `Event ${String(index)} is not valid JSON: ${event.error}`;
   }
   return event.kind === 'oversize' ? eventNote(event, index, false) : undefined;
+}
+
+const unavailableEvent = 'This event is no longer available.';
+
+export function detailText(event: StreamEvent | undefined): { text: string; truncated: boolean } {
+  const shown =
+    event === undefined
+      ? { text: unavailableEvent, truncated: false }
+      : eventText(event, panelLimits.inlineEventBytes);
+  const capped = capText(shown.text, panelLimits.inlineEventBytes);
+  return { text: capped.text, truncated: shown.truncated || capped.cut };
 }
 
 export function capTail(text: string, maxBytes: number): { text: string; cut: boolean } {
