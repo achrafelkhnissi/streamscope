@@ -34,7 +34,16 @@ function agentEvents(run: number, parameters: URLSearchParams): string[] {
   return [...started, ...content.slice(0, 1), ...malformed, ...content.slice(1), ...finished];
 }
 
-function streamRun(response: http.ServerResponse, run: number, parameters: URLSearchParams): void {
+export interface AgentServer extends LocalServer {
+  pendingTimers(): number;
+}
+
+function streamRun(
+  response: http.ServerResponse,
+  run: number,
+  parameters: URLSearchParams,
+  timers: Set<NodeJS.Timeout>,
+): void {
   const lines = agentEvents(run, parameters);
   const delayMs = numberParameter(parameters.get('delayMs'), 0);
   const gapMs = numberParameter(parameters.get('gapMs'), 0);
@@ -47,7 +56,15 @@ function streamRun(response: http.ServerResponse, run: number, parameters: URLSe
   });
   response.flushHeaders();
   let sent = 0;
-  let timer: NodeJS.Timeout | undefined;
+  let timer: NodeJS.Timeout;
+  const schedule = (ms: number): void => {
+    const scheduled = setTimeout(() => {
+      timers.delete(scheduled);
+      step();
+    }, ms);
+    timers.add(scheduled);
+    timer = scheduled;
+  };
   const step = (): void => {
     const line = lines[sent];
     if (line === undefined) {
@@ -60,32 +77,34 @@ function streamRun(response: http.ServerResponse, run: number, parameters: URLSe
     }
     sent += 1;
     response.write(line);
-    timer = setTimeout(step, sent < lines.length ? gapMs : 0);
+    schedule(sent < lines.length ? gapMs : 0);
   };
-  timer = setTimeout(step, delayMs);
+  schedule(delayMs);
   response.on('close', () => {
     clearTimeout(timer);
+    timers.delete(timer);
   });
 }
 
-function echo(response: http.ServerResponse, recorded: RecordedRequest | undefined): void {
+function echo(response: http.ServerResponse, recorded: RecordedRequest): void {
   response.writeHead(200, { 'Content-Type': 'application/json' });
-  response.end(recorded?.body);
+  response.end(recorded.body);
 }
 
-export async function startAgentServer(): Promise<LocalServer> {
+export async function startAgentServer(): Promise<AgentServer> {
   let runs = 0;
-  const server: LocalServer = await startHttpServer((request, response) => {
+  const timers = new Set<NodeJS.Timeout>();
+  const server = await startHttpServer((request, response, recorded) => {
     const url = requestUrl(request);
     const route = `${request.method ?? ''} ${url?.pathname ?? ''}`;
     if (url !== undefined && route === 'POST /agent/run') {
       runs += 1;
-      streamRun(response, runs, url.searchParams);
+      streamRun(response, runs, url.searchParams, timers);
     } else if (route === 'POST /agent/continue') {
-      echo(response, server.requests.at(-1));
+      echo(response, recorded);
     } else {
       response.writeHead(404).end();
     }
   });
-  return server;
+  return { ...server, pendingTimers: () => timers.size };
 }

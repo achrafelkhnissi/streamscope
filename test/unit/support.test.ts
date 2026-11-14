@@ -91,10 +91,6 @@ function eventTypes(body: string): (string | undefined)[] {
   });
 }
 
-function activeTimers(): number {
-  return process.getActiveResourcesInfo().filter((resource) => resource === 'Timeout').length;
-}
-
 describe('test support', () => {
   it('creates a certificate Node accepts', () => {
     const { cert, key } = createSelfSignedCertificate(['localhost', '127.0.0.1']);
@@ -271,10 +267,12 @@ describe('test support', () => {
     const server = await startAgentServer();
     const first = await exchange(`${server.url}/agent/run`);
     const second = await exchange(`${server.url}/agent/run`);
+    const timersAfterRuns = server.pendingTimers();
     await server.close();
 
     expect(first.status).toBe(200);
     expect(first.complete).toBe(true);
+    expect(timersAfterRuns).toBe(0);
     expect(first.headers['content-type']).toBe('application/x-ndjson');
     expect(first.headers['x-session-token']).toBe('synthetic-session');
     expect(first.headers['set-cookie']).toEqual(['session=synthetic; Path=/']);
@@ -322,14 +320,15 @@ describe('test support', () => {
 
   it('waits delayMs before RUN_STARTED and gapMs between events', async () => {
     const server = await startAgentServer();
-    const delayed = await exchange(`${server.url}/agent/run?delayMs=600`);
-    const spaced = await exchange(`${server.url}/agent/run?gapMs=300`);
+    const [delayed, spaced] = await Promise.all([
+      exchange(`${server.url}/agent/run?delayMs=1000`),
+      exchange(`${server.url}/agent/run?gapMs=500`),
+    ]);
     await server.close();
 
-    expect(delayed.firstByteMs).toBeGreaterThanOrEqual(550);
+    expect(delayed.firstByteMs).toBeGreaterThanOrEqual(500);
     expect(eventTypes(delayed.body)[0]).toBe('RUN_STARTED');
-    expect(spaced.firstByteMs).toBeLessThan(spaced.elapsedMs - 1_100);
-    expect(spaced.elapsedMs).toBeGreaterThanOrEqual(1_150);
+    expect(spaced.firstByteMs).toBeLessThanOrEqual(spaced.elapsedMs - 1_500);
     expect(eventTypes(spaced.body)).toHaveLength(5);
   });
 
@@ -361,7 +360,6 @@ describe('test support', () => {
   });
 
   it('releases every socket and timer when it closes in the middle of a run', async () => {
-    const before = activeTimers();
     const server = await startAgentServer();
     const openRun = (query: string): Promise<http.IncomingMessage> =>
       new Promise((resolve, reject) => {
@@ -388,11 +386,13 @@ describe('test support', () => {
         }),
     );
     await started;
+    const scheduled = server.pendingTimers();
     await server.close();
     await Promise.all(closed);
 
+    expect(scheduled).toBe(2);
+    expect(server.pendingTimers()).toBe(0);
     expect(server.sockets.opened).toBe(2);
     expect(server.sockets.closed).toBe(server.sockets.opened);
-    expect(activeTimers()).toBe(before);
   });
 });

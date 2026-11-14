@@ -63,33 +63,37 @@ function serve(
   });
 }
 
-function recording(
-  requests: RecordedRequest[],
-  handler: http.RequestListener,
-): http.RequestListener {
+export type RecordingListener = (
+  request: http.IncomingMessage,
+  response: http.ServerResponse & { req: http.IncomingMessage },
+  recorded: RecordedRequest,
+) => void;
+
+function recording(requests: RecordedRequest[], handler: RecordingListener): http.RequestListener {
   return (request, response) => {
     const chunks: Buffer[] = [];
     request.on('data', (chunk: Buffer) => chunks.push(chunk));
     request.on('end', () => {
-      requests.push({
+      const recorded: RecordedRequest = {
         method: request.method ?? '',
         url: request.url ?? '',
         rawHeaders: request.rawHeaders,
         body: Buffer.concat(chunks),
-      });
-      handler(request, response);
+      };
+      requests.push(recorded);
+      handler(request, response, recorded);
     });
   };
 }
 
-export function startHttpServer(handler: http.RequestListener): Promise<LocalServer> {
+export function startHttpServer(handler: RecordingListener): Promise<LocalServer> {
   const requests: RecordedRequest[] = [];
   return serve(http.createServer(recording(requests, handler)), 'http', requests);
 }
 
 export function startHttpsServer(
   credentials: { cert: string; key: string },
-  handler: http.RequestListener,
+  handler: RecordingListener,
 ): Promise<LocalServer> {
   const requests: RecordedRequest[] = [];
   return serve(https.createServer(credentials, recording(requests, handler)), 'https', requests);

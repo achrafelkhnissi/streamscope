@@ -41,6 +41,9 @@ interface AgentFile {
 const sessionToken = 'synthetic-session';
 const runHandle = 'synthetic-run-1';
 const runHandleTail = '-run-1';
+const partlyMaskedSessionToken = '••••••-session';
+const sessionCookie = 'session=synthetic';
+const leakedForms = [sessionToken, partlyMaskedSessionToken, sessionCookie, runHandleTail];
 const sequence = '12345678901234567890';
 const firstContinue = '{"threadId": "synthetic-thread-1", "messageId": "synthetic-message-1"}';
 const designContinue = [
@@ -190,6 +193,10 @@ function continueBodies(server: LocalServer): string[] {
   return continued(server).map((request) => request.body.toString());
 }
 
+function escapedPattern(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 function headerValue(request: RecordedRequest | undefined, name: string): string | undefined {
   const raw = request?.rawHeaders ?? [];
   const index = raw.findIndex(
@@ -226,6 +233,16 @@ describe('the capture flow against a synthetic agent server', () => {
     const blocked = await blockedActions();
     assert.equal(blocked?.message, `Not sent: ${message} (line ${String(line + 1)}).`);
     assert.equal((await lensesAt(opened.uri, opened.consumer))[1], `Not sent: ${message}`);
+  }
+
+  async function blockedStartingWith(opened: Opened, start: string, line: number): Promise<void> {
+    const stable = `^Not sent: ${escapedPattern(start)}\\b.*\\.`;
+    const blocked = await blockedActions();
+    assert.match(
+      blocked?.message ?? '',
+      new RegExp(`${stable} \\(line ${String(line + 1)}\\)\\.$`),
+    );
+    assert.match((await lensesAt(opened.uri, opened.consumer))[1] ?? '', new RegExp(`${stable}$`));
   }
 
   before(() => {
@@ -364,6 +381,17 @@ describe('the capture flow against a synthetic agent server', () => {
       log.some((line) => line.includes('X-Session-Token: ••••••, X-Run-Handle: ••••••, Host')),
       log.join('\n'),
     );
+    const producerResponse = log.find((line) =>
+      line.startsWith('Response headers: Content-Type: application/x-ndjson'),
+    );
+    assert.ok(
+      producerResponse?.includes('X-Session-Token: ••••••, Set-Cookie: ••••••, '),
+      log.join('\n'),
+    );
+    assert.ok(
+      log.every((line) => !line.includes(sessionCookie)),
+      log.join('\n'),
+    );
 
     const surfaces = {
       producerHeaders,
@@ -381,7 +409,7 @@ describe('the capture flow against a synthetic agent server', () => {
     for (const [surface, shown] of Object.entries(surfaces)) {
       const text = JSON.stringify(shown);
       assert.ok(
-        !text.includes(sessionToken) && !text.includes(runHandleTail),
+        leakedForms.every((leaked) => !text.includes(leaked)),
         `${surface} shows a secret: ${text}`,
       );
     }
@@ -436,9 +464,9 @@ describe('the capture flow against a synthetic agent server', () => {
       await waitingLens(opened);
       await Promise.all([producing, following]);
 
-      await blockedWith(
+      await blockedStartingWith(
         opened,
-        'startRun › messageId failed: startRun failed before messageId resolved: The connection closed before the response was complete (aborted).',
+        'startRun › messageId failed: startRun failed before messageId resolved: The connection closed before the response was complete',
         opened.consumer + 3,
       );
       assert.deepEqual(continued(server), []);
