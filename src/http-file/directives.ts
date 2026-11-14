@@ -35,11 +35,6 @@ export function directiveDiagnostics(
       'Request names may only contain letters, digits and underscores.',
     );
   }
-  if (kind === 'expect') {
-    return argument === ''
-      ? problem(directive, 'empty-expect', 'Expected an expression after "# @expect".')
-      : checks.expression(argument, directive.argumentRange.start, 'expect').diagnostics;
-  }
   if (kind === 'until') {
     return argument === ''
       ? problem(directive, 'empty-until', 'Expected an event condition after "# @until".')

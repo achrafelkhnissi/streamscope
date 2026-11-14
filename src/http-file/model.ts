@@ -43,6 +43,13 @@ export interface CaptureDirective {
   range: Range;
 }
 
+export interface ExpectDirective {
+  text: string;
+  range: Range;
+  expressionRange: Range;
+  expression: Expr | undefined;
+}
+
 export interface FileVariable {
   name: string;
   value: string;
@@ -90,6 +97,7 @@ export interface HttpRequest {
   name: string | undefined;
   directives: Directive[];
   captures: readonly CaptureDirective[];
+  expects: readonly ExpectDirective[];
   requestLine: RequestLine;
   headers: Header[];
   body: BodyPart[];
@@ -105,6 +113,7 @@ export type DiagnosticCode =
   | 'invalid-expression'
   | 'duplicate-capture'
   | 'too-many-captures'
+  | 'too-many-expects'
   | 'unchecked-expression'
   | 'empty-expect'
   | 'invalid-stream'
