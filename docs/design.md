@@ -80,7 +80,7 @@ JavaScript scripts, GraphQL helpers, WebSocket and gRPC, cURL import and export,
 - **FR-C1** `# @capture [secret] name = expression` on the producing request (grammar in section 10).
 - **FR-C2** `{{request.name}}` reads a capture of a specific request; `{{name}}` reads the most recent capture with that name from any request in the workspace session.
 - **FR-C3** `first`/`nth` captures resolve as soon as the matching event arrives; `last`, `all`, `count` and `text` resolve when the stream ends.
-- **FR-C4** A request that needs a pending capture waits for it (default 30 s, setting `streamscope.capture.waitTimeout`), showing "waiting for startRun › threadId" with a cancel action. If the value fails or times out, the request is blocked with an error.
+- **FR-C4** A request that needs a pending capture waits for it (default 30 s, setting `streamscope.capture.waitTimeout`) in the run status Waiting, its CodeLens showing "Waiting for startRun › threadId · 3 s" beside Stop. If the value fails or times out, the request is blocked with an error.
 - **FR-C5** A new run of the producer resets its captures to pending.
 - **FR-C6** Click-to-capture: in event detail and Body views, "Capture This Value…" on a JSON value writes a `# @capture` line on the producing request, with a suggested name, the event condition (`first(type == "…")` or the discriminator in use) and the path. The user can edit the name before it is written.
 - **FR-C7** After a run, an inlay hint after each `# @capture` line shows the value (masked if secret) or the failure.
@@ -368,13 +368,24 @@ source     = "status" | "headers" | "cookies" | "body" | "text"
            | "all" "(" [ expr ] ")" | "count" "(" [ expr ] ")"
            | "exists" "(" expr ")" | "before" "(" expr "," expr ")" | "unique" "(" expr ")"
            | "jsonpath" "(" string ")"
-filter     = "default" "(" literal ")" | "join" "(" string ")" | "json" | "match" "(" regex ")"
-literal    = string | number | "true" | "false" | "null" | "[" literal { "," literal } "]" | regex
+filter     = "default" "(" constant ")" | "join" "(" string ")" | "json" | "match" "(" regex ")"
+literal    = constant | regex
+constant   = string | number | "true" | "false" | "null" | "[" constant { "," constant } "]"
 regex      = "/" chars "/" [ flags ]
 index      = integer        (negative counts from the end)
 ```
 
 Inside an event condition, bare identifiers refer to the event's fields (`type`, `result.status`); `@` refers to the event itself; `@sse.event` and `@sse.id` refer to SSE fields. Inside `[?…]`, identifiers refer to the current array element.
+
+A regular expression is not a list item and not a `default(…)` value; both are syntax errors. The rest of the syntax:
+
+- Strings use double or single quotes with JSON escapes.
+- Identifiers are `[A-Za-z_$][A-Za-z0-9_$]*`.
+- Numbers use JSON number syntax with an optional `-`. Integers outside JavaScript's safe range keep every digit.
+- Regex flags are `i`, `m`, `s` and `u`.
+- `nth(k, …)` counts from 1, and `k` is a whole number from 1 to 2,147,483,647. A path index is a whole number, and a negative one counts from the end.
+- An expression is at most 4,096 characters and nests at most 64 levels.
+- A request has at most 64 `# @capture` lines, and a name captured twice on one request is an error.
 
 ### Sources
 
@@ -392,23 +403,53 @@ Inside an event condition, bare identifiers refer to the event's fields (`type`,
 
 Checks add `exists(x)` (true if `x` resolves), `before(a, b)` (first event matching `a` comes before the first matching `b`) and `unique(list)`.
 
+- `headers` alone is an object of lower-cased header names, with repeated headers joined by `, `. `cookies` alone is an object of the response's `Set-Cookie` pairs.
+- `jsonpath("…")` gives the value when exactly one node matches, a list when several match, and a missing value when none match, as REST Client's `{{x.response.body.$…}}` does.
+- On an event stream, `body` fails with "the response is an event stream; use first(…), last(…) or all(…)". On any other response, an event source fails with "the response is not an event stream".
+- `match(/…/)` gives the first group, or the whole match when the pattern has no group. `join(s)` joins a list's items as each would be inserted.
+
 ### Semantics
 
 | Rule             | Behaviour                                                                                                                                                                                                       |
 | ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | States           | Each capture is pending, resolved (value plus provenance: request, run, event index, path, time) or failed (reason)                                                                                             |
 | New run          | Resets the producer's captures to pending                                                                                                                                                                       |
-| Mid-stream       | `first`, `nth` and any `body`/`status`/`headers` expression resolve as soon as possible; `last`, `all`, `count`, `text` wait for the end                                                                        |
+| Mid-stream       | Expressions reading only `status`, `headers` and `cookies` resolve when the headers arrive, one whose only event source is one `first` or `nth` when that event arrives, the rest when the run ends             |
 | Missing          | A path that does not exist, an event that never arrives, a cancelled or failed stream: the capture fails with the request, event and path segment named. `default(…)` is the only way to accept a missing value |
 | Malformed events | Never match a condition; they are counted and reported                                                                                                                                                          |
-| Values           | Strings are inserted as-is; numbers keep their original digits; objects and lists are inserted as compact JSON; `json` forces JSON                                                                              |
+| Values           | Strings as they are; integers keep every digit; other numbers as JavaScript prints them (`1.50` becomes `1.5`); objects and lists as compact JSON; `json` forces JSON; over 1 MiB of text fails                 |
 | Multiple results | A path with `[*]` or `[?…]` yields a list; `join` makes a string; inserting a list without `join` inserts JSON                                                                                                  |
 | Errors           | Expression syntax errors are diagnostics with the exact column; the request will not send while one exists                                                                                                      |
-| Safety           | No `eval`, `Function` or `vm`; regex execution has a 100 ms time budget **(builder's call)**                                                                                                                    |
+| Safety           | No `eval`, `Function` or `vm`; regular expressions run on a linear-time matcher, never on JavaScript's backtracking engine (see Limits)                                                                         |
+
+### Limits
+
+Regular expressions. A JavaScript regex cannot be interrupted on the extension host, so no time budget can bound one without breaking the 50 ms responsiveness budget. Instead:
+
+- Every regular expression (`matches`, `match(…)`, and `match()`/`search()` inside `jsonpath()`) runs on Streamscope's own linear-time matcher (`src/expressions/regex.ts`), never on JavaScript's backtracking engine.
+- Backreferences, lookaround and inline modifier groups such as `(?i:…)` are rejected as unsupported, and so is a repeated group that can match the empty string.
+- A pattern has at most 500 characters and compiles to at most 2,000 instructions. One test does at most 1,000,000 units of work (subject length × program size).
+- Over the work limit, a condition is false, and a `match(…)` filter fails with "the text is too long for this regular expression".
+
+JSONPath:
+
+- `jsonpath()` and REST Client's `{{x.response.body.$…}}` references are evaluated in a child process, never on the extension host. The process has 5 s and a 1 GiB heap and is killed when it passes either; the capture then fails with "jsonpath() took too long or used too much memory".
+- The extension host only validates a query: at most 384 characters, at most 3 levels of parentheses, at most 32 levels of brackets, and no function other than `length`, `count`, `match`, `search` and `value`.
+- Inside a JSONPath filter, a large integer compared with a number compares false. Use the capture language for exact large-integer comparisons.
+
+Capture evaluation (`src/capture/tracker.ts`, `body.ts`, `task-budget.ts`):
+
+- Captures are evaluated on the extension host in slices of at most 10 ms of capture work per task, and the runs with pending captures take turns in each slice.
+- The capture queue applies backpressure to the socket, as the spill file does. It pauses the socket above 5,000 events or 8 MiB of event bytes and resumes it below 1,000 events and 2 MiB. A stream with more capture work than the host can do arrives more slowly than the server sends it.
+- A single evaluation on the extension host fails above 2,000,000 work units with "the capture needs too much work for this stream".
+- Bodies up to 256 KiB are evaluated on the extension host, or up to 64 KiB when the body has a run of 16 digits. Larger bodies, matched events over 256 KiB, `all(…)` and every `jsonpath()` go to the child process (`dist/capture-worker.js`), with the same 5 s and 1 GiB limits and 100,000,000 work units. At most two run at once.
+- `all(…)`, and `jsonpath()` over a stream, keep at most 10,000 events and 16 MiB of their bytes, then fail ("all(…) matched more than 10,000 events").
 
 ### Resolution order
 
-For `{{x}}` without a request prefix: latest capture named `x`, file variable `x`, active environment `x`, `$shared` `x`. For `{{name.x}}`: capture `x` of request `name`; if `name` is a request and `x` is `response`/`request`, the REST Client reference syntax applies. Hovering shows which one was used.
+For `{{x}}` without a request prefix: the capture named `x` whose producing run started most recently, from any request in the workspace session, then file variable `x`, active environment `x`, `$shared` `x`. The newest capture includes the request's own previous value when it re-captures the name it consumes, such as a pagination cursor.
+
+For `{{name.x}}`, when `name` is a request in the file: capture `x` of request `name`, then a variable literally named `name.x`, then an error that the request has no such capture ("startRun has no capture named threadI."). `{{name.response.…}}` is REST Client's response reference (a header, the whole body with `*`, or a JSONPath starting with `$`). `{{name.request.…}}` references and XPath are not supported; the request is blocked with a message that says so. Hovering shows which one was used.
 
 Environment and `.env` details, settled in M3:
 
@@ -420,7 +461,20 @@ Environment and `.env` details, settled in M3:
 
 ### Waiting
 
-`streamscope.capture.waitTimeout` (default 30 s). While waiting, the request shows "waiting for startRun › threadId" with a cancel action. If the producer has never run in this session, the request is blocked immediately with a quick fix "Run startRun".
+`streamscope.capture.waitTimeout` (default 30 s). A request that needs a pending capture, or a response reference to a request that is still running, waits in the status Waiting before it is sent (section 11). Its CodeLens shows "Waiting for startRun › threadId · 3 s" beside Stop, and the status bar shows "… · waiting for startRun › threadId". Stop, a re-send and closing VS Code cancel the wait. Waits inside `<@` body files behave like waits in the request.
+
+The request is blocked, with the message shown, when:
+
+- the producer has never run in this session: "`{{threadId}}` comes from startRun, which has not run in this session." This happens at once. The error notification offers "Run startRun", which sends the producer only when clicked;
+- it would wait for its own capture and has no earlier value of it: "startRun cannot use its own capture threadId.", at once;
+- two runs would wait for each other's captures: "startRun and continue wait for each other's captures.", at once;
+- the capture fails: "startRun › threadId failed: <reason>.";
+- the wait times out: "startRun › threadId did not arrive within 30 s.".
+
+### Known limitations
+
+- Two runs that wait on each other's responses (`{{b.response…}}` in request `a` and `{{a.response…}}` in request `b`) time out instead of being blocked at once. Capture cycles are blocked at once.
+- A hover preview can show the start of URL user info that is 1 KiB or longer.
 
 ## 11. Request execution lifecycle
 
@@ -507,7 +561,7 @@ The M5 spike chose the webview; [decisions/response-surface.md](decisions/respon
 | State                 | Where                                                                                        | Lifetime                                                                                         |
 | --------------------- | -------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
 | Runs and their events | Memory (parsed events for open views, summaries for history) and spill files                 | The last 50 runs of the session stay in history **(builder's call)**; nothing survives a restart |
-| Captures              | Memory, per workspace session                                                                | Until VS Code closes or the producer runs again                                                  |
+| Captures              | Memory, per workspace session, for at most 500 requests (the least recently run is dropped)  | Until VS Code closes or the producer runs again                                                  |
 | Active environment    | `workspaceState`                                                                             | Per workspace                                                                                    |
 | Last chosen view      | `globalState`                                                                                | Per user                                                                                         |
 | Secrets               | SecretStorage, key `streamscope:<workspace hash>:<name>`                                     | Until cleared                                                                                    |
@@ -548,6 +602,17 @@ The confirmation comes only for a request that would otherwise be sent, just bef
 ### Masking
 
 Masked in everything the extension itself writes (the request headers shown in Headers, the captured-values summary, hovers, inlay hints, log, history list, error messages): values from `{{$secret}}`, `secret` captures, values of variables whose names look like credentials (file, environment, `$shared`, `.env` and process variables; FR-A4's rule), masked by value wherever they appear, and the headers `Authorization`, `Proxy-Authorization`, `Cookie`, `Set-Cookie`, `X-Api-Key`, `Api-Key` **(builder's call for the last two)**. The log channel never prints request or response bodies at the default level.
+
+Captures add these rules (`src/masking/masking.ts`). A sensitive header below is one whose name, split at `-` and `_`, has a word from that file's header word list, such as `auth`, `token`, `key`, `session` or `cookie`.
+
+- **Shown masked.** A `secret` capture, or one whose name looks like a credential (FR-A4's rule), shows as `••••••` in the captured-values summary, inlay hints, hovers and completion.
+- **Secret by provenance.** A capture whose expression reads a sensitive header or a credential cookie by name, such as `headers["x-session-token"]` or `cookies.sessionid`, also through `default(…)`, is secret with or without the `secret` keyword. A cookie is a credential cookie when its name contains one of `session`, `sess`, `sid`, `token`, `auth`, `jwt`, `csrf`, `xsrf`, `secret`, `password`, `passwd`, `login`, `remember` or `credential`, compared as case-insensitive substrings, so `PHPSESSID`, `JSESSIONID` and `csrftoken` count, and so does a harmless `author_pref`.
+- **Failure reasons** are masked with the producer run's sensitive values when they are created, so blocked messages, notifications, hints and the summary show them masked.
+- **Carried values.** A resolved capture carries the producer's sensitive values that occur in its text: those of the producer request, and values from its response headers. Every display of the capture masks them, and a request that inserts the capture adds them to its own sensitive values.
+- **Source-aware carry.** From the response, only sensitive header values and cookie values are carried. When the capture's expression reads `headers` or `cookies` in any form, they are carried at any length, except a cookie value whose name has no credential word. That one, and every response value carried for a capture that reads neither, is carried only from 8 characters, so a `consent=1` cookie does not mask every `1`.
+- **JSON text.** A sensitive value that contains `"` or `\` is also found in its JSON-escaped form.
+- **Response references.** A `{{x.response…}}` value is sensitive when the selector's last name looks like a credential, when it reads a sensitive header, or when it equals a secret capture of the producer's run. While a secret capture of that run is pending, the value may equal it, so it is masked.
+- **Previews.** Hovers and inlay hint tooltips show at most 4,096 characters of a value.
 
 Response content is not masked: Events, Reply, Body, Raw and saved responses show exactly what the server sent, even if it contains a token (Achraf's decision; Raw stays byte-exact and latency is unaffected).
 

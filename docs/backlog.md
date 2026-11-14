@@ -22,3 +22,15 @@ Work that is not part of a milestone in [roadmap.md](roadmap.md) yet. An item ge
   1. A 1,000 events/s view run with a CPU profile of the extension host, taken through VS Code's `--inspect-extensions` port, long enough to catch the task again.
   2. Extend `TaskTimer` to the panel flushes it misses: the feed's `setBody` when a run ends (`ended`), `select` and `expand`. Record when each task over 50 ms ran and which kind it was, so a long task can be matched to the profile.
 - **Open points:** whether the pauses are garbage collection or VS Code's own work, which the profile should show; how long the run must be to reproduce a task seen once in 30 minutes.
+
+## Cycle detection for response-reference waits
+
+Two runs that wait on each other's responses (`{{b.response…}}` in request `a` and `{{a.response…}}` in request `b`) time out after `streamscope.capture.waitTimeout` instead of being blocked at once, as capture cycles are, because the capture registry's wait graph has nodes only for runs that declare captures.
+
+## No warning on `{{$shared name}}` that holds a response reference
+
+The editor shows an unresolved-variable warning on a `{{$shared name}}` whose value holds a response reference, although sending resolves it, so the warning says a request is broken when it is not.
+
+## Linear variable diagnostics
+
+Variable diagnostics cost O(references × file variables), because `definedName` scans the file variables for each reference and each reference builds its own `Scope` over them, so on `.http` files with hundreds of requests and variables the cost grows with the square of the file's size. The cost has not been measured.
