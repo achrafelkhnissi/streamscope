@@ -388,3 +388,40 @@ Raw results, the median throughput runs and the two soak runs after this change:
   }
 ]
 ```
+
+## 2026-11-14: M11 release candidate
+
+Branch `m11-release-preparation`, version 0.1.0. Apple M3 Pro, 18 GB, macOS 27.2.1, Node 24.18.0, VS Code 1.146.0.
+
+### Budgets
+
+| Budget (design section 3)                                    | Measured                                                                                                                  | Result |
+| ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------- | ------ |
+| Event visible within 100 ms (p95) at 500 events/s of 1 KiB   | 30-minute view run: 900,002 of 900,002 events visible, p50 / p95 / p99 / max 32 / 55 / 60 / 1,055 ms                      | Met    |
+| No synchronous task over 50 ms; typing smooth for 30 minutes | Same run: no Streamscope task over 50 ms (longest 41.9 ms); typing p50 / p95 / p99 / max 1 / 1 / 3 / 164 ms               | Met    |
+| Extension heap under 150 MB regardless of stream length      | 30-minute soak at 1,000 events/s: heap peak 20.7 MB, heap plus array buffers 80.1 MB                                      | Met    |
+| A 50 MB JSON body opens without freezing VS Code             | The 50 MB integration test passes on VS Code 1.101.0 and stable                                                           | Met    |
+| Activation under 50 ms                                       | Median of 5 starts on a production build: 7.7 ms with one `.http` file (slowest 8.0 ms), 7.7 ms with 300 (slowest 8.2 ms) | Met    |
+| Bundled extension under 400 KB                               | `streamscope-0.1.0.vsix` (pre-release): 208.84 KB, 14 files                                                               | Met    |
+
+Commands: `caffeinate -d -i npm run bench -- view --surface m11-quiet --rate 500 --size 1024 --minutes 30`, `npm run bench -- soak --format ndjson --rate 1000 --minutes 30`, `npm run bench -- activation` with and without `--files 300` on a production build, and `npm run verify:vsix`.
+
+- **The view run had to be repeated.** The first 30-minute run (`m11`) overlapped a code review that ran the unit tests, ESLint and the type checker on the same machine. It had one Streamscope task of 56.5 ms and five extension host pauses, the longest 111 ms, with the same latencies. The rerun on a quiet machine (`m11-quiet`) is the one in the table.
+- **Extension host pauses stay unattributed.** The quiet run saw three pauses of the extension host over 50 ms, the longest 135 ms and 256 ms in all, while Streamscope's own timed tasks stayed under 42 ms. As in M6, the pauses may come from VS Code, garbage collection or untimed code; the budget is judged on Streamscope's tasks and on typing, which stayed at 1 ms (p95).
+- **Memory in the view run:** extension host heap 48.2 → 88.4 MB, resident 185.3 → 233.7 MB, CPU 6.9%.
+- **Soak:** 1,800,002 events in 30 minutes, lag p95 49 ms and max 115 ms (including up to 50 ms of batching). The spill file stopped at its 512 MiB cap (536.9 MB) and the stream went on.
+
+### Decompression after the backpressure fix
+
+M11 made the decoder pause its last stage while its output is not read. Decoding 64 MiB of NDJSON, written in 16 KiB chunks and read at full speed, median of 5 interleaved rounds:
+
+| Coding | Before (MB/s)                         | After (MB/s)                            |
+| ------ | ------------------------------------- | --------------------------------------- |
+| gzip   | 1,105, 1,096, 1,134, 985, 797 → 1,096 | 817, 1,368, 1,191, 683, 1,142 → 1,142   |
+| br     | 1,013, 1,256, 967, 980, 1,277 → 1,013 | 1,239, 1,027, 841, 1,279, 1,296 → 1,239 |
+
+No regression; the spread between rounds is larger than the difference. A 64 MiB compression bomb whose output is not read now buffers under 1 MiB (`test/unit/transport/decompress-bomb.test.ts`) instead of 37 to 67 MB.
+
+### Timing tests
+
+The one M7 host-stall test that measured a single run (`64 captures over 16 MiB of 38-byte events …`, 102.7 ms on a Windows runner in PR #23) now takes the fastest of three rounds with the same 100 ms bound. `npm run check` then passed five times in a row (2,580 of 2,580 each). The other stall tests that failed on slow runners already took the fastest of three.
