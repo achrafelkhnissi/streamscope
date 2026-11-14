@@ -359,6 +359,11 @@ export class CaptureService implements RunCaptures {
     return { kind: 'producer', run };
   }
 
+  private replaced(wait: ResponseWait, producer: ProducerRun): boolean {
+    const { documentUri, runs } = this.options;
+    return runs(namedRequestKey(documentUri, wait.requestName)) !== producer;
+  }
+
   private ready(wait: ResponseWait, producer: ProducerRun): boolean {
     const { status, head } = producer.snapshot();
     return finishedStates.has(status) || (readsHead(wait) && head !== undefined);
@@ -386,7 +391,9 @@ export class CaptureService implements RunCaptures {
     this.answer(
       wait,
       await within(
-        arrived.then(() => this.evaluate(wait, producer, signal)),
+        arrived.then(() =>
+          this.replaced(wait, producer) ? undefined : this.evaluate(wait, producer, signal),
+        ),
         timeoutMs,
         signal,
         wait.requestName,

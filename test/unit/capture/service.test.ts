@@ -458,6 +458,53 @@ describe('CaptureService', () => {
     });
   });
 
+  it('a response reference wait follows a re-sent producer to its new run', async () => {
+    let current = producerRun(70);
+    const captures = service(new CaptureRegistry(), 1, (key) =>
+      key === startKey ? current : undefined,
+    );
+    captures.begin({ id: 71, key: continueKey, label: 'continue', startedAt: 71 });
+    const body = responseWait('response.body.*');
+
+    const first = captures.wait([body], 71, { timeoutMs: 30_000, signal: signal() });
+    const earlier = current;
+    const resent = producerRun(72);
+    current = resent;
+    earlier.end('cancelled');
+
+    expect(await first).toEqual({ ok: true });
+    expect(captures.lookup.response('startRun', 'response.body.*')).toBeUndefined();
+    expect(await captures.settle([body], 71, signal())).toEqual([body]);
+
+    const second = captures.wait([body], 71, { timeoutMs: 30_000, signal: signal() });
+    resent.end('completed', '{"token":"synthetic-token-2"}');
+
+    expect(await second).toEqual({ ok: true });
+    expect(captures.lookup.response('startRun', 'response.body.*')).toMatchObject({
+      kind: 'value',
+      text: '{"token":"synthetic-token-2"}',
+      provenance: { runId: 72 },
+    });
+  });
+
+  it('a Stop of the producer keeps its run, so a waiting response reference is still blocked', async () => {
+    const producer = producerRun(73);
+    const captures = service(new CaptureRegistry(), 1, (key) =>
+      key === startKey ? producer : undefined,
+    );
+    captures.begin({ id: 74, key: continueKey, label: 'continue', startedAt: 74 });
+
+    const waiting = captures.wait([sessionWait], 74, { timeoutMs: 30_000, signal: signal() });
+    producer.end('cancelled');
+
+    expect(await waiting).toEqual({ ok: true });
+    expect(captures.lookup.response('startRun', 'response.headers.X-Session')).toEqual({
+      kind: 'failed',
+      message:
+        'startRun › response.headers.X-Session failed: startRun was cancelled before response.headers.X-Session resolved.',
+    });
+  });
+
   it('a response reference to the waiting run itself is refused at once', async () => {
     const producer = producerRun(21, 'continue');
     const captures = service(new CaptureRegistry(), 1, () => producer);

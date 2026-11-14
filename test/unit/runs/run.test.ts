@@ -7,6 +7,7 @@ import {
   rmSync,
   writeFileSync,
 } from 'node:fs';
+import type { ServerResponse } from 'node:http';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import * as zlib from 'node:zlib';
@@ -24,6 +25,7 @@ import { describeOutcome, formatBytes, requestLabel } from '../../../src/respons
 import { PanelFeed } from '../../../src/response/panel-feed';
 import type { ToPanel } from '../../../src/response/panel-protocol';
 import type { RunAccess, RunEnd, RunObserver } from '../../../src/runs/observer';
+import { RunRegistry } from '../../../src/runs/registry';
 import {
   requestKey,
   requestKeyDocument,
@@ -2216,6 +2218,111 @@ describe('waiting for captured values', () => {
     expect(blocked.problems).toEqual([
       { message: 'startRun › threadId did not arrive within 30 s.', range: at(9, 3, 18) },
     ]);
+  });
+
+  describe('a producer re-sent through RunRegistry.start while a consumer waits', () => {
+    const runRegistries: RunRegistry[] = [];
+
+    afterEach(() => {
+      for (const runs of runRegistries.splice(0)) {
+        runs.dispose();
+      }
+    });
+
+    function runRegistry(): RunRegistry {
+      const runs = new RunRegistry(dependencies);
+      runRegistries.push(runs);
+      return runs;
+    }
+
+    function holdingFirstProducer(
+      answer: (response: ServerResponse) => void,
+    ): Promise<LocalServer> {
+      let producers = 0;
+      return track(
+        startHttpServer((request, response) => {
+          if (request.url?.startsWith('/continue') === true) {
+            response.end('ok');
+            return;
+          }
+          producers += 1;
+          if (producers > 1) {
+            answer(response);
+          }
+        }),
+      );
+    }
+
+    async function resend(
+      lines: string[],
+      api: LocalServer,
+    ): Promise<{ first: RunSnapshot; second: RunSnapshot; consumer: RunSnapshot }> {
+      const registry = new CaptureRegistry();
+      const runs = runRegistry();
+      const latest = (key: string): RunHandle | undefined => runs.latest(key);
+      const first = runs.start(capturing(registry, lines, 0, latest));
+      await waitFor(() => api.requests.length === 1);
+      const consumer = runs.start(capturing(registry, lines, 1, latest));
+      await waitFor(() => consumer.snapshot().status === 'waiting');
+      const second = runs.start(capturing(registry, lines, 0, latest));
+      return {
+        first: await first.done,
+        second: await second.done,
+        consumer: await consumer.done,
+      };
+    }
+
+    it('a capture wait sends with the value of the new run', async () => {
+      const api = await holdingFirstProducer((response) => {
+        response.writeHead(200, { 'Content-Type': 'application/x-ndjson' });
+        response.end('{"type":"RUN_STARTED","threadId":"thread-2"}\n');
+      });
+      const lines = [
+        '# @name startRun',
+        '# @capture threadId = first(type == "RUN_STARTED").threadId',
+        `POST ${api.url}/agent/run`,
+        '',
+        '###',
+        '# @name continue',
+        `GET ${api.url}/continue/{{startRun.threadId}}`,
+      ];
+
+      const { first, second, consumer } = await resend(lines, api);
+
+      expect(first.status).toBe('cancelled');
+      expect(second.status).toBe('completed');
+      expect(consumer.status).toBe('completed');
+      expect(api.requests.map((request) => request.url)).toEqual([
+        '/agent/run',
+        '/agent/run',
+        '/continue/thread-2',
+      ]);
+    });
+
+    it('a response reference wait sends with the response of the new run', async () => {
+      const api = await holdingFirstProducer((response) => {
+        response.writeHead(200, { 'X-Session': 'session-2' });
+        response.end('ok');
+      });
+      const lines = [
+        '# @name login',
+        `POST ${api.url}/login`,
+        '',
+        '###',
+        '# @name continue',
+        `GET ${api.url}/continue`,
+        'X-Session: {{login.response.headers.X-Session}}',
+      ];
+
+      const { first, second, consumer } = await resend(lines, api);
+
+      expect(first.status).toBe('cancelled');
+      expect(second.status).toBe('completed');
+      expect(consumer.problems).toEqual([]);
+      expect(consumer.status).toBe('completed');
+      expect(api.requests.map((request) => request.url)).toEqual(['/login', '/login', '/continue']);
+      expect(headerOf(api.requests[2] ?? { rawHeaders: [] }, 'x-session')).toBe('session-2');
+    });
   });
 
   it('a fifth wait blocks with The captured values kept changing while continue waited.', async () => {

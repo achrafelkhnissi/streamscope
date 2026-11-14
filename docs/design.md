@@ -461,7 +461,7 @@ Environment and `.env` details, settled in M3:
 
 ### Waiting
 
-`streamscope.capture.waitTimeout` (default 30 s). A request that needs a pending capture, or a response reference to a request that is still running, waits in the status Waiting before it is sent (section 11). Its CodeLens shows "Waiting for startRun › threadId · 3 s" beside Stop, and the status bar shows "… · waiting for startRun › threadId". Stop, a re-send and closing VS Code cancel the wait. Waits inside `<@` body files behave like waits in the request.
+`streamscope.capture.waitTimeout` (default 30 s). A request that needs a pending capture, or a response reference to a request that is still running, waits in the status Waiting before it is sent (section 11). Its CodeLens shows "Waiting for startRun › threadId · 3 s" beside Stop, and the status bar shows "… · waiting for startRun › threadId". Stop, a re-send and closing VS Code cancel the wait. When the producer is sent again while a request waits, the wait moves to the new run, for captures and response references alike; stopping the producer blocks the waiting request. Waits inside `<@` body files behave like waits in the request.
 
 The request is blocked, with the message shown, when:
 
