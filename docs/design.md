@@ -441,8 +441,10 @@ Capture evaluation (`src/capture/tracker.ts`, `body.ts`, `task-budget.ts`):
 
 - Captures are evaluated on the extension host in slices of at most 10 ms of capture work per task, and the runs with pending captures take turns in each slice.
 - The capture queue applies backpressure to the socket, as the spill file does. It pauses the socket above 5,000 events or 8 MiB of event bytes and resumes it below 1,000 events and 2 MiB. A stream with more capture work than the host can do arrives more slowly than the server sends it.
-- A single evaluation on the extension host fails above 2,000,000 work units with "the capture needs too much work for this stream".
+- A single evaluation on the extension host stops at 500,000 work units.
 - Bodies up to 256 KiB are evaluated on the extension host, or up to 64 KiB when the body has a run of 16 digits. Larger bodies, matched events over 256 KiB, `all(…)` and every `jsonpath()` go to the child process (`dist/capture-worker.js`), with the same 5 s and 1 GiB limits and 100,000,000 work units. At most two run at once.
+- A capture value or response reference that stops at the host limit goes to that child process and never back to the host. This covers a body, an event matched by `first(…)` or `nth(…)` whether evaluated on arrival or from the queue, and a value evaluated at the end of the run. The child evaluates it once more with the same inputs, and the result is the child's value or the child's failure. `default(…)` applies to the child's value and does not hide the host limit.
+- Two kinds of evaluation are not handed off and fail at the host limit with "the capture needs too much work for this stream": the condition of `first(…)`, `last(…)`, `nth(…)`, `count(…)` or `all(…)`, which the host tests on every event, and a capture that reads only the status, headers or cookies, which the host evaluates when the headers arrive.
 - `all(…)`, and `jsonpath()` over a stream, keep at most 10,000 events and 16 MiB of their bytes, then fail ("all(…) matched more than 10,000 events").
 
 ### Resolution order
