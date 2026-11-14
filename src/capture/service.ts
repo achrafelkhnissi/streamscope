@@ -182,7 +182,7 @@ export class CaptureService implements RunCaptures {
   private readonly previous = new Map<string, CaptureEntry>();
   private key: string | undefined;
   private label: string | undefined;
-  private previousSecretPending = false;
+  private previousSecretUnresolved = false;
 
   constructor(private readonly options: CaptureServiceOptions) {
     this.definitions = options.request.captures.flatMap(
@@ -224,8 +224,8 @@ export class CaptureService implements RunCaptures {
       if (entry.result.state !== 'pending' && this.names.has(entry.name)) {
         this.previous.set(entry.name, entry);
       }
-      if (entry.secret && entry.result.state === 'pending') {
-        this.previousSecretPending = true;
+      if (entry.secret && entry.result.state !== 'resolved') {
+        this.previousSecretUnresolved = true;
       }
     }
     registry.begin(
@@ -348,7 +348,7 @@ export class CaptureService implements RunCaptures {
     const previous = this.previous.get(name);
     return previous === undefined
       ? { kind: 'failed', message: ownCaptureReason(label, name) }
-      : lookupResult(previous, this.previousSecretPending);
+      : lookupResult(previous, this.previousSecretUnresolved);
   }
 
   private newestInDocument(name: string): CaptureLookupResult | undefined {
@@ -357,11 +357,11 @@ export class CaptureService implements RunCaptures {
     const other = registry.latest(name, (request) => request !== this.key && declared.has(request));
     const previous = this.previous.get(name);
     if (previous !== undefined && (other === undefined || startedLater(previous, other))) {
-      return lookupResult(previous, this.previousSecretPending);
+      return lookupResult(previous, this.previousSecretUnresolved);
     }
     return other === undefined
       ? undefined
-      : lookupResult(other, this.options.registry.hasPendingSecret(other.runId));
+      : lookupResult(other, this.options.registry.hasUnresolvedSecret(other.runId));
   }
 
   private answer(wait: ResponseWait, result: CaptureLookupResult | undefined): void {
@@ -475,7 +475,7 @@ export class CaptureService implements RunCaptures {
         .forRequest(namedRequestKey(documentUri, wait.requestName))
         .some(
           ({ secret, runId, result }) =>
-            secret && runId === producerId && result.state === 'pending',
+            secret && runId === producerId && result.state !== 'resolved',
         )
     );
   }

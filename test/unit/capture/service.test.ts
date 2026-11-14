@@ -754,6 +754,24 @@ describe('response references and secrets', () => {
     });
   });
 
+  it("a value is sensitive when a secret capture of the producer's run failed", async () => {
+    const registry = new CaptureRegistry();
+    service(registry, 0).begin({ id: 64, key: startKey, label: 'startRun', startedAt: 64 });
+    registry.update(64, 'sessionToken', { state: 'failed', reason: 'startRun was cancelled' });
+    const producer = producerRun(64);
+    producer.arrive(head([['X-Sid', 'synthetic-sid']]));
+    producer.end('completed');
+    const captures = service(registry, 1, () => producer);
+    captures.begin({ id: 65, key: continueKey, label: 'continue', startedAt: 65 });
+
+    await captures.settle([responseWait('response.headers.X-Sid')], 65, signal());
+
+    expect(captures.lookup.response('startRun', 'response.headers.X-Sid')).toMatchObject({
+      text: 'synthetic-sid',
+      secret: true,
+    });
+  });
+
   it('a sensitive response value is masked when the reference is described', async () => {
     const producer = producerRun(54);
     producer.arrive(head([['Authorization', 'Bearer synthetic-bearer']]));
@@ -860,25 +878,29 @@ describe('the order of a bare name', () => {
       '# @capture secret token = body.token',
       'GET https://api.example.test/items?cursor={{cursor}}',
     ];
-    const earlier = (tokenResolves: boolean): CaptureRegistry => {
+    const earlier = (token: 'pending' | 'failed' | 'resolved'): CaptureRegistry => {
       const registry = new CaptureRegistry();
       registry.begin({ id: 99, key: `${apiUri}\n@page`, label: 'page', startedAt: 99 }, [
         { name: 'cursor', secret: false },
         { name: 'token', secret: true },
       ]);
       registry.update(99, 'cursor', resolved('cursor-2', 99));
-      if (tokenResolves) {
+      if (token === 'resolved') {
         registry.update(99, 'token', resolved('synthetic-token-2', 99, true));
+      } else if (token === 'failed') {
+        registry.update(99, 'token', { state: 'failed', reason: 'page was cancelled' });
       }
       return registry;
     };
 
-    expect(resolveIn(earlier(false), lines)).toMatchObject({
-      ok: true,
-      request: { url: 'https://api.example.test/items?cursor=cursor-2' },
-      sensitiveValues: ['cursor-2'],
-    });
-    expect(resolveIn(earlier(true), lines)).toMatchObject({
+    for (const token of ['pending', 'failed'] as const) {
+      expect(resolveIn(earlier(token), lines), token).toMatchObject({
+        ok: true,
+        request: { url: 'https://api.example.test/items?cursor=cursor-2' },
+        sensitiveValues: ['cursor-2'],
+      });
+    }
+    expect(resolveIn(earlier('resolved'), lines)).toMatchObject({
       ok: true,
       request: { url: 'https://api.example.test/items?cursor=cursor-2' },
       sensitiveValues: [],

@@ -2692,6 +2692,33 @@ describe('waiting for captured values', () => {
       expect(resolved).not.toContain(token);
     });
 
+    it('a stream first(…) capture stays masked whole in a consumer log when the run is stopped before its last(…) secret', async () => {
+      const event = JSON.stringify({ type: 'SESSION', token });
+      const { api } = await held({ 'Content-Type': 'application/x-ndjson' }, `${event}\n`, '');
+      const lines = [
+        '# @name login',
+        '# @capture profile = first(type == "SESSION")',
+        '# @capture secret token = last(type == "SESSION").token',
+        `POST ${api.url}/login`,
+        '',
+        '###',
+        '# @name continue',
+        `GET ${api.url}/continue`,
+        'X-Profile: {{profile}}',
+      ];
+      const registry = new CaptureRegistry();
+      const login = startRun(capturing(registry, lines, 0), dependencies);
+      await waitFor(() => registry.get(loginKey, 'profile')?.result.state === 'resolved');
+
+      login.cancel();
+      await login.done;
+      await waitFor(() => registry.get(loginKey, 'token')?.result.state === 'failed');
+      const log = await consumerLog(registry, lines);
+
+      expect(log).toContain(`X-Profile: ${maskedValue}`);
+      expect(log).not.toContain(token);
+    });
+
     it('a stream first(…) capture is masked whole in a consumer log until a last(…) secret resolves', async () => {
       const event = JSON.stringify({ type: 'SESSION', token });
       const { api, release } = await held(

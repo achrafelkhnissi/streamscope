@@ -65,7 +65,7 @@ function producerLabel(request: HttpRequest): string {
   );
 }
 
-export function lookupResult(entry: CaptureEntry, secretPending: boolean): CaptureLookupResult {
+export function lookupResult(entry: CaptureEntry, secretUnresolved: boolean): CaptureLookupResult {
   const { result, label, name } = entry;
   switch (result.state) {
     case 'pending':
@@ -78,7 +78,7 @@ export function lookupResult(entry: CaptureEntry, secretPending: boolean): Captu
         sensitive: result.sensitive,
         label,
         provenance: result.provenance,
-        ...(secretPending ? { secretPending: true } : {}),
+        ...(secretUnresolved ? { secretUnresolved: true } : {}),
       };
     case 'failed':
       return { kind: 'failed', message: captureFailedMessage(label, name, result.reason) };
@@ -109,7 +109,9 @@ export function captureLookup(
   responses: ReadonlyMap<string, CaptureLookupResult>,
 ): CaptureLookup {
   const found = (entry: CaptureEntry | undefined): CaptureLookupResult | undefined =>
-    entry === undefined ? undefined : lookupResult(entry, registry.hasPendingSecret(entry.runId));
+    entry === undefined
+      ? undefined
+      : lookupResult(entry, registry.hasUnresolvedSecret(entry.runId));
   return {
     request: (requestName, captureName) =>
       found(registry.get(namedRequestKey(documentUri, requestName), captureName)),

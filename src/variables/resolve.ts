@@ -254,7 +254,7 @@ class Scope implements VariableScope {
   private captured(expression: string, name: string, result: CaptureLookupResult): Evaluated {
     switch (result.kind) {
       case 'value':
-        if ((result.secret || result.secretPending === true) && result.text !== '') {
+        if ((result.secret || result.secretUnresolved === true) && result.text !== '') {
           this.sensitive.add(result.text);
         }
         for (const value of result.sensitive) {

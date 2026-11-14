@@ -14,7 +14,7 @@ export type CaptureLookupResult =
       sensitive: readonly string[];
       label: string;
       provenance: { runId: number; event: number | undefined; path: string; time: number };
-      secretPending?: true;
+      secretUnresolved?: true;
     }
   | { kind: 'pending'; request: string; label: string; name: string }
   | { kind: 'failed'; message: string }
