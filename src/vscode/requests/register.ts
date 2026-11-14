@@ -3,6 +3,8 @@ import * as vscode from 'vscode';
 import { benchmarkEnabled } from '../../benchmark/contract';
 import type { CaptureRegistry } from '../../capture/registry';
 import { CaptureService } from '../../capture/service';
+import type { CheckRegistry } from '../../checks/registry';
+import { CheckService } from '../../checks/service';
 import type { StreamSession } from '../../events/session';
 import { SpillArea } from '../../events/spill';
 import type { HttpFile, HttpRequest, Range } from '../../http-file/model';
@@ -228,6 +230,7 @@ export function registerRequestFeatures(
   environments: EnvironmentStore,
   secrets: SecretStore,
   captures: CaptureRegistry,
+  checks: CheckRegistry,
 ): RequestFeatures {
   const testMode = context.extensionMode === vscode.ExtensionMode.Test;
   const loggedLines: string[] = [];
@@ -528,6 +531,7 @@ export function registerRequestFeatures(
         workerFile: captureWorker,
         runs: (producer) => registry.latest(producer),
       }),
+      checks: new CheckService({ registry: checks, request, workerFile: captureWorker }),
       waitTimeoutMs: captureSettings.waitTimeoutMs,
     });
     history.add(handle);

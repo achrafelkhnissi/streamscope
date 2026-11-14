@@ -4,6 +4,8 @@ import * as path from 'node:path';
 import { afterEach, beforeEach } from 'vitest';
 import { CaptureRegistry } from '../../../src/capture/registry';
 import { CaptureService } from '../../../src/capture/service';
+import { CheckRegistry } from '../../../src/checks/registry';
+import { CheckService } from '../../../src/checks/service';
 import { SpillArea } from '../../../src/events/spill';
 import { parseHttpFile } from '../../../src/http-file/parse';
 import type { RunCaptures, RunObserver } from '../../../src/runs/observer';
@@ -102,6 +104,7 @@ export function runInput(
       workerFile: missingWorker,
       runs: () => undefined,
     }),
+    checks: new CheckService({ registry: new CheckRegistry(), request, workerFile: missingWorker }),
     waitTimeoutMs: 30_000,
   };
 }
