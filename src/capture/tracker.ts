@@ -590,7 +590,12 @@ export class CaptureTracker {
           away.push(tracked);
         } else {
           inlineBytes += event.length;
-          (settled ??= []).push([tracked, this.evaluateNow(tracked, eventPhase, budget)]);
+          const result = this.evaluateNow(tracked, eventPhase, budget);
+          if (budget.exhausted) {
+            away.push(tracked);
+          } else {
+            (settled ??= []).push([tracked, result]);
+          }
         }
       }
       if (budget.spent >= unitsPerCheck && position < captures.length && !this.budget.roomLeft()) {

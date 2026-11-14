@@ -10,6 +10,8 @@ import {
   evaluateJobs,
   inlineBodyBytes,
   inlineDigitBodyBytes,
+  jobEvaluator,
+  valuesOnly,
   type BodyJob,
   type BodySubject,
   type Inserted,
@@ -18,6 +20,7 @@ import {
 import { TaskBudget } from '../../../src/capture/task-budget';
 import type { CaptureDefinition } from '../../../src/capture/tracker';
 import { parseExpression } from '../../../src/expressions/parse';
+import { WorkBudget } from '../../../src/expressions/work';
 import { fastestOf } from '../timing';
 import { expectNoChild, longestStall, missingWorker, useCaptureWorker } from './worker';
 
@@ -305,8 +308,7 @@ describe('evaluateBodyExpressions', () => {
     });
   });
 
-  it('fails the in and regex filters over 256 KiB with the budget message, quickly', async () => {
-    const tooMuchWork = 'the capture needs too much work for this stream';
+  it('hands the in and regex filters over 256 KiB to the child, quickly', async () => {
     const numbers = Array<string>(1_300).fill('7').join(',');
     const zeros = encoder.encode(`[${'0,'.repeat(inlineBodyBytes / 2 - 2)}0]`);
     const strings = encoder.encode(
@@ -332,7 +334,7 @@ describe('evaluateBodyExpressions', () => {
         const { result, stallMs: ms } = await longestStall(() =>
           evaluateBodyExpressions(body, 'application/json', [capture('work', text)], missingWorker),
         );
-        expect(result.get('work')).toEqual({ present: false, reason: tooMuchWork });
+        expect(result.get('work')).toEqual({ present: false, reason: bodyLimit });
         return ms;
       });
 
@@ -349,7 +351,7 @@ describe('evaluateBodyExpressions', () => {
           zeros,
           'application/json',
           [capture('zeros', 'body[?@ == 0] | json'), capture('count', 'body[*]')],
-          missingWorker,
+          files().worker,
           { taskBudget: new TaskBudget({ now: () => 0, nextTask: () => undefined }) },
         ),
       );
@@ -359,6 +361,70 @@ describe('evaluateBodyExpressions', () => {
     });
 
     expect(stallMs).toBeLessThan(100);
+  });
+
+  it('resolves a body capture of 500,000 to 2,000,000 units in the child, as the host did with 2,000,000', async () => {
+    const zeros = encoder.encode(`[${'0,'.repeat(inlineBodyBytes / 2 - 2)}0]`);
+    const text = 'body[?@ == 0] | json';
+    const twoMillionUnits = new WorkBudget({ units: 2_000_000 });
+    const onHost = jobEvaluator(
+      { kind: 'body', bytes: zeros, contentType: 'application/json' },
+      valuesOnly,
+    )(job('zeros', text), twoMillionUnits);
+    expect(onHost.present).toBe(true);
+    expect(twoMillionUnits.spent).toBeGreaterThan(500_000);
+    expect(twoMillionUnits.spent).toBeLessThan(2_000_000);
+
+    const stallMs = await fastestOf(async () => {
+      const { result, stallMs: ms } = await longestStall(() =>
+        evaluateBodyExpressions(
+          zeros,
+          'application/json',
+          [capture('zeros', text)],
+          files().worker,
+        ),
+      );
+      expect(result.get('zeros')).toEqual(onHost);
+      return ms;
+    });
+    const withoutChild = await evaluateBodyExpressions(
+      zeros,
+      'application/json',
+      [capture('zeros', text)],
+      missingWorker,
+    );
+
+    expect(stallMs).toBeLessThan(100);
+    expect(withoutChild.get('zeros')).toEqual({ present: false, reason: bodyLimit });
+    await expectNoChild();
+  });
+
+  it('applies default(…) to the value the child gives a handed-off capture', async () => {
+    const sevens = Array<string>(1_300).fill('7').join(',');
+    const body = encoder.encode(JSON.stringify({ items: Array<number>(1_000).fill(0) }));
+    const definitions = [
+      capture('kept', `body.items[?@ in [${sevens}]] | default("none")`),
+      capture('replaced', `body.items[?@ in [${sevens}]][0] | default("none")`),
+    ];
+
+    const inChild = await evaluateBodyExpressions(
+      body,
+      'application/json',
+      definitions,
+      files().worker,
+    );
+    const withoutChild = await evaluateBodyExpressions(
+      body,
+      'application/json',
+      definitions,
+      missingWorker,
+    );
+
+    expect(inChild.get('kept')).toEqual(found('[]', 'items[?…]'));
+    expect(inChild.get('replaced')).toEqual(found('none', ''));
+    expect(withoutChild.get('kept')).toEqual({ present: false, reason: bodyLimit });
+    expect(withoutChild.get('replaced')).toEqual({ present: false, reason: bodyLimit });
+    await expectNoChild();
   });
 
   it('fails a value over 1 MiB in the child', async () => {
@@ -706,7 +772,6 @@ describe('capture children', () => {
 });
 
 describe('host work on an inline body', () => {
-  const hostWork = 'the capture needs too much work for this stream';
   const zeros = encoder.encode(`[${'0,'.repeat(inlineBodyBytes / 2 - 2)}0]`);
 
   function chain(operand: string): string {
@@ -736,7 +801,7 @@ describe('host work on an inline body', () => {
         evaluateBodyExpressions(body, 'application/json', [capture('work', text)], missingWorker),
       );
       const outcome = result.get('work');
-      expect(['resolved', hostWork], text.slice(0, 40)).toContain(
+      expect(['resolved', bodyLimit], text.slice(0, 40)).toContain(
         outcome?.present === true ? 'resolved' : outcome?.reason,
       );
       return stallMs;

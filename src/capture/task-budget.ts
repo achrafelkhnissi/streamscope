@@ -7,7 +7,7 @@ export interface TaskClock {
 }
 
 export const captureSliceMs = 10;
-export const hostEvaluationUnits = 2_000_000;
+export const hostEvaluationUnits = 500_000;
 
 const realClock: TaskClock = {
   now: () => performance.now(),

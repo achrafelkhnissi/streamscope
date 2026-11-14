@@ -372,9 +372,11 @@ function unansweredResult(job: BodyJob, cancelled: boolean): Inserted {
 }
 
 interface ChildAnswers {
-  answers: Map<string, Inserted>;
+  answers: ReadonlyMap<string, Inserted>;
   cancelled: boolean;
 }
+
+const noAnswers: ChildAnswers = { answers: new Map(), cancelled: false };
 
 async function runInChild(
   subject: BodySubject,
@@ -484,19 +486,31 @@ export async function evaluateJobs<Job extends BodyJob>(
       ? { value: bodyValue(decoded) }
       : undefined;
   const evaluateJob = jobEvaluator(subject, valuesOnly, body);
+  const handedOff = new Set<Job>();
   for (const [position, job] of inline.entries()) {
     if (position > 0 || body !== undefined) {
       await nextTask();
     }
-    const result = evaluateJob(job, tasks.enter());
+    const work = tasks.enter();
+    const result = evaluateJob(job, work);
     tasks.leave();
-    results.set(job.name, result);
+    if (work.exhausted) {
+      handedOff.add(job);
+    } else {
+      results.set(job.name, result);
+    }
   }
-  const { answers, cancelled } = (await answering) ?? { answers: new Map(), cancelled: false };
-  return jobs.map((job) => [
-    job,
-    results.get(job.name) ?? answers.get(job.name) ?? unansweredResult(job, cancelled),
-  ]);
+  const handing =
+    handedOff.size === 0 ? undefined : runInChild(subject, [...handedOff], workerFile, options);
+  const fromAway = (await answering) ?? noAnswers;
+  const fromHandOff = (await handing) ?? noAnswers;
+  return jobs.map((job) => {
+    const { answers, cancelled } = handedOff.has(job) ? fromHandOff : fromAway;
+    return [
+      job,
+      results.get(job.name) ?? answers.get(job.name) ?? unansweredResult(job, cancelled),
+    ];
+  });
 }
 
 export async function evaluateBodyExpressions(

@@ -19,16 +19,16 @@ function spend(work: WorkBudget, units: number): boolean {
 }
 
 describe('TaskBudget', () => {
-  it('slices 10 ms of capture work per task and allows 2,000,000 units per evaluation', () => {
+  it('slices 10 ms of capture work per task and allows 500,000 units per evaluation', () => {
     expect(captureSliceMs).toBe(10);
-    expect(hostEvaluationUnits).toBe(2_000_000);
+    expect(hostEvaluationUnits).toBe(500_000);
   });
 
-  it('fails an evaluation past 2,000,000 units however little time passes', () => {
+  it('fails an evaluation past 500,000 units however little time passes', () => {
     const budget = new TaskBudget({ now: () => 0, nextTask: () => undefined });
 
     const work = budget.enter();
-    expect(spend(work, 2_000_000)).toBe(true);
+    expect(spend(work, 500_000)).toBe(true);
     expect(spend(work, 1_024)).toBe(false);
     expect(work.exhausted).toBe(true);
     expect(work.reason).toBe(hostWork);
@@ -51,11 +51,11 @@ describe('TaskBudget', () => {
     const budget = new TaskBudget({ now: () => 0, nextTask: () => undefined });
 
     const work = budget.enter();
-    expect(spend(work, 2_000_000)).toBe(true);
+    expect(spend(work, 500_000)).toBe(true);
     work.restart();
-    expect(spend(work, 2_000_000)).toBe(true);
+    expect(spend(work, 500_000)).toBe(true);
     budget.leave();
-    expect(spend(budget.enter(), 2_000_000)).toBe(true);
+    expect(spend(budget.enter(), 500_000)).toBe(true);
     budget.leave();
   });
 

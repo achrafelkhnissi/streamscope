@@ -1649,9 +1649,9 @@ describe('host work within one task', () => {
     expect(stallMs).toBeLessThan(100);
   });
 
-  it('a chunk of 46 events with heavy conditions stalls the host under 50 ms', async () => {
-    const line = `${JSON.stringify({ type: 'E', items: Array<number>(700).fill(0) })}\n`;
-    const chunk = encoder.encode(line.repeat(46));
+  it('a chunk of 90 events with heavy conditions stalls the host under 50 ms', async () => {
+    const line = `${JSON.stringify({ type: 'E', items: Array<number>(350).fill(0) })}\n`;
+    const chunk = encoder.encode(line.repeat(90));
     expect(chunk.length).toBeLessThanOrEqual(65_536);
 
     const stallMs = await fastestOf(async () => {
@@ -1682,7 +1682,7 @@ describe('host work within one task', () => {
 
       expect(run.results.get('heavy')).toMatchObject({
         state: 'failed',
-        reason: expect.stringMatching(/^no event matched first\(items.*\(46 events\)$/) as unknown,
+        reason: expect.stringMatching(/^no event matched first\(items.*\(90 events\)$/) as unknown,
       });
       return ms;
     });
@@ -1690,7 +1690,7 @@ describe('host work within one task', () => {
     expect(stallMs).toBeLessThan(100);
   });
 
-  it('16 events with captures past 2,000,000 units each fail without stalling the host, and default(…) does not hide it', async () => {
+  it('16 events with captures past 500,000 units each resolve in the child without stalling the host, and default(…) does not hide the limit', async () => {
     const names = Array.from({ length: 16 }, (_, at) => `e${String(at)}`);
 
     const stallMs = await fastestOf(async () => {
@@ -1698,7 +1698,7 @@ describe('host work within one task', () => {
         names.map((name) =>
           capture(name, `first(type == "${name}").items[?@ in [${sevens}]] | default("none")`),
         ),
-        missingWorker,
+        files().worker,
         hostBudget,
       );
       run.tracker.head(ndjsonHead);
@@ -1710,13 +1710,196 @@ describe('host work within one task', () => {
         await run.tracker.end(completed('ndjson'));
       });
 
-      for (const name of names) {
-        expect(run.results.get(name)).toEqual(failed(hostWork));
+      for (const [at, name] of names.entries()) {
+        expect(run.results.get(name)).toEqual(resolved('[]', at + 1, 'items[?…]'));
       }
+      await expectNoChild();
       return ms;
     });
 
     expect(stallMs).toBeLessThan(100);
+  }, 30_000);
+
+  it('resolves an event value past 500,000 units in the child, with or without a spill file, at its event, from the queue and at the end', async () => {
+    const eventsLimit = 'evaluating the events took too long or used too much memory';
+    const value: JsonValue = { type: 'A', items: [...Array<number>(1_000).fill(0), 7] };
+    const spill = await spilledEvents([`${JSON.stringify(value)}\n`]);
+    const range = spill.ranges[0] ?? { offset: 0, length: 0 };
+    const evaluated = async (
+      path: string | undefined,
+      workerFile: string,
+      queued: boolean,
+    ): Promise<Harness> => {
+      let time = 0;
+      const tasks: (() => void)[] = [];
+      const budget = new TaskBudget({
+        now: () => time,
+        nextTask: (callback) => {
+          tasks.push(callback);
+        },
+      });
+      const run = harness(
+        [
+          capture('first', `first(type == "A").items[?@ in [${sevens}]] | json`),
+          capture('last', `last(type == "A").items[?@ in [${sevens}]] | json`),
+        ],
+        workerFile,
+        budget,
+      );
+      run.tracker.head(ndjsonHead, access(path));
+      if (queued) {
+        budget.enter();
+        time += captureSliceMs;
+        budget.leave();
+      }
+      run.send(value, range);
+      expect(run.tracker.queued).toBe(queued ? 1 : 0);
+      while (tasks.length > 0) {
+        tasks.shift()?.();
+      }
+      await run.tracker.end(completed('ndjson', { spill: path }));
+      return run;
+    };
+
+    const runs = [
+      await evaluated(spill.path, files().worker, false),
+      await evaluated(undefined, files().worker, false),
+      await evaluated(spill.path, files().worker, true),
+      await evaluated(undefined, files().worker, true),
+    ];
+    const withoutChild = await evaluated(spill.path, missingWorker, false);
+
+    for (const run of runs) {
+      expect(run.results.get('first')).toEqual(resolved('[7]', 1, 'items[?…]'));
+      expect(run.results.get('last')).toEqual(resolved('[7]', 1, 'items[?…]'));
+    }
+    expect(withoutChild.results.get('first')).toEqual(failed(eventsLimit));
+    expect(withoutChild.results.get('last')).toEqual(failed(eventsLimit));
+    await expectNoChild();
+  }, 30_000);
+
+  it('fails a condition past 500,000 units with the host limit, while the child is available', async () => {
+    const condition = `items[?@ in [${sevens}]]`;
+    const names = ['first', 'last', 'nth', 'count', 'all'];
+    const run = harness(
+      [
+        capture('first', `first(${condition}).type`),
+        capture('last', `last(${condition}).type`),
+        capture('nth', `nth(1, ${condition}).type`),
+        capture('count', `count(${condition})`),
+        capture('all', `all(${condition}).type`),
+      ],
+      files().worker,
+    );
+    run.tracker.head(ndjsonHead);
+
+    run.send({ type: 'A', items: [...Array<number>(400).fill(0), 7] });
+    await run.tracker.end(completed('ndjson'));
+
+    for (const name of names) {
+      expect(run.results.get(name)).toEqual(failed(hostWork));
+    }
+    expect(run.calls).toEqual(names);
+    await expectNoChild();
+  });
+
+  it('fails a head capture past 500,000 units with the host limit, while the child is available', async () => {
+    const strings = Array<string>(1_000).fill('"7"').join(',');
+    const run = harness(
+      [
+        capture('headers', `headers[?@ in [${strings}]]`),
+        capture('cookies', `cookies[?@ in [${strings}]]`),
+      ],
+      files().worker,
+    );
+
+    run.tracker.head(
+      head('application/json', [
+        ...Array.from({ length: 600 }, (_, at): [string, string] => [
+          `x-synthetic-${String(at)}`,
+          'value',
+        ]),
+        ...Array.from({ length: 600 }, (_, at): [string, string] => [
+          'Set-Cookie',
+          `synthetic${String(at)}=value`,
+        ]),
+      ]),
+    );
+    await run.tracker.end(completed('json', { body: '{}', contentType: 'application/json' }));
+
+    expect(run.results.get('headers')).toEqual(failed(hostWork));
+    expect(run.results.get('cookies')).toEqual(failed(hostWork));
+    expect(run.calls).toEqual(['headers', 'cookies']);
+    await expectNoChild();
+  });
+
+  it('fails a handed-off capture as cancelled when its run is cancelled while the child evaluates it', async () => {
+    const hanging = files().script('hanging', 'setInterval(() => undefined, 1000);');
+    const value: JsonValue = { type: 'A', items: [...Array<number>(1_000).fill(0), 7] };
+    const atEvent = new AbortController();
+    const atEnd = new AbortController();
+    const eventRun = harness(
+      [capture('first', `first(type == "A").items[?@ in [${sevens}]] | json`)],
+      hanging,
+    );
+    const endRun = harness(
+      [capture('last', `last(type == "A").items[?@ in [${sevens}]] | json`)],
+      hanging,
+    );
+    eventRun.tracker.head(ndjsonHead, {
+      spillPath: () => Promise.resolve(undefined),
+      signal: atEvent.signal,
+    });
+    endRun.tracker.head(ndjsonHead);
+
+    eventRun.send(value, { length: 4_000 });
+    endRun.send(value, { length: 4_000 });
+    setTimeout(() => {
+      atEvent.abort();
+      atEnd.abort();
+    }, 200);
+    await Promise.all([
+      eventRun.tracker.end({ ...completed('ndjson'), signal: atEvent.signal }),
+      endRun.tracker.end({ ...completed('ndjson'), signal: atEnd.signal }),
+    ]);
+
+    expect(eventRun.results.get('first')).toEqual(
+      failed('startRun was cancelled before first resolved'),
+    );
+    expect(endRun.results.get('last')).toEqual(
+      failed('startRun was cancelled before last resolved'),
+    );
+    expect(eventRun.calls).toEqual(['first']);
+    expect(endRun.calls).toEqual(['last']);
+    await expectNoChild();
+  });
+
+  it('a handed-off secret capture is still secret, and its failure reason is masked', async () => {
+    const token = 'synthetic-token-5d2e8b';
+    const run = harness(
+      [
+        capture('token', 'first(type == "A").token', true),
+        capture('kept', `first(type == "A").items[?@ in [${sevens}]] | json`, true),
+        capture(
+          'unmatched',
+          `first(type == "A").items[?@ in [${sevens}]] | json | match(/${token}-x/)`,
+          true,
+        ),
+      ],
+      files().worker,
+    );
+    run.tracker.head(ndjsonHead);
+
+    run.send({ type: 'A', token, items: [...Array<number>(2_000).fill(0), 7] }, { length: 8_000 });
+    await run.tracker.end(completed('ndjson'));
+
+    expect(run.results.get('token')).toEqual(resolved(token, 1, 'token', true));
+    expect(run.results.get('kept')).toEqual(resolved('[7]', 1, 'items[?…]', true));
+    const unmatched = run.results.get('unmatched');
+    const reason = unmatched?.state === 'failed' ? unmatched.reason : '';
+    expect(reason).toContain(`/${maskedValue}-x/`);
+    expect(reason).not.toContain(token);
+    await expectNoChild();
   });
 
   describe('a condition comparing two long values that differ only at the end', () => {
@@ -2245,7 +2428,7 @@ describe('evaluation paced by slices and backpressure', () => {
     );
     run.tracker.head(ndjsonHead);
 
-    run.send({ type: 'E', items: [...Array<number>(1_400).fill(0), 7] });
+    run.send({ type: 'E', items: [...Array<number>(350).fill(0), 7] });
     const perTask = [run.results.size];
     for (let round = 0; tasks.length > 0 && round < 1_000; round += 1) {
       const before = run.results.size;
@@ -2273,7 +2456,7 @@ describe('evaluation paced by slices and backpressure', () => {
     );
     run.tracker.head(ndjsonHead);
 
-    run.send({ type: 'A', n: 1, items: [...Array<number>(1_400).fill(0), 7] });
+    run.send({ type: 'A', n: 1, items: [...Array<number>(350).fill(0), 7] });
     expect(run.results.has('firstN')).toBe(false);
     expect(run.tracker.queued).toBe(1);
     run.send({ type: 'B', n: 2 });
@@ -2288,7 +2471,7 @@ describe('evaluation paced by slices and backpressure', () => {
     }
   });
 
-  it('fails an evaluation past 2,000,000 units on a clock that never moves, whatever default(…) says', () => {
+  it('fails a condition past 500,000 units on a clock that never moves, whatever default(…) says', () => {
     const run = harness(
       [
         capture('light', `first(items[?@ in [${sevens}]]).type`),
@@ -2299,8 +2482,8 @@ describe('evaluation paced by slices and backpressure', () => {
     );
     run.tracker.head(ndjsonHead);
 
-    run.send({ type: 'A', items: [...Array<number>(999).fill(0), 7] });
-    run.send({ type: 'B', items: Array<number>(2_000).fill(0) });
+    run.send({ type: 'A', items: [...Array<number>(249).fill(0), 7] });
+    run.send({ type: 'B', items: Array<number>(500).fill(0) });
 
     expect(run.results.get('light')).toEqual(resolved('A', 1, 'type'));
     expect(run.results.get('twin')).toEqual(resolved('A', 1, 'type'));
