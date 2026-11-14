@@ -120,4 +120,4 @@ The workflow, written in milestone M11:
 - [ ] `--skip-license` and `--allow-missing-repository` no longer used
 - [ ] VSIX contents checked with `npm run package:list`
 - [ ] Release environment approval given
-- [ ] After publishing: install from each registry in a clean profile and send a streaming request
+- [ ] After publishing: `npm run verify:registry -- marketplace <version>` and `-- open-vsx <version>`, which install from each registry in a clean profile, send a streaming request and use a value captured from it
