@@ -569,14 +569,14 @@ The M5 spike chose the webview; [decisions/response-surface.md](decisions/respon
 
 ## 14. State management
 
-| State                 | Where                                                                                        | Lifetime                                                                                         |
-| --------------------- | -------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
-| Runs and their events | Memory (parsed events for open views, summaries for history) and spill files                 | The last 50 runs of the session stay in history **(builder's call)**; nothing survives a restart |
-| Captures              | Memory, per workspace session, for at most 500 requests (the least recently run is dropped)  | Until VS Code closes or the producer runs again                                                  |
-| Active environment    | `workspaceState`                                                                             | Per workspace                                                                                    |
-| Last chosen view      | `globalState`                                                                                | Per user                                                                                         |
-| Secrets               | SecretStorage, key `streamscope:<workspace hash>:<name>`                                     | Until cleared                                                                                    |
-| Request identity      | `# @name` when present, otherwise file URI plus request order and a hash of the request line | Survives edits that do not reorder requests                                                      |
+| State                 | Where                                                                                                       | Lifetime                                                                                                         |
+| --------------------- | ----------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| Runs and their events | Memory (parsed events for open views, summaries for history) and spill files                                | The last 50 runs of the session stay in history **(builder's call)**; nothing survives a restart                 |
+| Captures              | Memory, per workspace session, for at most 500 requests (the least recently run is dropped)                 | Until VS Code closes, the producer runs again or the workspace is granted trust                                  |
+| Active environment    | `workspaceState`                                                                                            | Per workspace                                                                                                    |
+| Last chosen view      | `globalState`                                                                                               | Per user                                                                                                         |
+| Secrets               | SecretStorage, key `streamscope:<workspace hash>:<name>`                                                    | Until cleared                                                                                                    |
+| Request identity      | `# @name` when present, otherwise the file URI, the request's index in the file, its method and its raw URL | A named request survives any edit that keeps its name; an unnamed one, edits that keep its index, method and URL |
 
 Nothing is written to the workspace except files the user asks to save.
 
