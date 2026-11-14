@@ -16,6 +16,7 @@ export function redirectTarget(
   request: OutgoingRequest,
   status: number,
   location: string,
+  sensitiveValues: readonly string[] = [],
 ): { ok: true; request: OutgoingRequest } | { ok: false; message: string } {
   let url: URL;
   try {
@@ -45,9 +46,19 @@ export function redirectTarget(
     };
   }
   const crossOrigin = url.origin !== request.url.origin;
-  const headers = request.headers.filter(([name]) => {
+  if (!rewrite && request.body.length > 0 && crossOrigin) {
+    return {
+      ok: false,
+      message: `The server redirected to another origin (\`${maskUrl(location)}\`), so Streamscope did not resend the request body there.`,
+    };
+  }
+  const secrets = sensitiveValues.filter((value) => value !== '');
+  const headers = request.headers.filter(([name, value]) => {
     const lower = name.toLowerCase();
-    const credential = lower === 'host' || isSensitiveHeader(name);
+    const credential =
+      lower === 'host' ||
+      isSensitiveHeader(name) ||
+      secrets.some((secret) => value.includes(secret));
     return !(rewrite && bodyHeaders.has(lower)) && !(crossOrigin && credential);
   });
   return {

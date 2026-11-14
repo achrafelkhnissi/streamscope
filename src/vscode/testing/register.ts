@@ -2,9 +2,10 @@ import * as vscode from 'vscode';
 import type { CaptureRegistry } from '../../capture/registry';
 import type { CheckRegistry } from '../../checks/registry';
 import { parseHttpFile } from '../../http-file/parse';
-import { isTestedUri, testFileProblem } from '../../runs/test-file';
+import { isTestedUri } from '../../runs/test-file';
 import type { ParseCache } from '../language/parse-cache';
 import type { RequestFeatures } from '../requests/register';
+import { closedFileProblem } from './file-check';
 import { HttpTestItems, maxTestFiles } from './items';
 import { runTests, type TestReport } from './run';
 
@@ -101,12 +102,7 @@ export class HttpTesting implements vscode.Disposable {
     }
     let text: string;
     try {
-      const { type, size } = await vscode.workspace.fs.stat(uri);
-      const problem = testFileProblem({
-        symbolicLink: (type & vscode.FileType.SymbolicLink) !== 0,
-        file: (type & vscode.FileType.File) !== 0,
-        size,
-      });
+      const problem = await closedFileProblem(uri);
       if (problem !== undefined) {
         this.items.refuse(uri, problem);
         return;

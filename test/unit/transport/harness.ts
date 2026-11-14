@@ -48,6 +48,7 @@ export const defaultOptions: TransportOptions = {
   totalTimeoutMs: undefined,
   followRedirects: true,
   maxRedirects: 10,
+  sensitiveValues: [],
 };
 
 export interface SendInput {

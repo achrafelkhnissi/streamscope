@@ -556,7 +556,7 @@ export class NodeTransport implements Transport {
         }
         const { hop } = result.step;
         hops.push(hop);
-        const next = redirectTarget(current, hop.status, hop.location);
+        const next = redirectTarget(current, hop.status, hop.location, options.sensitiveValues);
         if (!next.ok) {
           return outcome(failed('redirect', next.message));
         }

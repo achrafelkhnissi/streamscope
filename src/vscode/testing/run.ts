@@ -15,6 +15,7 @@ import type { RunSnapshot } from '../../runs/run';
 import { isTestedUri } from '../../runs/test-file';
 import type { ParseCache } from '../language/parse-cache';
 import type { RequestFeatures } from '../requests/register';
+import { closedFileProblem } from './file-check';
 import type { HttpTestItems, RequestTest } from './items';
 
 export interface TestReport {
@@ -181,22 +182,29 @@ export async function runTests(
 
   try {
     const batches: TestStep[][] = [];
+    const fileError = (uri: vscode.Uri, text: string): void => {
+      const fileItem = items.get(uri);
+      if (fileItem !== undefined) {
+        testRun.errored(fileItem, new vscode.TestMessage(text));
+        record?.({ kind: 'errored', id: fileItem.id, messages: [{ text, line: undefined }] });
+      }
+    };
     for (const { uri, ids } of planned) {
+      const name = vscode.workspace.asRelativePath(uri);
       let document: vscode.TextDocument;
       try {
+        const open = vscode.workspace.textDocuments.some(
+          (candidate) => candidate.uri.toString() === uri.toString(),
+        );
+        const problem = open || uri.scheme !== 'file' ? undefined : await closedFileProblem(uri);
+        if (problem !== undefined) {
+          fileError(uri, `Streamscope did not run ${name}: ${problem}`);
+          continue;
+        }
         document = await vscode.workspace.openTextDocument(uri);
       } catch (error) {
-        const fileItem = items.get(uri);
-        if (fileItem !== undefined) {
-          const reason = error instanceof Error ? error.message : String(error);
-          const text = `Streamscope could not open ${vscode.workspace.asRelativePath(uri)}: ${reason}`;
-          testRun.errored(fileItem, new vscode.TestMessage(text));
-          record?.({
-            kind: 'errored',
-            id: fileItem.id,
-            messages: [{ text, line: undefined }],
-          });
-        }
+        const reason = error instanceof Error ? error.message : String(error);
+        fileError(uri, `Streamscope could not open ${name}: ${reason}`);
         continue;
       }
       const file = cache.get(document);

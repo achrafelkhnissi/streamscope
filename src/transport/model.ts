@@ -18,6 +18,7 @@ export interface TransportOptions {
   totalTimeoutMs: number | undefined;
   followRedirects: boolean;
   maxRedirects: number;
+  sensitiveValues: readonly string[];
 }
 
 export interface SentRequest {

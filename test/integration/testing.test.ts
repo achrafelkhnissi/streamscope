@@ -586,6 +586,28 @@ describe('file runs', () => {
     ]);
   });
 
+  it('does not run a file the Testing view refused', async () => {
+    const big = vscode.Uri.file(path.join(folder, 'big-run.http'));
+    writeFileSync(
+      big.fsPath,
+      `# @name big\nPOST ${server?.url ?? ''}/continue\n\n# ${'x'.repeat(1_048_576)}\n`,
+    );
+    await resolveTests(big);
+    const before = server?.requests.length ?? 0;
+
+    await vscode.commands.executeCommand('streamscope.test.runFiles', [big]);
+
+    const reports = await testReports();
+    const errored = reports.find(({ kind, id }) => kind === 'errored' && id === big.toString());
+    const text = errored?.messages?.[0]?.text ?? '';
+    assert.ok(text.startsWith('Streamscope did not run '), text);
+    assert.ok(
+      text.endsWith(': This file is larger than 1 MiB, so Streamscope does not list its requests.'),
+      text,
+    );
+    assert.equal(server?.requests.length ?? 0, before);
+  });
+
   it('runs one request from its test item', async () => {
     const commands = await vscode.commands.getCommands(true);
     assert.ok(commands.includes('testing.runAtCursor'));

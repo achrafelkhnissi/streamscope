@@ -384,6 +384,28 @@ describe('startRun with sources and trust', () => {
     expect(server.requests[0]?.url).toBe('/items');
     expect(snapshot.sensitiveValues).toEqual(['synthetic-token']);
   });
+
+  it('drops a header carrying a secret when a redirect leaves the origin', async () => {
+    const other = await track(startHttpServer((_request, response) => response.end('other')));
+    const first = await track(
+      startHttpServer((_request, response) => {
+        response.writeHead(307, { Location: `${other.url.replace('127.0.0.1', 'localhost')}/x` });
+        response.end();
+      }),
+    );
+
+    const snapshot = await startRun(
+      runInput([`GET ${first.url}/start`, 'X-Tenant: {{$secret tenant}}'], {
+        variables: { secrets: new Map([['tenant', 'synthetic-tenant-secret']]) },
+      }),
+      dependencies,
+    ).done;
+
+    expect(snapshot.status).toBe('completed');
+    const landed = (other.requests[0]?.rawHeaders ?? []).map((name) => name.toLowerCase());
+    expect(landed).not.toContain('x-tenant');
+    expect(landed).not.toContain('synthetic-tenant-secret');
+  });
 });
 
 describe('startRun streaming', () => {

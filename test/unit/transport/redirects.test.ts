@@ -82,7 +82,45 @@ describe('redirectTarget', () => {
 
   it('resolves relative locations against the current url', () => {
     expect(target(307, 'next?page=2').url.href).toBe('http://api.example.test/next?page=2');
-    expect(target(307, '//other.example.test/x').url.href).toBe('http://other.example.test/x');
+    expect(target(307, '//other.example.test/x', request({ body: [] })).url.href).toBe(
+      'http://other.example.test/x',
+    );
+  });
+
+  it('refuses to resend a body to another origin on 307 and 308', () => {
+    for (const status of [307, 308]) {
+      for (const location of [
+        'https://api.example.test/start',
+        'http://api.example.test:8080/start',
+        'http://other.example.test/start',
+      ]) {
+        const result = redirectTarget(request(), status, location);
+        expect(result.ok, `${String(status)} ${location}`).toBe(false);
+        expect(!result.ok && result.message).toBe(
+          `The server redirected to another origin (\`${location}\`), so Streamscope did not resend the request body there.`,
+        );
+        expect(redirectTarget(request({ body: [] }), status, location).ok).toBe(true);
+      }
+    }
+    expect(target(303, 'http://other.example.test/next').method).toBe('GET');
+  });
+
+  it('drops headers carrying a sensitive value across origins', () => {
+    const base = request({
+      headers: [
+        ['X-Tenant', 'tenant-secret-1'],
+        ['X-Mixed', 'a tenant-secret-1 b'],
+        ['X-Trace', '1'],
+      ],
+      body: [],
+    });
+    const sensitive = ['tenant-secret-1', ''];
+
+    const crossed = redirectTarget(base, 307, 'http://other.example.test/x', sensitive);
+    const same = redirectTarget(base, 307, '/x', sensitive);
+
+    expect(crossed.ok && names(crossed.request)).toEqual(['X-Trace']);
+    expect(same.ok && names(same.request)).toEqual(['X-Tenant', 'X-Mixed', 'X-Trace']);
   });
 
   it('drops credentials, API keys and a user Host across origins', () => {
@@ -91,7 +129,7 @@ describe('redirectTarget', () => {
       'http://api.example.test:8080/start',
       'http://other.example.test/start',
     ]) {
-      expect(names(target(307, location))).toEqual([
+      expect(names(target(307, location, request({ body: [] })))).toEqual([
         'Content-Type',
         'Content-Length',
         'Content-Encoding',
@@ -110,6 +148,7 @@ describe('redirectTarget', () => {
         ['X-Auth-Token', 'synthetic'],
         ['X-Trace', '1'],
       ],
+      body: [],
     });
 
     expect(names(target(307, 'https://other.example.test/x', base))).toEqual(['X-Trace']);
@@ -235,6 +274,40 @@ describe('NodeTransport redirects', () => {
     );
     expect(landed).not.toContain('authorization');
     expect(landed).not.toContain('cookie');
+  });
+
+  it('never sends a body or a header with a sensitive value to another origin', async () => {
+    const other = await server((_incoming, response) => {
+      response.end('other');
+    });
+    const location = `${other.url.replace('127.0.0.1', 'localhost')}/landing`;
+    const first = await server((_incoming, response) => {
+      response.writeHead(307, { Location: location });
+      response.end();
+    });
+
+    const posted = await send({
+      url: `${first.url}/token`,
+      method: 'POST',
+      body: [bytes('client_secret=synthetic-secret')],
+    });
+
+    expect(posted.outcome.kind).toBe('failed');
+    expect(posted.outcome.kind === 'failed' && posted.outcome.failure.message).toContain(
+      'did not resend the request body there',
+    );
+    expect(other.requests).toHaveLength(0);
+
+    const fetched = await send(
+      { url: `${first.url}/me`, headers: [['X-Tenant', 'synthetic-tenant-secret']] },
+      { sensitiveValues: ['synthetic-tenant-secret'] },
+    );
+
+    expect(fetched.outcome.kind).toBe('completed');
+    const landed = headerPairs(other.requests[0]?.rawHeaders ?? []).map(([name]) =>
+      name.toLowerCase(),
+    );
+    expect(landed).not.toContain('x-tenant');
   });
 
   it('fails with redirect after maxRedirects', async () => {

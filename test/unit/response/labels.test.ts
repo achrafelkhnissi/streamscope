@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { parseHttpFile } from '../../../src/http-file/parse';
 import {
+  blockedMessage,
   checkMarkColors,
   bodyExtension,
   describeOutcome,
@@ -252,5 +253,21 @@ describe('checkMarkColors', () => {
       failed: 'errorForeground',
       pending: 'descriptionForeground',
     });
+  });
+});
+
+describe('blockedMessage', () => {
+  it("names the first problem and its line, with the run's sensitive values masked", () => {
+    const range = { start: { line: 4, character: 0 }, end: { line: 4, character: 9 } };
+    expect(
+      blockedMessage(
+        snapshot({
+          status: 'blocked',
+          sensitiveValues: ['synthetic-secret'],
+          problems: [{ message: 'The body file /tmp/synthetic-secret.json is missing.', range }],
+        }),
+      ),
+    ).toBe('Not sent: The body file /tmp/••••••.json is missing. (line 5).');
+    expect(blockedMessage(snapshot({ status: 'blocked', problems: [] }))).toBeUndefined();
   });
 });

@@ -646,6 +646,7 @@ export function startRun(
       totalTimeoutMs: timeout === undefined ? undefined : parseDuration(timeout.argument),
       followRedirects: settings.followRedirects && !hasDirective(request, 'no-redirect'),
       maxRedirects: settings.maxRedirects,
+      sensitiveValues: state.sensitiveValues,
     };
     spillFile = await createSpillFile(input.spill);
     observe();

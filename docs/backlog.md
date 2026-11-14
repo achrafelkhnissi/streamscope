@@ -23,6 +23,17 @@ Work that is not part of a milestone in [roadmap.md](roadmap.md) yet. An item ge
   2. Extend `TaskTimer` to the panel flushes it misses: the feed's `setBody` when a run ends (`ended`), `select` and `expand`. Record when each task over 50 ms ran and which kind it was, so a long task can be matched to the profile.
 - **Open points:** whether the pauses are garbage collection or VS Code's own work, which the profile should show; how long the run must be to reproduce a task seen once in 30 minutes.
 
+## Low security findings from the M11 review
+
+The whole-extension review before the first pre-release found these Low findings and they were accepted for 0.1.0. Each needs a malicious repository, server or file plus a user action, and none can run code.
+
+- **Credentials in URL query strings:** `maskUrl` masks only `user:pass@`, so `?api_key=…` or `?sig={{sas}}` shows in clear in the log, the Headers view, redirect hops and Testing item descriptions, and `looksLikeCredential` knows fewer words than `isSensitiveName`. Mask query values whose parameter names look sensitive, and align the two word lists.
+- **`.env` and environment files that are symbolic links:** in a trusted workspace, `.env`, `http-client.env.json` and `http-client.private.env.json` are read through links, so a repository could point `.env` at a file outside it and send one of its lines with `{{$dotenv …}}`. Refuse linked candidates, or require their real path to stay in the workspace folder, as body files do.
+- **UNC paths on Windows:** a `< \\host\share\file` body file or a UNC `caFile` is touched before the containment check, which can open an SMB connection. Check containment on the text of the path first and reject UNC and `\\?\` paths. Not verified on Windows.
+- **Captures from other files fill undefined names:** a name that no file variable or environment defines falls back to a capture from another file, so a request can be sent to a `baseUrl` captured from another service's response. Require `{{request.name}}` for values from other files, or warn with the source.
+- **Folderless windows share one secret bucket:** `.http` files opened without a folder all use the `no-workspace` secrets, so a downloaded file can use a secret stored for another loose file. Key them per folder, or ask before using them.
+- **Check details in Test Results:** a failed check shows the actual value (`got "eyJ…"`), masked only by the run's sensitive values, and VS Code keeps test results across restarts. Mask values under sensitive names, or keep values out of the Testing view.
+
 ## Smaller items
 
 - **Cycle detection for response-reference waits:** two runs that wait on each other's responses (`{{b.response…}}` in request `a`, `{{a.response…}}` in `b`) time out after `streamscope.capture.waitTimeout` instead of being blocked at once as capture cycles are, because the registry's wait graph has nodes only for runs that declare captures.

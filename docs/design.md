@@ -61,7 +61,7 @@ JavaScript scripts, GraphQL helpers, WebSocket and gRPC, cURL import and export,
 - **FR-S1** Send the request under the cursor (`Cmd+Alt+Enter` / `Ctrl+Alt+Enter`, CodeLens, command palette). Re-sending a request that is still running stops the running one first **(builder's call)**.
 - **FR-S2** Resolve all variables before sending. If any value is missing, do not send; show where it is missing.
 - **FR-S3** Never add headers the user did not write, except `Content-Length`, `Host` and `Accept-Encoding: gzip, deflate, br, zstd` **(builder's call: the last one only when the user did not set `Accept-Encoding`)**.
-- **FR-S4** Follow redirects (up to 10) unless `# @no-redirect`; 301, 302 and 303 become GET; 307 and 308 replay the body; `Authorization` and `Cookie` are dropped on cross-origin hops; every hop is recorded.
+- **FR-S4** Follow redirects (up to 10) unless `# @no-redirect`; 301, 302 and 303 become GET; 307 and 308 replay the body only within the same origin and fail with a `redirect` error otherwise; on cross-origin hops `Host`, credential headers such as `Authorization` and `Cookie`, and any header whose value holds one of the run's sensitive values are dropped; every hop is recorded.
 - **FR-S5** Cancel at any time; cancellation closes the socket immediately.
 
 ### Viewing
