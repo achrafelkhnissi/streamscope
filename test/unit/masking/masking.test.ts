@@ -245,7 +245,7 @@ describe('masking', () => {
     expect(sensitiveValuesIn(json, [value, 'absent"value'])).toEqual([value]);
   });
 
-  it('recognises credential cookie names by whole words split on separators and case changes', () => {
+  it('recognises credential cookie names by case-insensitive substrings', () => {
     for (const name of [
       'session',
       'sess',
@@ -263,6 +263,14 @@ describe('masking', () => {
       'login',
       'remember_me',
       'user.credential',
+      'PHPSESSID',
+      'JSESSIONID',
+      'sessionid',
+      'csrftoken',
+      'author_pref',
+      'sidebar_state',
+      'assessment',
+      'tokenizer',
     ]) {
       expect(isCredentialCookie(name), name).toBe(true);
     }
@@ -273,9 +281,6 @@ describe('masking', () => {
       'consent',
       'theme',
       'api_key',
-      'sidebar_state',
-      'assessment',
-      'tokenizer',
     ]) {
       expect(isCredentialCookie(name), name).toBe(false);
     }

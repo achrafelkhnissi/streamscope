@@ -66,7 +66,7 @@ export function looksLikeCredential(name: string): boolean {
   return credentialWords.some((word) => normalized.includes(word));
 }
 
-const cookieCredentialWords: ReadonlySet<string> = new Set([
+const cookieCredentialWords = [
   'session',
   'sess',
   'sid',
@@ -81,11 +81,11 @@ const cookieCredentialWords: ReadonlySet<string> = new Set([
   'login',
   'remember',
   'credential',
-]);
-const cookieNameWords = /[-_.]+|(?<=[a-z\d])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])/;
+];
 
 export function isCredentialCookie(name: string): boolean {
-  return name.split(cookieNameWords).some((word) => cookieCredentialWords.has(word.toLowerCase()));
+  const lower = name.toLowerCase();
+  return cookieCredentialWords.some((word) => lower.includes(word));
 }
 
 function encodedForms(value: string): string[] {

@@ -2241,6 +2241,10 @@ describe('readsSensitiveHead', () => {
       'cookies.session',
       'cookies["sid"]',
       'cookies["XSRF-TOKEN"]',
+      'cookies.PHPSESSID',
+      'cookies["JSESSIONID"]',
+      'cookies.sessionid',
+      'cookies.csrftoken',
       '(cookies | default(null)).sid',
       'status == 200 && cookies.session == "synthetic"',
     ]) {

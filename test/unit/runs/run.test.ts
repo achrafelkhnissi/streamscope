@@ -2825,6 +2825,75 @@ describe('waiting for captured values', () => {
         }
       });
 
+      it('PHPSESSID, JSESSIONID, sessionid and csrftoken under 8 characters resolve secret and carry inside a bare cookies capture, while consent, policy and theme cookies blank nothing', async () => {
+        const credentials = [
+          ['PHPSESSID', 'php-01'],
+          ['JSESSIONID', 'js-02'],
+          ['sessionid', 'sid-03'],
+          ['csrftoken', 'csrf04'],
+        ] as const;
+        const { registry, strip, logged, sent } = await exchanged({
+          headers: {
+            'Set-Cookie': [
+              ...credentials.map(([name, value]) => `${name}=${value}`),
+              'cookie_consent=1',
+              'viewed_cookie_policy=yes',
+              'theme=dark',
+            ],
+          },
+          captures: [
+            'phpValue = cookies.PHPSESSID',
+            'javaValue = cookies.JSESSIONID',
+            'djangoValue = cookies.sessionid',
+            'csrfValue = cookies.csrftoken',
+            'jar = cookies',
+            'consent = cookies.cookie_consent',
+            'policy = cookies.viewed_cookie_policy',
+            'theme = cookies.theme',
+          ],
+          consumer: [
+            'X-Consent: {{login.consent}} thread-1',
+            'X-Policy: {{login.policy}}',
+            'X-Theme: {{login.theme}}',
+          ],
+          variables: { secrets: new Map([['token', 'synthetic-bearer']]) },
+        });
+
+        for (const [index, [, value]] of credentials.entries()) {
+          const name = ['phpValue', 'javaValue', 'djangoValue', 'csrfValue'][index] ?? '';
+          expect(registry.get(loginKey, name)?.secret, name).toBe(true);
+          expect(registry.get(loginKey, name)?.result, name).toMatchObject({
+            state: 'resolved',
+            text: value,
+            secret: true,
+          });
+          expect(strip.get(name), name).toBe(maskedValue);
+        }
+        expect(registry.get(loginKey, 'jar')?.result).toMatchObject({
+          state: 'resolved',
+          secret: false,
+          sensitive: credentials.map(([, value]) => value),
+        });
+        expect(strip.get('jar')).toBe(
+          `{"PHPSESSID":"${maskedValue}","JSESSIONID":"${maskedValue}","sessionid":"${maskedValue}","csrftoken":"${maskedValue}","cookie_consent":"1","viewed_cookie_policy":"yes","theme":"dark"}`,
+        );
+        for (const [name, text] of [
+          ['consent', '1'],
+          ['policy', 'yes'],
+          ['theme', 'dark'],
+        ] as const) {
+          expect(registry.get(loginKey, name)?.secret, name).toBe(false);
+          expect(strip.get(name), name).toBe(text);
+        }
+        expect(sent.sensitiveValues).toEqual([]);
+        expect(logged).toContain('X-Consent: 1 thread-1');
+        expect(logged).toContain('X-Policy: yes');
+        expect(logged).toContain('X-Theme: dark');
+        expect(logged).toContain(`Host: ${new URL(sent.sent?.url ?? '').host}`);
+        expect(logged).toContain(`Date: ${dateOf(sent)}`);
+        expect(logged).not.toContain(maskedValue);
+      });
+
       it('sid=q7Z is not carried into a body.note capture, but is carried and masked inside a bare cookies capture', async () => {
         const { registry, strip, logged } = await exchanged({
           headers: { 'Set-Cookie': 'sid=q7Z' },
