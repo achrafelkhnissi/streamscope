@@ -64,6 +64,7 @@ export type TextResolution =
 
 export interface VariableScope {
   resolveText(text: string): TextResolution;
+  sensitiveValues(): string[];
 }
 
 export type Resolution =
@@ -185,6 +186,10 @@ class Scope implements VariableScope {
 
   evaluate(expression: string, target?: ReferenceTarget): Evaluated {
     return this.evaluateWithin(expression, [], target);
+  }
+
+  sensitiveValues(): string[] {
+    return [...this.sensitive];
   }
 
   resolveText(text: string): TextResolution {

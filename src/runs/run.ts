@@ -540,6 +540,7 @@ export function startRun(
       };
     }
     if (built.ok) {
+      state.sensitiveValues = resolution.scope.sensitiveValues();
       return { kind: 'ready', request: built.request };
     }
     return built.waits === undefined

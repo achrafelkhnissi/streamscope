@@ -2454,6 +2454,90 @@ describe('waiting for captured values', () => {
     });
   });
 
+  describe('a value inserted only inside a <@ template', () => {
+    const loginKey = `${documentUri}\n@login`;
+    const continueKey = `${documentUri}\n@continue`;
+
+    async function echoed(
+      template: string,
+      variables: Partial<RunInput['variables']> = {},
+    ): Promise<{ sent: RunSnapshot; log: string; echo: CaptureResult | undefined }> {
+      const api = await track(
+        startHttpServer((_request, response, recorded) => {
+          const body = recorded.body.toString().trim();
+          response.writeHead(200, { 'Content-Type': 'application/json', 'X-Echo': body });
+          response.end(body);
+        }),
+      );
+      const registry = new CaptureRegistry();
+      registry.begin({ id: -5, key: loginKey, label: 'login', startedAt: 0 }, [
+        { name: 'token', secret: true },
+        { name: 'location', secret: false },
+        { name: 'code', secret: true },
+      ]);
+      registry.update(-5, 'token', resolved('synthetic-token-tmpl', -5));
+      registry.update(-5, 'location', resolved('https://cb.example.test/loc-1', -5));
+      const folder = bodyFolder('template.json', template);
+      const lines = [
+        '# @name login',
+        '# @capture secret token = body.token',
+        '# @capture location = headers["location"]',
+        '# @capture secret code = body.code',
+        'POST https://api.example.test/login',
+        '',
+        '###',
+        '# @name continue',
+        '# @capture echo = body',
+        `POST ${api.url}/continue`,
+        'Content-Type: application/json',
+        '',
+        '<@ ./template.json',
+      ];
+
+      const sent = await startRun(
+        {
+          ...capturing(registry, lines, 1, undefined, variables),
+          bodyFiles: { documentDir: folder, containmentRoot: folder },
+        },
+        dependencies,
+      ).done;
+      await waitFor(() => registry.get(continueKey, 'echo')?.result.state === 'resolved');
+      const logged: string[] = [];
+      const record = (line: string): void => {
+        logged.push(line);
+      };
+      logRunEnd({ info: record, warn: record, debug: record }, sent);
+      return { sent, log: logged.join('\n'), echo: registry.get(continueKey, 'echo')?.result };
+    }
+
+    it.each([
+      ['a secret capture', '{"value":"{{login.token}}"}', {}, 'synthetic-token-tmpl'],
+      [
+        'a capture whose run has a pending secret',
+        '{"value":"{{login.location}}"}',
+        {},
+        'https://cb.example.test/loc-1',
+      ],
+      [
+        'a $secret',
+        '{"value":"{{$secret apiKey}}"}',
+        { secrets: new Map([['apiKey', 'synthetic-secret-tmpl']]) },
+        'synthetic-secret-tmpl',
+      ],
+    ])(
+      '%s is masked in the run log and carried into its captures',
+      async (_what, template, variables, value) => {
+        const { sent, log, echo } = await echoed(template, variables);
+
+        expect(sent.status).toBe('completed');
+        expect(sent.sensitiveValues).toContain(value);
+        expect(log).toContain(`X-Echo: {"value":"${maskedValue}"}`);
+        expect(log).not.toContain(value);
+        expect(echo).toMatchObject({ state: 'resolved', sensitive: [value] });
+      },
+    );
+  });
+
   it('a wait inside a <@ body file that times out points at the file', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     const registry = new CaptureRegistry();
