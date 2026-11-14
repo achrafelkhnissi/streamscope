@@ -82,6 +82,19 @@ flowchart LR
 - The publish job has `id-token: write`, runs only in the `release` environment, and every action is pinned to a commit SHA.
 - No long-lived publishing tokens are stored. Global Azure DevOps PATs are retired on 2026-12-01; the Marketplace path is OIDC trusted publishing.
 
+The workflow, written in milestone M11:
+
+- **Triggers:** a tag `vMAJOR.MINOR.PATCH`, or **Run workflow** (`workflow_dispatch`) with a `version` input. Either way the version must equal `package.json`'s, or the `package` job stops (`scripts/release.mjs version`).
+- **Jobs:**
+  1. `check`: the CI checks on Linux, macOS and Windows;
+  2. `package`: packages once, with `--pre-release` on odd minors, installs that VSIX in a clean profile (`scripts/verify-vsix.mjs`), writes the version's changelog section as release notes, and uploads both as the `release` artifact;
+  3. `publish-marketplace`: in the `release` environment, `vsce publish --oidc --packagePath` with the artifact's VSIX;
+  4. `publish-open-vsx`: in the `release` environment, `ovsx publish --trusted-publishing --packagePath` with the same VSIX. It runs only when the repository variable `OPEN_VSX_TRUSTED` is `true`, which M12 sets after the first token publish (one-time setup, step 4);
+  5. `github-release`: after the Marketplace publish (and Open VSX, when it ran), creates the GitHub release `vVERSION` with the VSIX and the notes.
+- **Gate:** both publish jobs wait for approval of the `release` environment, so a tag or a dispatch never publishes without it. Rejecting the approval ends the run there.
+- **Dry run:** dispatch the workflow with the current version and reject the approval: `check` and `package` run in full and the VSIX can be downloaded from the run.
+- `test/unit/release-workflow.test.ts` pins the triggers, the environment and permissions of each job, the pinned actions, the absence of stored tokens, the Open VSX switch and the single package. `actionlint` checks the file.
+
 ## One-time setup before the first release (milestone M12)
 
 1. **Marketplace trusted publishing:** publisher `achrafelkhnissi` → Trusted Publishing → Create. Policy name "Release workflow", repository owner `achrafelkhnissi`, repository `streamscope`, workflow `release.yml`, environment `release`.
