@@ -242,6 +242,17 @@ export function requestKey(documentUri: string, request: HttpRequest, index: num
     : `${documentUri}\n@${request.name}`;
 }
 
+export function findRequest(
+  documentUri: string,
+  file: HttpFile,
+  identity: string,
+): HttpRequest | undefined {
+  const index = file.requests.findIndex(
+    (candidate, at) => requestKey(documentUri, candidate, at) === identity,
+  );
+  return index === -1 ? file.requests.find(({ name }) => name === identity) : file.requests[index];
+}
+
 export function requestKeyDocument(key: string): string {
   return key.slice(0, key.indexOf('\n'));
 }

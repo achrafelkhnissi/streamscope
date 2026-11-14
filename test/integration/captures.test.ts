@@ -17,7 +17,7 @@ interface HistoryEntry {
 interface BlockedActions {
   message: string;
   actions: string[];
-  run: { title: string; command: string; arguments: unknown[] } | undefined;
+  run: { title: string; label: string; producer: string } | undefined;
 }
 
 const producerLine = 3;
@@ -51,6 +51,10 @@ function send(uri: vscode.Uri, line: number): Thenable<unknown> {
 
 function stop(uri: vscode.Uri, line: number): Thenable<unknown> {
   return vscode.commands.executeCommand('streamscope.stopRequest', uri, line);
+}
+
+function runBlockedProducer(): Thenable<unknown> {
+  return vscode.commands.executeCommand('streamscope.test.runBlockedProducer');
 }
 
 function history(): Thenable<HistoryEntry[]> {
@@ -178,7 +182,7 @@ describe('waiting for captured values', () => {
     const run = blocked.run;
     assert.ok(run, 'the toast has no Run startRun action');
     assert.equal(run.title, 'Run startRun');
-    await vscode.commands.executeCommand(run.command, ...run.arguments);
+    await runBlockedProducer();
 
     assert.deepEqual(
       server.requests.map((request) => request.url),
@@ -209,9 +213,8 @@ describe('waiting for captured values', () => {
     );
     assert.deepEqual(blocked.actions, ['Run Start an unnamed run', 'Go to Line']);
     assert.equal(server.requests.length, 0);
-    const run = blocked.run;
-    assert.ok(run, 'the toast has no Run action');
-    await vscode.commands.executeCommand(run.command, ...run.arguments);
+    assert.ok(blocked.run, 'the toast has no Run action');
+    await runBlockedProducer();
 
     assert.deepEqual(
       server.requests.map((request) => request.url),
@@ -240,15 +243,62 @@ describe('waiting for captured values', () => {
 
     assert.ok(blocked, 'no blocked notification was shown');
     assert.deepEqual(blocked.actions, ['Run Shared title', 'Go to Line']);
-    const run = blocked.run;
-    assert.ok(run, 'the toast has no Run action');
-    assert.equal(run.arguments[1], 5);
-    await vscode.commands.executeCommand(run.command, ...run.arguments);
+    assert.equal(blocked.run?.producer, `${uri.toString()}\n#1 GET ${server.url}/stream?seconds=0`);
+    await runBlockedProducer();
 
     assert.deepEqual(
       server.requests.map((request) => request.url),
       ['/stream?seconds=0'],
     );
+  });
+
+  it('the Run button sends the producer it names after a request is inserted above it', async () => {
+    const server = await serve();
+    const uri = await open('moved.http', agentFile(server, 'moved', 'seconds=0'));
+
+    await send(uri, followUpLine);
+    const blocked = await vscode.commands.executeCommand<BlockedActions | undefined>(
+      'streamscope.test.blockedActions',
+    );
+    assert.deepEqual(blocked?.actions, ['Run startRun', 'Go to Line']);
+    const edit = new vscode.WorkspaceEdit();
+    edit.insert(
+      uri,
+      new vscode.Position(0, 0),
+      [
+        '### Inserted',
+        '# @name inserted',
+        `GET ${server.url}/inserted`,
+        'X-Inserted: yes',
+        '',
+        '',
+      ].join('\n'),
+    );
+    await vscode.workspace.applyEdit(edit);
+    await runBlockedProducer();
+
+    assert.deepEqual(
+      server.requests.map((request) => request.url),
+      ['/stream?seconds=0'],
+    );
+  });
+
+  it('the Run button sends nothing once the producer it names is gone', async () => {
+    const server = await serve();
+    const uri = await open('renamed.http', agentFile(server, 'renamed', 'seconds=0'));
+
+    await send(uri, followUpLine);
+    const blocked = await vscode.commands.executeCommand<BlockedActions | undefined>(
+      'streamscope.test.blockedActions',
+    );
+    assert.deepEqual(blocked?.actions, ['Run startRun', 'Go to Line']);
+    const edit = new vscode.WorkspaceEdit();
+    edit.replace(uri, new vscode.Range(1, 0, 1, '# @name startRun'.length), '# @name restart');
+    await vscode.workspace.applyEdit(edit);
+    await runBlockedProducer();
+    await new Promise((resolve) => setTimeout(resolve, 300));
+
+    assert.deepEqual(server.requests, []);
   });
 
   it('a re-send replaces a waiting run', async () => {

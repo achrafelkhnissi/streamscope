@@ -474,7 +474,7 @@ Environment and `.env` details, settled in M3:
 
 The request is blocked, with the message shown, when:
 
-- the producer has never run in this session and nothing else defines the name (Resolution order): "`{{threadId}}` comes from startRun, which has not run in this session." This happens at once. The error notification offers "Run startRun", which sends the producer only when clicked;
+- the producer has never run in this session and nothing else defines the name (Resolution order): "`{{threadId}}` comes from startRun, which has not run in this session." This happens at once. The error notification offers "Run startRun", which sends the producer only when clicked. The click finds the producer again in the file as it is then, by its name or, for an unnamed request, its position, method and URL, and sends nothing, with a message, when it is no longer there;
 - it would wait for its own capture, has no earlier value of it and nothing else defines the name: "startRun cannot use its own capture threadId.", at once;
 - two runs would wait for each other's captures: "startRun and continue wait for each other's captures.", at once;
 - the capture fails: "startRun › threadId failed: <reason>.";

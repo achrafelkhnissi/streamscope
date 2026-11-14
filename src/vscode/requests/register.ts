@@ -14,6 +14,7 @@ import { RunHistory } from '../../runs/history';
 import { isActive, RunRegistry } from '../../runs/registry';
 import { sessionShutdown } from '../../runs/shutdown';
 import {
+  findRequest,
   requestKey,
   requestKeyDocument,
   type RunDependencies,
@@ -53,8 +54,8 @@ interface Target {
 
 interface RunAction {
   title: string;
-  command: string;
-  arguments: unknown[];
+  label: string;
+  producer: string;
 }
 
 interface BlockedToast {
@@ -156,19 +157,12 @@ function producerAction(
   if (producer === undefined) {
     return undefined;
   }
-  const documentUri = document.uri.toString();
-  const byKey = file.requests.findIndex(
-    (candidate, index) => requestKey(documentUri, candidate, index) === producer,
-  );
-  const request =
-    byKey === -1 ? file.requests.find(({ name }) => name === producer) : file.requests[byKey];
-  return request === undefined
-    ? undefined
-    : {
-        title: `Run ${requestLabel(request)}`,
-        command: 'streamscope.sendRequest',
-        arguments: [document.uri, request.requestLine.range.start.line],
-      };
+  const request = findRequest(document.uri.toString(), file, producer);
+  if (request === undefined) {
+    return undefined;
+  }
+  const label = requestLabel(request);
+  return { title: `Run ${label}`, label, producer };
 }
 
 function blockedToast(
@@ -189,7 +183,27 @@ function blockedToast(
   };
 }
 
-async function showBlocked(document: vscode.TextDocument, toast: BlockedToast): Promise<void> {
+async function runProducer(uri: vscode.Uri, cache: ParseCache, run: RunAction): Promise<void> {
+  const document = await vscode.workspace.openTextDocument(uri);
+  const request = findRequest(uri.toString(), cache.get(document), run.producer);
+  if (request === undefined) {
+    void vscode.window.showWarningMessage(
+      `${run.label} was not found in ${path.basename(uri.path)}, so it was not sent.`,
+    );
+    return;
+  }
+  await vscode.commands.executeCommand(
+    'streamscope.sendRequest',
+    uri,
+    request.requestLine.range.start.line,
+  );
+}
+
+async function showBlocked(
+  document: vscode.TextDocument,
+  toast: BlockedToast,
+  cache: ParseCache,
+): Promise<void> {
   const choice = await vscode.window.showErrorMessage(toast.message, ...toast.actions);
   const { start, end } = toast.range;
   if (choice === 'Go to Line') {
@@ -197,7 +211,7 @@ async function showBlocked(document: vscode.TextDocument, toast: BlockedToast): 
       selection: new vscode.Range(start.line, start.character, end.line, end.character),
     });
   } else if (toast.run !== undefined && choice === toast.run.title) {
-    await vscode.commands.executeCommand(toast.run.command, ...toast.run.arguments);
+    await runProducer(document.uri, cache, toast.run);
   }
 }
 
@@ -258,7 +272,7 @@ export function registerRequestFeatures(
     'dist',
     'capture-worker.js',
   ).fsPath;
-  let lastBlocked: BlockedToast | undefined;
+  let lastBlocked: { uri: vscode.Uri; toast: BlockedToast } | undefined;
   const dependencies: RunDependencies = {
     transport: new NodeTransport(),
     system: liveSystemContext,
@@ -495,8 +509,8 @@ export function registerRequestFeatures(
     if (run.status === 'blocked') {
       const toast = blockedToast(document, file, run);
       if (toast !== undefined) {
-        lastBlocked = testMode ? toast : undefined;
-        void showBlocked(document, toast);
+        lastBlocked = testMode ? { uri: document.uri, toast } : undefined;
+        void showBlocked(document, toast, cache);
       }
       return;
     }
@@ -697,7 +711,12 @@ export function registerRequestFeatures(
       vscode.commands.registerCommand('streamscope.test.runStatus', (id?: unknown) =>
         typeof id === 'number' ? statuses.get(id) : undefined,
       ),
-      vscode.commands.registerCommand('streamscope.test.blockedActions', () => lastBlocked),
+      vscode.commands.registerCommand('streamscope.test.blockedActions', () => lastBlocked?.toast),
+      vscode.commands.registerCommand('streamscope.test.runBlockedProducer', async () => {
+        if (lastBlocked?.toast.run !== undefined) {
+          await runProducer(lastBlocked.uri, cache, lastBlocked.toast.run);
+        }
+      }),
       vscode.commands.registerCommand('streamscope.test.logLines', () => loggedLines.splice(0)),
       vscode.commands.registerCommand('streamscope.test.restrictedSends', () => ({
         ...restrictedSends,

@@ -17,7 +17,7 @@ interface HistoryEntry {
 interface BlockedActions {
   message: string;
   actions: string[];
-  run: { title: string; command: string; arguments: unknown[] } | undefined;
+  run: { title: string; label: string; producer: string } | undefined;
 }
 
 interface ResponseState {

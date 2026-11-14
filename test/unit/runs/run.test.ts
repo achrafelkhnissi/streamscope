@@ -27,6 +27,7 @@ import type { ToPanel } from '../../../src/response/panel-protocol';
 import type { RunAccess, RunEnd, RunObserver } from '../../../src/runs/observer';
 import { RunRegistry } from '../../../src/runs/registry';
 import {
+  findRequest,
   requestKey,
   requestKeyDocument,
   startRun,
@@ -1634,6 +1635,41 @@ describe('requestKey', () => {
     expect(requestKeyDocument(requestKey(document, login, 0))).toBe(document);
     expect(requestKeyDocument(requestKey(document, me, 1))).toBe(document);
     expect(requestKeyDocument('untitled:Untitled-1\n@x')).toBe('untitled:Untitled-1');
+  });
+
+  it('finds a request by its key or name in the current parse, wherever it moved, or nothing', () => {
+    const document = 'file:///a.http';
+    const lines = [
+      '# @name login',
+      'POST https://api.example.test/login',
+      '',
+      '###',
+      'GET https://api.example.test/me',
+    ];
+    const before = parseHttpFile(lines.join('\n'));
+    const [login, me] = before.requests;
+    if (!login || !me) {
+      throw new Error('expected two requests');
+    }
+    const loginName = 'login';
+    const meKey = requestKey(document, me, 1);
+    const lineOf = (file: string[], identity: string): number | undefined =>
+      findRequest(document, parseHttpFile(file.join('\n')), identity)?.requestLine.range.start.line;
+
+    expect(lineOf(lines, loginName)).toBe(1);
+    expect(lineOf(lines, meKey)).toBe(4);
+    expect(lineOf(['@base = x', '', ...lines], loginName)).toBe(3);
+    expect(lineOf(['@base = x', '', ...lines], meKey)).toBe(6);
+    expect(
+      lineOf(
+        ['# @name inserted', 'GET https://api.example.test/x', '', '###', ...lines],
+        loginName,
+      ),
+    ).toBe(5);
+    expect(
+      lineOf(['# @name inserted', 'GET https://api.example.test/x', '', '###', ...lines], meKey),
+    ).toBeUndefined();
+    expect(lineOf(['# @name renamed', ...lines.slice(1)], loginName)).toBeUndefined();
   });
 });
 
