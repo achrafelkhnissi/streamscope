@@ -15,19 +15,18 @@ import {
   resolveCliArgsFromVSCodeExecutablePath,
   runTests,
 } from '@vscode/test-electron';
+import { maxVsixBytes, vsixBudgetProblem } from './vsix-budget.mjs';
 
 const root = path.resolve(import.meta.dirname, '..');
 const manifest = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8'));
 const extensionId = `${manifest.publisher}.${manifest.name}`;
 const vsix = path.join(root, `${manifest.name}-${manifest.version}.vsix`);
-const maxVsixBytes = 409600;
 
 const vsixBytes = statSync(vsix).size;
 console.log(`VSIX is ${String(vsixBytes)} bytes (limit ${String(maxVsixBytes)})`);
-if (vsixBytes > maxVsixBytes) {
-  throw new Error(
-    `VSIX is ${String(vsixBytes)} bytes, over the ${String(maxVsixBytes)}-byte limit`,
-  );
+const budgetProblem = vsixBudgetProblem(vsixBytes);
+if (budgetProblem !== undefined) {
+  throw new Error(budgetProblem);
 }
 
 const sandbox = realpathSync(mkdtempSync(path.join(tmpdir(), 'vsix-verify-')));

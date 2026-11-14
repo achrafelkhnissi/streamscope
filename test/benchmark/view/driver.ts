@@ -142,9 +142,41 @@ async function walkthroughMode(url: string, surface: string, controlUrl: string)
   await vscode.commands.executeCommand(benchmarkCommands.walkthrough, request);
 }
 
+async function waitUntilActive(): Promise<void> {
+  const deadline = performance.now() + commandWaitMs;
+  while (
+    !vscode.extensions.all.some(
+      (extension) => extension.id.startsWith('achrafelkhnissi.') && extension.isActive,
+    )
+  ) {
+    if (performance.now() > deadline) {
+      throw new Error('Streamscope did not activate when the workspace opened.');
+    }
+    await delay(100);
+  }
+}
+
+async function activationMode(out: string): Promise<void> {
+  try {
+    await waitUntilActive();
+    await waitForCommand(benchmarkCommands.activation);
+    const activationMs = await vscode.commands.executeCommand<number>(benchmarkCommands.activation);
+    writeFileSync(out, JSON.stringify({ activationMs }));
+  } catch (error) {
+    writeFileSync(
+      out,
+      JSON.stringify({ error: error instanceof Error ? error.message : String(error) }),
+    );
+  }
+}
+
 export async function run(): Promise<void> {
-  const mode = process.env[benchmarkEnvironment.mode] === 'walkthrough' ? 'walkthrough' : 'stream';
   const out = setting(benchmarkEnvironment.out);
+  if (process.env[benchmarkEnvironment.mode] === 'activation') {
+    await activationMode(out);
+    return;
+  }
+  const mode = process.env[benchmarkEnvironment.mode] === 'walkthrough' ? 'walkthrough' : 'stream';
   let result: DriverResult = {
     mode,
     vscodeVersion: vscode.version,

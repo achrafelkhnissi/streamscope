@@ -2,6 +2,7 @@ import * as http from 'node:http';
 import * as vscode from 'vscode';
 import {
   benchmarkCommands,
+  benchmarkEnabled,
   checkBenchmarkUrl,
   screenshotUrl,
   type StreamBenchmarkRequest,
@@ -213,4 +214,25 @@ export function registerBenchmarkCommands(
       walkthrough(services, request),
     ),
   );
+}
+
+export interface ActivationRecord {
+  ms: number;
+  logged: string;
+}
+
+export function registerActivationCommands(
+  context: vscode.ExtensionContext,
+  activation: ActivationRecord,
+): void {
+  if (benchmarkEnabled(process.env, context.extensionMode === vscode.ExtensionMode.Production)) {
+    context.subscriptions.push(
+      vscode.commands.registerCommand(benchmarkCommands.activation, () => activation.ms),
+    );
+  }
+  if (context.extensionMode === vscode.ExtensionMode.Test) {
+    context.subscriptions.push(
+      vscode.commands.registerCommand('streamscope.test.activation', () => activation),
+    );
+  }
 }

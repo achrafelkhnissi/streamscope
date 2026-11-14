@@ -11,6 +11,9 @@ import { createLanguageVariables, registerVariableFeatures } from './vscode/lang
 import { ParseCache } from './vscode/language/parse-cache';
 import { registerRequestFeatures } from './vscode/requests/register';
 import { registerTesting } from './vscode/testing/register';
+import { registerActivationCommands } from './vscode/benchmark/commands';
+
+declare const streamscopeLoadedAt: number;
 
 let shutdown: (() => Promise<void>) | undefined;
 
@@ -57,7 +60,10 @@ export function activate(context: vscode.ExtensionContext): void {
   registerLanguageFeatures(context, cache, variables, captures, checks);
   registerTesting(context, cache, requests, checks, captures);
   void offerToHideOtherSendLenses(context);
-  log.info('Extension activated');
+  const ms = performance.now() - streamscopeLoadedAt;
+  const logged = `Extension activated in ${ms.toFixed(1)} ms`;
+  registerActivationCommands(context, { ms, logged });
+  log.info(logged);
 }
 
 export async function deactivate(): Promise<void> {

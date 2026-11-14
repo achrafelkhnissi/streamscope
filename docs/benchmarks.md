@@ -27,6 +27,7 @@ npm run build
 caffeinate -d -i npm run bench -- view --surface m6 --rate 500 --size 1024 --minutes 30
 npm run bench -- view --walkthrough --surface m6-dark --theme "Default Dark Modern"
 npm run bench -- view --surface <name> --extension <path>
+npm run bench -- activation --files 300
 npm run bench -- serve
 ```
 
@@ -42,6 +43,7 @@ Run `npm run build` first. `npm run bench` bundles the benchmark and its driver,
 - **`--walkthrough`** streams 20 events/s for 2 minutes and runs `streamscope.benchmark.walkthrough`. The surface takes the screenshots listed in `src/benchmark/contract.ts` through the runner's control server, which saves them under `out/benchmark/screenshots/<surface>-<step>.jpeg`. Because the surface name is in the file name, give each theme its own surface name, such as `m6-dark`, `m6-light`, `m6-hc` and `m6-hclight`. A second run with the same name overwrites the first run's screenshots.
 - **`--surface`** names the run. Results, logs and screenshots are named by it. Use `m6` for Streamscope's response view.
 - **`--theme`** writes `workbench.colorTheme` into the throwaway profile. It accepts `Default Dark Modern`, `Default Light Modern`, `Default High Contrast` and `Default High Contrast Light`. Without it, VS Code's default theme applies.
+- **`activation`** starts VS Code stable 5 times, each time in a fresh throwaway profile on a folder with `--files` synthetic `.http` files (default 1), so `workspaceContains` activates Streamscope as it would for a user. The extension records how long its bundle took to load and `activate()` took to return, from a `performance.now()` stamp that esbuild places at the top of `dist/extension.js`, and the driver reads it with `streamscope.benchmark.activation`. The runner prints each run, the median and the slowest. Build with `npm run build:production` first to measure what users get.
 - **`serve`** prints the URL of the synthetic stream server and keeps it running, for trying a surface by hand.
 
 Things to know:
@@ -53,7 +55,7 @@ Things to know:
 - For a walkthrough only, VS Code is started with `--remote-debugging-port=0` so the runner can take screenshots. The runner reads the port VS Code reports and talks only to the workbench on 127.0.0.1 at that port. While a walkthrough runs, any local process can connect to that port and drive the window, so don't run walkthroughs on a shared machine or in CI. The runner's control server takes requests only with a random per-run token.
 - Ctrl+C stops VS Code and removes the throwaway profile.
 - Results and the VS Code log go to `out/benchmark/view-<surface>-<time>.json` and `.log`.
-- A surface must register the two `streamscope.benchmark.*` commands. The M5 prototypes did, from a development-only extension that has since been deleted. Streamscope's response view registers them only in development and test mode and when `STREAMSCOPE_BENCHMARK=1`, which the runner sets. If no surface registered the command, `view` reports that.
+- A surface must register the `streamscope.benchmark.stream` and `streamscope.benchmark.walkthrough` commands. The M5 prototypes did, from a development-only extension that has since been deleted. Streamscope's response view registers them only in development and test mode and when `STREAMSCOPE_BENCHMARK=1`, which the runner sets. If no surface registered the command, `view` reports that.
 
 ## 2026-11-12: M4 streaming core
 

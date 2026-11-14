@@ -86,7 +86,7 @@ Time and space complexity rank with correctness and security in every change. De
 | Quick gate           | `npm run check` (typecheck, lint, format check, unit tests)                              |
 | Package              | `npm run package` (VSIX in the project root), `npm run package:list` to see its contents |
 | Installed-VSIX check | `npm run verify:vsix`                                                                    |
-| Stream benchmarks    | `npm run bench -- throughput`, `soak` or `view` (see `docs/benchmarks.md`)               |
+| Benchmarks           | `npm run bench -- throughput`, `soak`, `view` or `activation` (see `docs/benchmarks.md`) |
 
 ## Toolchain facts
 
