@@ -12,6 +12,15 @@ function markerOf(lines: readonly string[], line: number | undefined): '#' | '//
   return (lines[line] ?? '').trimStart().startsWith('//') ? '//' : '#';
 }
 
+export function captureLine(
+  marker: '#' | '//',
+  name: string,
+  secret: boolean,
+  expression: string,
+): string {
+  return `${marker} @capture ${secret ? 'secret ' : ''}${name} = ${expression}`;
+}
+
 export function capturedNames(request: HttpRequest): ReadonlySet<string> {
   return new Set(request.captures.map(({ name }) => name));
 }
@@ -44,6 +53,6 @@ export function placeCapture(input: {
   return {
     ok: true,
     line,
-    text: `${marker} @capture ${secret ? 'secret ' : ''}${name} = ${expression}`,
+    text: captureLine(marker, name, secret, expression),
   };
 }

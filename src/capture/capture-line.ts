@@ -139,15 +139,6 @@ export function suggestedCaptureName(
   return `${name}${String(suffix)}`;
 }
 
-export function captureLine(
-  marker: '#' | '//',
-  name: string,
-  secret: boolean,
-  expression: string,
-): string {
-  return `${marker} @capture ${secret ? 'secret ' : ''}${name} = ${expression}`;
-}
-
 export function parseCaptureNameInput(
   input: string,
 ): { name: string; secret: boolean } | undefined {

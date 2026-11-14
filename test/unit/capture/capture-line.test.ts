@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
   captureExpression,
-  captureLine,
   conditionText,
   eventCondition,
   parseCaptureNameInput,
@@ -10,6 +9,7 @@ import {
 } from '../../../src/capture/capture-line';
 import type { Value } from '../../../src/expressions/ast';
 import { evaluate, holds } from '../../../src/expressions/evaluate';
+import { captureLine } from '../../../src/http-file/capture-placement';
 import { parseExpression } from '../../../src/expressions/parse';
 
 const runStarted: EventCondition = { kind: 'field', field: 'type', value: 'RUN_STARTED' };

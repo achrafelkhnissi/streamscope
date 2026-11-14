@@ -1,5 +1,4 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { captureLine } from '../../../src/capture/capture-line';
 import { hostBudget } from '../../../src/capture/task-budget';
 import {
   CaptureTracker,
@@ -11,6 +10,7 @@ import { eventLabel } from '../../../src/events/label';
 import type { EventKind, JsonValue, StreamEvent } from '../../../src/events/model';
 import { EventStore } from '../../../src/events/store';
 import { insertText, maxInsertedLength } from '../../../src/expressions/insert';
+import { captureLine } from '../../../src/http-file/capture-placement';
 import { parseHttpFile } from '../../../src/http-file/parse';
 import type { PathSegment } from '../../../src/response/json-position';
 import { isEventStream } from '../../../src/response/panel-content';
