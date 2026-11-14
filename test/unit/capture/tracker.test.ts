@@ -2,7 +2,12 @@ import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { captureSliceMs, hostBudget, TaskBudget } from '../../../src/capture/task-budget';
+import {
+  captureSliceMs,
+  hostBudget,
+  hostEvaluationUnits,
+  TaskBudget,
+} from '../../../src/capture/task-budget';
 import {
   CaptureTracker,
   readsSensitiveHead,
@@ -18,7 +23,14 @@ import { parseExpression } from '../../../src/expressions/parse';
 import type { RunAccess, RunEnd } from '../../../src/runs/observer';
 import type { ResponseHead } from '../../../src/transport/model';
 import { fastestOf } from '../timing';
-import { expectNoChild, longestStall, missingWorker, useCaptureWorker } from './worker';
+import {
+  CountedBudget,
+  expectNoChild,
+  longestStall,
+  missingWorker,
+  recordingWorker,
+  useCaptureWorker,
+} from './worker';
 
 const encoder = new TextEncoder();
 const mebibyte = 1_048_576;
@@ -1873,6 +1885,54 @@ describe('host work within one task', () => {
     expect(endRun.calls).toEqual(['last']);
     await expectNoChild();
   });
+
+  it('evaluates a handed-off event value once on the host and once in the child, on arrival, from the queue and at the end', async () => {
+    const value: JsonValue = { type: 'A', items: [...Array<number>(1_000).fill(0), 7] };
+    const spill = await spilledEvents([`${JSON.stringify(value)}\n`]);
+    const range = spill.ranges[0] ?? { offset: 0, length: 0 };
+    const cases = [
+      { name: 'arrival', text: `first(type == "A").items[?@ in [${sevens}]] | json`, entries: 1 },
+      { name: 'queued', text: `first(type == "A").items[?@ in [${sevens}]] | json`, entries: 1 },
+      { name: 'end', text: `last(type == "A").items[?@ in [${sevens}]] | json`, entries: 2 },
+    ];
+
+    for (const { name, text, entries } of cases) {
+      let time = 0;
+      const tasks: (() => void)[] = [];
+      const budget = new CountedBudget({
+        now: () => time,
+        nextTask: (callback) => {
+          tasks.push(callback);
+        },
+      });
+      const worker = recordingWorker(files(), `once-${name}`);
+      const run = harness([capture(name, text)], worker.file, budget);
+      run.tracker.head(ndjsonHead, access(spill.path));
+      if (name === 'queued') {
+        budget.enter();
+        time += captureSliceMs;
+        budget.leave();
+      }
+      const before = { entries: budget.entries, units: budget.units };
+
+      run.send(value, range);
+      expect(run.tracker.queued, name).toBe(name === 'queued' ? 1 : 0);
+      while (tasks.length > 0) {
+        tasks.shift()?.();
+      }
+      await run.tracker.end(completed('ndjson', { spill: spill.path }));
+
+      expect(run.results.get(name), name).toEqual(resolved('[7]', 1, 'items[?…]'));
+      expect(budget.entries - before.entries, name).toBe(entries);
+      expect(budget.units - before.units, name).toBeGreaterThanOrEqual(hostEvaluationUnits);
+      expect(budget.units - before.units, name).toBeLessThan(2 * hostEvaluationUnits);
+      expect(
+        worker.requests().filter((request) => request.jobs.includes(name)),
+        name,
+      ).toHaveLength(1);
+    }
+    await expectNoChild();
+  }, 30_000);
 
   it('a handed-off secret capture is still secret, and its failure reason is masked', async () => {
     const token = 'synthetic-token-5d2e8b';

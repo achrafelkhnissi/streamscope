@@ -11,18 +11,28 @@ import {
   inlineBodyBytes,
   inlineDigitBodyBytes,
   jobEvaluator,
+  sourceKey,
   valuesOnly,
   type BodyJob,
   type BodySubject,
   type Inserted,
   type WorkerRequest,
 } from '../../../src/capture/body';
-import { TaskBudget } from '../../../src/capture/task-budget';
+import { hostEvaluationUnits, TaskBudget } from '../../../src/capture/task-budget';
 import type { CaptureDefinition } from '../../../src/capture/tracker';
-import { parseExpression } from '../../../src/expressions/parse';
+import type { Value } from '../../../src/expressions/ast';
+import { parseExpression, sourcesOf } from '../../../src/expressions/parse';
 import { WorkBudget } from '../../../src/expressions/work';
 import { fastestOf } from '../timing';
-import { expectNoChild, longestStall, missingWorker, useCaptureWorker } from './worker';
+import {
+  CountedBudget,
+  expectNoChild,
+  longestStall,
+  missingWorker,
+  recordingWorker,
+  useCaptureWorker,
+  type ChildRequest,
+} from './worker';
 
 const encoder = new TextEncoder();
 const mebibyte = 1_048_576;
@@ -396,6 +406,118 @@ describe('evaluateBodyExpressions', () => {
 
     expect(stallMs).toBeLessThan(100);
     expect(withoutChild.get('zeros')).toEqual({ present: false, reason: bodyLimit });
+    await expectNoChild();
+  });
+
+  it('evaluates a handed-off body capture once on the host and once in the child', async () => {
+    const zeros = encoder.encode(`[${'0,'.repeat(inlineBodyBytes / 2 - 2)}0]`);
+    const budget = new CountedBudget({ now: () => 0, nextTask: () => undefined });
+    const worker = recordingWorker(files(), 'once-body');
+
+    const outcomes = await evaluateBodyExpressions(
+      zeros,
+      'application/json',
+      [capture('zeros', 'body[?@ == 0] | json')],
+      worker.file,
+      { taskBudget: budget },
+    );
+
+    expect(outcomes.get('zeros')?.present).toBe(true);
+    expect(budget.entries).toBe(1);
+    expect(budget.units).toBeGreaterThanOrEqual(hostEvaluationUnits);
+    expect(budget.units).toBeLessThan(2 * hostEvaluationUnits);
+    expect(worker.requests()).toEqual([
+      { kind: 'body', path: null, query: null, bytes: zeros.length, jobs: ['zeros'] },
+    ]);
+    await expectNoChild();
+  });
+
+  it('sends a hand-off only the subject its jobs can use', async () => {
+    const sevens = Array<string>(1_300).fill('7').join(',');
+    const strings = Array<string>(1_000).fill('"7"').join(',');
+    const headers: Value = Object.fromEntries(
+      Array.from({ length: 600 }, (_, at) => [`x-synthetic-${String(at)}`, 'value']),
+    );
+    const knowing = (name: string, text: string, value: Value): BodyJob => {
+      const unknown = job(name, text);
+      const [node] = sourcesOf(unknown.expression);
+      if (node === undefined) {
+        throw new Error(`${text} reads no source`);
+      }
+      return {
+        ...unknown,
+        known: new Map([[sourceKey(node), { present: true, value, path: '' }]]),
+      };
+    };
+    const event = knowing('event', `first(type == "A").items[?@ in [${sevens}]] | json`, {
+      type: 'A',
+      items: [...Array<number>(1_000).fill(0), 7],
+    });
+    const headerFilter = knowing('headers', `headers[?@ in [${strings}]]`, headers);
+    const cases: { name: string; subject: BodySubject; jobs: BodyJob[]; sent: ChildRequest[] }[] = [
+      {
+        name: 'events',
+        subject: {
+          kind: 'events',
+          format: 'ndjson',
+          path: '/synthetic/spill/stream.spill',
+          query: { kind: 'values', values: [{ id: 'a-1' }] },
+        },
+        jobs: [event, job('query', 'jsonpath("$[0].id")')],
+        sent: [
+          { kind: 'events', path: null, query: null, bytes: null, jobs: ['event'] },
+          {
+            kind: 'events',
+            path: '/synthetic/spill/stream.spill',
+            query: 'values',
+            bytes: null,
+            jobs: ['query'],
+          },
+        ],
+      },
+      {
+        name: 'file',
+        subject: {
+          kind: 'file',
+          path: '/synthetic/spill/body.spill',
+          length: 3 * mebibyte,
+          contentType: 'application/json',
+        },
+        jobs: [headerFilter],
+        sent: [{ kind: 'body', path: null, query: null, bytes: 0, jobs: ['headers'] }],
+      },
+      {
+        name: 'body',
+        subject: {
+          kind: 'body',
+          bytes: encoder.encode('{"a":1}'),
+          contentType: 'application/json',
+        },
+        jobs: [headerFilter],
+        sent: [{ kind: 'body', path: null, query: null, bytes: 0, jobs: ['headers'] }],
+      },
+    ];
+
+    for (const { name, subject, jobs, sent } of cases) {
+      const worker = recordingWorker(files(), `subject-${name}`);
+
+      const outcomes = new Map(
+        (await evaluateJobs(subject, jobs, worker.file)).map(([done, outcome]) => [
+          done.name,
+          outcome,
+        ]),
+      );
+
+      expect(
+        worker
+          .requests()
+          .toSorted((left, right) => left.jobs.join().localeCompare(right.jobs.join())),
+        name,
+      ).toEqual(sent);
+      for (const done of jobs) {
+        expect(outcomes.get(done.name)?.present, `${name} ${done.name}`).toBe(true);
+      }
+    }
     await expectNoChild();
   });
 

@@ -448,6 +448,15 @@ async function runInChild(
   });
 }
 
+function handOffSubject(subject: BodySubject, jobs: readonly BodyJob[]): BodySubject {
+  if (subject.kind === 'events') {
+    return { kind: 'events', format: subject.format, path: undefined, query: undefined };
+  }
+  return subject.kind === 'body' && jobs.some((job) => readsBody(job.expression))
+    ? subject
+    : { kind: 'body', bytes: new Uint8Array(), contentType: subject.contentType };
+}
+
 function nextTask(): Promise<void> {
   return new Promise((resolve) => setImmediate(resolve));
 }
@@ -500,8 +509,11 @@ export async function evaluateJobs<Job extends BodyJob>(
       results.set(job.name, result);
     }
   }
+  const handed = [...handedOff];
   const handing =
-    handedOff.size === 0 ? undefined : runInChild(subject, [...handedOff], workerFile, options);
+    handed.length === 0
+      ? undefined
+      : runInChild(handOffSubject(subject, handed), handed, workerFile, options);
   const fromAway = (await answering) ?? noAnswers;
   const fromHandOff = (await handing) ?? noAnswers;
   return jobs.map((job) => {

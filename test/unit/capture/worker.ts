@@ -1,8 +1,10 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import * as esbuild from 'esbuild';
 import { afterAll, beforeAll } from 'vitest';
+import { TaskBudget } from '../../../src/capture/task-budget';
+import type { WorkBudget } from '../../../src/expressions/work';
 
 export const missingWorker = path.join(tmpdir(), 'streamscope-missing', 'capture-worker.js');
 
@@ -78,5 +80,65 @@ export function useCaptureWorker(): () => WorkerFiles {
       throw new Error('the capture worker is not built yet');
     }
     return files;
+  };
+}
+
+export class CountedBudget extends TaskBudget {
+  entries = 0;
+  units = 0;
+  private counted: WorkBudget | undefined;
+
+  override enter(): WorkBudget {
+    this.entries += 1;
+    const work = super.enter();
+    if (this.counted !== work) {
+      this.counted = work;
+      const spend = work.spend.bind(work);
+      work.spend = (units: number): void => {
+        this.units += units;
+        spend(units);
+      };
+    }
+    return work;
+  }
+}
+
+export interface ChildRequest {
+  kind: string;
+  path: string | null;
+  query: string | null;
+  bytes: number | null;
+  jobs: string[];
+}
+
+export function recordingWorker(
+  files: WorkerFiles,
+  name: string,
+): { file: string; requests: () => ChildRequest[] } {
+  const log = files.script(`${name}-requests`, '');
+  const file = files.script(
+    name,
+    [
+      "const { appendFileSync } = require('node:fs');",
+      "process.once('message', ({ subject, jobs }) => {",
+      '  const request = {',
+      '    kind: subject.kind,',
+      '    path: subject.path ?? null,',
+      '    query: subject.query?.kind ?? null,',
+      '    bytes: subject.bytes?.length ?? null,',
+      '    jobs: jobs.map((job) => job.name),',
+      '  };',
+      `  appendFileSync(${JSON.stringify(log)}, JSON.stringify(request) + '\\n');`,
+      '});',
+      `require(${JSON.stringify(files.worker)});`,
+    ].join('\n'),
+  );
+  return {
+    file,
+    requests: () =>
+      readFileSync(log, 'utf8')
+        .split('\n')
+        .filter((line) => line !== '')
+        .map((line) => JSON.parse(line) as ChildRequest),
   };
 }
