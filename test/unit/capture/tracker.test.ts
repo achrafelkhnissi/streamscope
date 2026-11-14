@@ -334,6 +334,30 @@ describe('CaptureTracker', () => {
     expect(run.results.get('constant')).toEqual(resolved('fixed', undefined, ''));
   });
 
+  it("a resolved secret capture's text joins the run's carried set for the captures after it", async () => {
+    const token = 'synthetic-token-7f3a9c';
+    const run = harness([
+      capture('token', 'body.access_token', true),
+      capture('profile', 'body'),
+      capture('data', 'body.data'),
+      capture('missing', 'body.access_token | match(/synthetic-token-7f3a9c-x/)'),
+    ]);
+    const body = JSON.stringify({ access_token: token, data: { token } });
+
+    run.tracker.head(head('application/json'));
+    await run.tracker.end(completed('json', { body, contentType: 'application/json' }));
+
+    expect(run.results.get('token')).toEqual(resolved(token, undefined, 'access_token', true));
+    expect(run.results.get('profile')).toEqual(resolved(body, undefined, '', false, [token]));
+    expect(run.results.get('data')).toEqual(
+      resolved(JSON.stringify({ token }), undefined, 'data', false, [token]),
+    );
+    const missing = run.results.get('missing');
+    const reason = missing?.state === 'failed' ? missing.reason : '';
+    expect(reason).toContain(`/${maskedValue}-x/`);
+    expect(reason).not.toContain(token);
+  });
+
   it('carries short sensitive header and credential cookie values only into captures that read the headers or the cookies', async () => {
     const run = harness([
       capture('note', 'body.note'),

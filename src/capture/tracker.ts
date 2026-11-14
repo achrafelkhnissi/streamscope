@@ -433,6 +433,7 @@ export class CaptureTracker {
   private idle: (() => void) | undefined;
   private readonly drainListeners = new Set<() => void>();
   private sensitive: { head: readonly string[]; other: readonly string[] };
+  private readonly secrets: string[] = [];
 
   constructor(
     private readonly run: {
@@ -1114,6 +1115,9 @@ export class CaptureTracker {
         time: this.settledAt(tracked, result.event),
       },
     });
+    if (tracked.definition.secret && result.text !== '' && !this.secrets.includes(result.text)) {
+      this.secrets.push(result.text);
+    }
   }
 
   private settledAt(tracked: Tracked, event: number | undefined): number {
@@ -1124,7 +1128,8 @@ export class CaptureTracker {
   }
 
   private sensitiveOf(tracked: Tracked): readonly string[] {
-    return tracked.readsHead ? this.sensitive.head : this.sensitive.other;
+    const carried = tracked.readsHead ? this.sensitive.head : this.sensitive.other;
+    return this.secrets.length === 0 ? carried : [...new Set([...carried, ...this.secrets])];
   }
 
   private fail(tracked: Tracked, reason: string): void {

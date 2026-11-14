@@ -1,3 +1,4 @@
+import { sensitiveValuesIn } from '../masking/masking';
 import {
   ownCaptureReason,
   waitCancelledReason,
@@ -36,6 +37,7 @@ interface RequestCaptures {
   readonly runId: number;
   readonly startedAt: number;
   readonly entries: Map<string, CaptureEntry>;
+  readonly secrets: string[];
 }
 
 interface Wait {
@@ -113,6 +115,7 @@ export class CaptureRegistry {
       runId: run.id,
       startedAt: run.startedAt,
       entries: new Map(),
+      secrets: [],
     };
     for (const { name, secret } of definitions) {
       captures.entries.set(name, {
@@ -142,6 +145,9 @@ export class CaptureRegistry {
     const updated = { ...entry, result };
     captures.entries.set(name, updated);
     this.emit(captures.key, name);
+    if (result.state === 'resolved' && (entry.secret || result.secret)) {
+      this.coverSecret(captures, name, result.text);
+    }
     if (result.state === 'pending') {
       return;
     }
@@ -169,6 +175,10 @@ export class CaptureRegistry {
       }
     }
     return latest?.entries.get(name);
+  }
+
+  secretsOf(runId: number): readonly string[] {
+    return this.runs.get(runId)?.secrets ?? [];
   }
 
   forRequest(request: string): readonly CaptureEntry[] {
@@ -253,6 +263,28 @@ export class CaptureRegistry {
   private emit(request: string, name: string): void {
     for (const listener of this.listeners) {
       listener(request, name);
+    }
+  }
+
+  private coverSecret(captures: RequestCaptures, name: string, secret: string): void {
+    if (secret === '' || captures.secrets.includes(secret)) {
+      return;
+    }
+    captures.secrets.push(secret);
+    for (const [other, sibling] of captures.entries) {
+      const { result } = sibling;
+      if (
+        other !== name &&
+        result.state === 'resolved' &&
+        !result.sensitive.includes(secret) &&
+        sensitiveValuesIn(result.text, [secret]).length > 0
+      ) {
+        captures.entries.set(other, {
+          ...sibling,
+          result: { ...result, sensitive: [...result.sensitive, secret] },
+        });
+        this.emit(captures.key, other);
+      }
     }
   }
 

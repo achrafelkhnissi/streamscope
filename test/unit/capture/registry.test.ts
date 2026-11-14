@@ -261,6 +261,54 @@ describe('CaptureRegistry', () => {
     expect(registry.get(startKey, 'threadId')?.result).toStrictEqual(resolved('thread-trusted', 2));
   });
 
+  it("a resolved secret's text covers the run's captures that resolved before it, and tells listeners", () => {
+    const token = 'synthetic-token-7f3a9c';
+    const registry = new CaptureRegistry();
+    registry.begin(run(1, startKey, 'startRun'), [
+      { name: 'profile', secret: false },
+      { name: 'plain', secret: false },
+      { name: 'token', secret: true },
+    ]);
+    registry.begin(run(2, continueKey, 'continue'), [{ name: 'echo', secret: false }]);
+    registry.update(1, 'profile', resolved(`{"access_token":"${token}"}`, 1));
+    registry.update(1, 'plain', resolved('plain-1', 1));
+    registry.update(2, 'echo', resolved(token, 2));
+    const changes: string[] = [];
+    registry.onDidChange((_request, name) => {
+      changes.push(name);
+    });
+
+    registry.update(1, 'token', resolved(token, 1, true));
+
+    expect(registry.get(startKey, 'profile')?.result).toMatchObject({ sensitive: [token] });
+    expect(registry.get(startKey, 'plain')?.result).toMatchObject({ sensitive: [] });
+    expect(registry.get(continueKey, 'echo')?.result).toMatchObject({ sensitive: [] });
+    expect(registry.secretsOf(1)).toStrictEqual([token]);
+    expect(changes).toEqual(['token', 'profile']);
+  });
+
+  it('the secret texts of a run live as long as its entries: replaced, evicted or cleared, they go', () => {
+    const registry = new CaptureRegistry(2);
+    const secretToken = [{ name: 'token', secret: true }];
+    registry.begin(run(1, startKey, 'startRun'), secretToken);
+    registry.update(1, 'token', resolved('synthetic-token-1', 1, true));
+    expect(registry.secretsOf(1)).toStrictEqual(['synthetic-token-1']);
+
+    registry.begin(run(2, startKey, 'startRun'), secretToken);
+    expect(registry.secretsOf(1)).toStrictEqual([]);
+    registry.update(2, 'token', resolved('synthetic-token-2', 2, true));
+    registry.update(2, 'token', resolved('synthetic-token-2', 2, true));
+    expect(registry.secretsOf(2)).toStrictEqual(['synthetic-token-2']);
+
+    registry.begin(run(3, continueKey, 'continue'), secretToken);
+    registry.begin(run(4, summaryKey, 'summary'), secretToken);
+    expect(registry.secretsOf(2)).toStrictEqual([]);
+
+    registry.update(4, 'token', resolved('synthetic-token-4', 4, true));
+    registry.clear();
+    expect(registry.secretsOf(4)).toStrictEqual([]);
+  });
+
   it('a run counts as started before clear when it began before, with or without captures', () => {
     const registry = new CaptureRegistry();
     registry.begin(run(1, startKey, 'startRun'), threadId);

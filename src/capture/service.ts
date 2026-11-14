@@ -461,14 +461,15 @@ export class CaptureService implements RunCaptures {
 
   private secretOf(wait: ResponseWait, producerId: number, text: string): boolean {
     const { registry, documentUri } = this.options;
-    return registry
-      .forRequest(namedRequestKey(documentUri, wait.requestName))
-      .some(
-        ({ secret, runId, result }) =>
-          secret &&
-          runId === producerId &&
-          (result.state === 'pending' || (result.state === 'resolved' && result.text === text)),
-      );
+    return (
+      sensitiveValuesIn(text, registry.secretsOf(producerId)).length > 0 ||
+      registry
+        .forRequest(namedRequestKey(documentUri, wait.requestName))
+        .some(
+          ({ secret, runId, result }) =>
+            secret && runId === producerId && result.state === 'pending',
+        )
+    );
   }
 
   private problem(wait: CaptureWait, message: string): ResolutionProblem {

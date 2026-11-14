@@ -43,7 +43,7 @@ import { startHttpServer, startHttpsServer, type LocalServer } from '../../suppo
 import { startStreamServer } from '../../support/stream-server';
 import { collect } from '../../support/memory';
 import { logRunEnd } from '../../../src/vscode/log';
-import { missingWorker } from '../capture/worker';
+import { missingWorker, useCaptureWorker } from '../capture/worker';
 import { waitFor } from '../transport/harness';
 import { dependencies, emptyVariables, runInput, useSpillArea, withObserver } from './support';
 
@@ -1665,6 +1665,7 @@ describe('waiting for captured values', () => {
     index: number,
     runs: (key: string) => RunHandle | undefined = () => undefined,
     variables: Partial<RunInput['variables']> = {},
+    workerFile = missingWorker,
   ): RunInput {
     const input = runInput(lines, { index, variables });
     return {
@@ -1676,7 +1677,7 @@ describe('waiting for captured values', () => {
         documentUri,
         file: input.file,
         request: input.request,
-        workerFile: missingWorker,
+        workerFile,
         runs,
       }),
     };
@@ -2423,6 +2424,129 @@ describe('waiting for captured values', () => {
       },
     ]);
     expect(registry.waitCount).toBe(0);
+  });
+
+  describe('a secret capture and the captures beside it in one run', () => {
+    const files = useCaptureWorker();
+    const loginKey = `${documentUri}\n@login`;
+    const token = 'synthetic-token-7f3a9c';
+    const data = { owner: 'synthetic-owner', token };
+    const body = JSON.stringify({ access_token: token, data });
+    const orders = ['the secret declared first', 'the secret declared last'] as const;
+
+    async function loggedIn(order: (typeof orders)[number]): Promise<{
+      registry: CaptureRegistry;
+      lines: string[];
+      login: RunHandle;
+    }> {
+      const api = await track(
+        startHttpServer((request, response) => {
+          response.writeHead(200, { 'Content-Type': 'application/json' });
+          response.end(request.url === '/login' ? body : 'ok');
+        }),
+      );
+      const secret = '# @capture secret token = body.access_token';
+      const siblings = ['# @capture profile = body', '# @capture data = body.data'];
+      const lines = [
+        '# @name login',
+        ...(order === orders[0] ? [secret, ...siblings] : [...siblings, secret]),
+        `POST ${api.url}/login`,
+        '',
+        '###',
+        '# @name continue',
+        `POST ${api.url}/continue`,
+        'X-Profile: {{profile}}',
+        'X-Data: {{login.response.body.$.data}}',
+      ];
+      const registry = new CaptureRegistry();
+      const login = startRun(capturing(registry, lines, 0), dependencies);
+      await login.done;
+      await waitFor(() =>
+        ['token', 'profile', 'data'].every(
+          (name) => registry.get(loginKey, name)?.result.state === 'resolved',
+        ),
+      );
+      return { registry, lines, login };
+    }
+
+    it.each(orders)(
+      'with %s, the token is masked in the hint, tooltip, strip, hover and completion of profile and data',
+      async (order) => {
+        const { registry, lines, login } = await loggedIn(order);
+        const posted: ToPanel[] = [];
+        const feed = new PanelFeed(login, {
+          readOnly: false,
+          streamView: 'events',
+          post: (message) => posted.push(message),
+          captures: registry,
+          timed: (work) => {
+            work();
+          },
+        });
+        feed.start();
+        const file = parseHttpFile(lines.join('\n'));
+        const sources: VariableSources = {
+          ...emptyVariables,
+          system: dependencies.system,
+          restricted: false,
+          captures: captureLookup(registry, documentUri, file, new Map()),
+        };
+        const completions = new Map(
+          captureCompletions(file, sources).map(({ label, detail }) => [label, detail]),
+        );
+        const strip = posted.find((message) => message.type === 'reset')?.captures ?? [];
+
+        for (const name of ['profile', 'data']) {
+          const hint = captureHint(registry.get(loginKey, name));
+          const hover = describeReference(file, name, sources);
+          const shown = {
+            hint: hint?.label,
+            tooltip: hint?.tooltip,
+            strip: strip.find((capture) => capture.name === name)?.text,
+            hover: hover.kind === 'value' ? hover.value : hover.kind,
+            completion: completions.get(name),
+            namedCompletion: completions.get(`login.${name}`),
+          };
+          for (const [where, text] of Object.entries(shown)) {
+            expect(text, `${name} ${where}`).toContain(maskedValue);
+            expect(text, `${name} ${where}`).not.toContain(token);
+          }
+        }
+        feed.pause();
+      },
+    );
+
+    it.each(orders)(
+      'with %s, a consumer that inserts {{profile}} or {{login.response.body.$.data}} logs the token masked',
+      async (order) => {
+        const { registry, lines, login } = await loggedIn(order);
+
+        const sent = await startRun(
+          capturing(
+            registry,
+            lines,
+            1,
+            (key) => (key === loginKey ? login : undefined),
+            {},
+            files().worker,
+          ),
+          dependencies,
+        ).done;
+        const logged: string[] = [];
+        const record = (line: string): void => {
+          logged.push(line);
+        };
+        logRunEnd({ info: record, warn: record, debug: record }, sent);
+
+        expect(sent.status).toBe('completed');
+        expect(sent.sent?.headers).toContainEqual(['X-Profile', body]);
+        expect(sent.sent?.headers).toContainEqual(['X-Data', JSON.stringify(data)]);
+        expect(logged.join('\n')).toContain(`X-Profile: {"access_token":"${maskedValue}"`);
+        expect(logged.join('\n')).toContain(`X-Data: ${maskedValue}`);
+        expect(logged.join('\n')).not.toContain(token);
+        expect(describeOutcome(sent)).not.toContain(token);
+      },
+    );
   });
 
   describe("masking by the producer's sensitive values", () => {
