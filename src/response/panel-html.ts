@@ -22,7 +22,7 @@ const panelContents: Record<PanelView, string> = {
   reply: '<pre id="reply"></pre><p id="reply-note" hidden></p>',
   raw: '<pre id="raw"></pre><p id="raw-note" hidden></p>',
   headers: '<pre id="headers"></pre>',
-  body: '<p id="body-note"></p><pre id="body"></pre>',
+  body: '<p id="body-note"></p><p id="capture-hint" hidden></p><pre id="body"></pre>',
   checks: '<p id="checks">No checks for this request.</p>',
 };
 
@@ -113,7 +113,7 @@ export function panelHtml(options: PanelHtmlOptions): string {
 <style nonce="${nonce}">${styles}</style>
 </head>
 <body>
-<header class="bar"><span class="pill" id="state"></span><span id="status"></span><button type="button" id="open" hidden>Open in Editor</button><button type="button" id="save" disabled>Save Response</button><button type="button" id="stop" disabled>Stop</button></header>
+<header class="bar"><span class="pill" id="state"></span><span id="status"></span><button type="button" id="open" hidden>Open in Editor</button><button type="button" id="capture" hidden>Capture This Value…</button><button type="button" id="save" disabled>Save Response</button><button type="button" id="stop" disabled>Stop</button></header>
 <p id="history-note" hidden></p>
 <div class="tabs" role="tablist" aria-label="Response views">${panelViews.map(tabButton).join('')}</div>
 <ul class="captures" id="captures" aria-label="Captured values" hidden></ul>

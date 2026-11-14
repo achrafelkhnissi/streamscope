@@ -15,6 +15,12 @@ export const stateLabels: Record<PanelRunState, string> = {
   blocked: 'Blocked',
 };
 
+export const eventCaptureHint =
+  'Click a value in the event first, or open the event in the editor and run Capture This Value there.';
+
+export const bodyCaptureHint =
+  'Click a value in the body first, or open the body in the editor and run Capture This Value there.';
+
 const units = ['KB', 'MB', 'GB'];
 
 function sizeText(bytes: number): string {

@@ -20,8 +20,10 @@ import {
   visibleViews,
 } from './panel-state';
 import {
+  bodyCaptureHint,
   bodyNote,
   captureText,
+  eventCaptureHint,
   historyNote,
   rawNote,
   replyNote,
@@ -61,6 +63,15 @@ interface Expanded {
   height: number;
 }
 
+interface Detail {
+  index: number;
+  pre: HTMLPreElement;
+  hint: HTMLParagraphElement;
+}
+
+type CaptureSpot =
+  { target: 'event'; index: number; offset: number } | { target: 'body'; offset: number };
+
 interface Reveal {
   index: number;
   align: 'start' | 'nearest';
@@ -87,6 +98,7 @@ const spacer = element('spacer', HTMLDivElement);
 const statePill = element('state', HTMLSpanElement);
 const statusText = element('status', HTMLSpanElement);
 const openButton = element('open', HTMLButtonElement);
+const captureButton = element('capture', HTMLButtonElement);
 const historyText = element('history-note', HTMLParagraphElement);
 const captureList = element('captures', HTMLUListElement);
 const stopButton = element('stop', HTMLButtonElement);
@@ -101,6 +113,7 @@ const rawGoneText = element('raw-note', HTMLParagraphElement);
 const headersText = element('headers', HTMLPreElement);
 const noteText = element('body-note', HTMLParagraphElement);
 const bodyText = element('body', HTMLPreElement);
+const captureHint = element('capture-hint', HTMLParagraphElement);
 const views = panelViews.map((name) => ({
   name,
   tab: element(`tab-${name}`, HTMLButtonElement),
@@ -119,6 +132,9 @@ let body: PanelBody = { kind: 'none' };
 let headers = '';
 let latestStatus: PanelStatus | undefined;
 let openTarget: 'body' | 'headers' | undefined;
+let detail: Detail | undefined;
+let eventSpot: CaptureSpot | undefined;
+let bodySpot: CaptureSpot | undefined;
 const rows = new Map<number, PanelRow>();
 const entries = new Map<number, RowEntry>();
 let shown = { first: 1, from: 1, to: 0 };
@@ -202,6 +218,12 @@ function updateOpenButton(): void {
     openTarget = undefined;
   }
   openButton.hidden = run === undefined || openTarget === undefined;
+  captureButton.hidden = !(
+    run !== undefined &&
+    view === 'body' &&
+    (body.kind === 'text' || body.kind === 'preview') &&
+    body.language === 'json'
+  );
 }
 
 function queueRender(): void {
@@ -280,6 +302,8 @@ function showBody(next: PanelBody): void {
   noteText.textContent = note;
   noteText.hidden = note === '';
   bodyText.textContent = next.kind === 'text' || next.kind === 'preview' ? next.text : '';
+  bodySpot = undefined;
+  captureHint.hidden = true;
   updateOpenButton();
 }
 
@@ -559,6 +583,8 @@ function select(index: number, tail: boolean): void {
 
 function closeDetail(): void {
   detailWanted = undefined;
+  detail = undefined;
+  eventSpot = undefined;
   if (expanded !== undefined) {
     sizes.unobserve(expanded.node);
     expanded.node.remove();
@@ -610,7 +636,14 @@ function showDetail(message: Extract<ToPanel, { type: 'detail' }>): void {
   open.addEventListener('click', () => {
     post({ type: 'openEvent', run: forRun, index });
   });
-  node.append(open);
+  const capture = document.createElement('button');
+  capture.type = 'button';
+  capture.textContent = 'Capture This Value…';
+  capture.addEventListener('click', captureEvent);
+  const hint = document.createElement('p');
+  hint.hidden = true;
+  node.append(open, capture, hint);
+  detail = { index, pre, hint };
   spacer.append(node);
   expanded = { index, node, height: node.offsetHeight };
   sizes.observe(node);
@@ -713,7 +746,82 @@ function receive(message: ToPanel): void {
     case 'expand':
       expand(message.index);
       return;
+    case 'captureSelection':
+      if (view === 'body') {
+        captureBody();
+      } else {
+        captureEvent();
+      }
+      return;
   }
+}
+
+function textOffset(pre: HTMLPreElement, node: Node, offset: number): number | undefined {
+  if (node === pre.firstChild && node.nodeType === Node.TEXT_NODE) {
+    return offset;
+  }
+  if (node === pre) {
+    return offset === 0 ? 0 : pre.textContent.length;
+  }
+  return undefined;
+}
+
+function recordSelection(): void {
+  const current = document.getSelection();
+  if (current === null || current.rangeCount === 0) {
+    return;
+  }
+  const range = current.getRangeAt(0);
+  const { startContainer, startOffset } = range;
+  if (detail !== undefined && detail.pre.contains(startContainer)) {
+    const offset = textOffset(detail.pre, startContainer, startOffset);
+    if (offset !== undefined) {
+      eventSpot = { target: 'event', index: detail.index, offset };
+    }
+  } else if (bodyText.contains(startContainer)) {
+    const offset = textOffset(bodyText, startContainer, startOffset);
+    if (offset !== undefined) {
+      bodySpot = { target: 'body', offset };
+    }
+  }
+}
+
+function showHint(node: HTMLParagraphElement | undefined, text: string): void {
+  if (node !== undefined) {
+    node.textContent = text;
+    node.hidden = false;
+  }
+  announce(text);
+}
+
+function captureEvent(): void {
+  if (run === undefined) {
+    return;
+  }
+  if (eventSpot?.target === 'event' && eventSpot.index === detail?.index) {
+    detail.hint.hidden = true;
+    post({
+      type: 'capture',
+      run,
+      target: 'event',
+      index: eventSpot.index,
+      offset: eventSpot.offset,
+    });
+    return;
+  }
+  showHint(detail?.hint, eventCaptureHint);
+}
+
+function captureBody(): void {
+  if (run === undefined) {
+    return;
+  }
+  if (bodySpot?.target === 'body' && !captureButton.hidden) {
+    captureHint.hidden = true;
+    post({ type: 'capture', run, target: 'body', offset: bodySpot.offset });
+    return;
+  }
+  showHint(captureHint, bodyCaptureHint);
 }
 
 list.addEventListener('scroll', () => {
@@ -810,6 +918,10 @@ openButton.addEventListener('click', () => {
     post({ type: 'open', run, target: openTarget });
   }
 });
+
+captureButton.addEventListener('click', captureBody);
+
+document.addEventListener('selectionchange', recordSelection);
 
 window.addEventListener('message', (event: MessageEvent<ToPanel>) => {
   receive(event.data);
