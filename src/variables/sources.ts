@@ -22,12 +22,14 @@ export type CaptureLookupResult =
 export interface CaptureLookup {
   request(requestName: string, captureName: string): CaptureLookupResult | undefined;
   bare(captureName: string): CaptureLookupResult | undefined;
+  elsewhere(captureName: string): CaptureLookupResult | undefined;
   response(requestName: string, reference: string): CaptureLookupResult | undefined;
 }
 
 export const emptyCaptureLookup: CaptureLookup = {
   request: () => undefined,
   bare: () => undefined,
+  elsewhere: () => undefined,
   response: (requestName) => ({ kind: 'not-run', label: requestName, producerName: requestName }),
 };
 

@@ -5,6 +5,7 @@ import { CaptureRegistry } from '../../../src/capture/registry';
 import type { CaptureResult } from '../../../src/capture/tracker';
 import { parseHttpFile } from '../../../src/http-file/parse';
 import { requestKey } from '../../../src/runs/run';
+import { sourced, testSources } from '../variables/sources';
 
 const time = new Date(2026, 10, 13, 10, 20, 30).getTime();
 
@@ -50,15 +51,18 @@ describe('captureCompletions', () => {
   it("offers request.name and bare names for the file's captures, before other variables", () => {
     const registry = new CaptureRegistry();
 
-    expect(captureCompletions(file, captureLookup(registry, documentUri, file, new Map()))).toEqual(
-      [
-        { label: 'startRun.threadId', detail: 'startRun › threadId · not run yet' },
-        { label: 'threadId', detail: 'startRun › threadId · not run yet' },
-        { label: 'startRun.sessionToken', detail: 'startRun › sessionToken · not run yet' },
-        { label: 'sessionToken', detail: 'startRun › sessionToken · not run yet' },
-        { label: 'summary', detail: 'Summarise › summary · not run yet' },
-      ],
-    );
+    expect(
+      captureCompletions(
+        file,
+        testSources({ captures: captureLookup(registry, documentUri, file, new Map()) }),
+      ),
+    ).toEqual([
+      { label: 'startRun.threadId', detail: 'startRun › threadId · not run yet' },
+      { label: 'threadId', detail: 'startRun › threadId · not run yet' },
+      { label: 'startRun.sessionToken', detail: 'startRun › sessionToken · not run yet' },
+      { label: 'sessionToken', detail: 'startRun › sessionToken · not run yet' },
+      { label: 'summary', detail: 'Summarise › summary · not run yet' },
+    ]);
   });
 
   it('details show each capture state, masked when secret, never the secret value', () => {
@@ -68,7 +72,7 @@ describe('captureCompletions', () => {
     registry.update(3, 'sessionToken', resolved('synthetic-session', true));
     const lookup = captureLookup(registry, documentUri, file, new Map());
 
-    const resolvedItems = captureCompletions(file, lookup);
+    const resolvedItems = captureCompletions(file, testSources({ captures: lookup }));
     expect(resolvedItems.slice(0, 4)).toEqual([
       { label: 'startRun.threadId', detail: 'startRun › threadId = thread-1' },
       { label: 'threadId', detail: 'startRun › threadId = thread-1' },
@@ -82,7 +86,7 @@ describe('captureCompletions', () => {
       definitions,
     );
     registry.update(4, 'sessionToken', { state: 'failed', reason: 'the response has no headers' });
-    expect(captureCompletions(file, lookup).slice(0, 4)).toEqual([
+    expect(captureCompletions(file, testSources({ captures: lookup })).slice(0, 4)).toEqual([
       { label: 'startRun.threadId', detail: 'startRun › threadId …' },
       { label: 'threadId', detail: 'startRun › threadId …' },
       {
@@ -96,13 +100,62 @@ describe('captureCompletions', () => {
     ]);
   });
 
+  it('a bare name completes as a capture only when sending would read that capture', () => {
+    const seeded = parseHttpFile(
+      [
+        '@cursor = start',
+        '',
+        '# @name page',
+        '# @capture cursor = body.next',
+        '# @capture tenant = body.tenant',
+        'GET https://api.example.test/items?cursor={{',
+      ].join('\n'),
+    );
+    const names = [
+      { name: 'cursor', secret: false },
+      { name: 'tenant', secret: false },
+    ];
+    const registry = new CaptureRegistry();
+    registry.begin(
+      { id: 8, key: 'file:///other.http\n@seed', label: 'seed', startedAt: time },
+      names,
+    );
+    registry.update(8, 'cursor', resolved('cursor-other'));
+    registry.update(8, 'tenant', resolved('tenant-other'));
+    const bare = (environment: Record<string, string> = {}) =>
+      captureCompletions(
+        seeded,
+        testSources({
+          environment: sourced(environment, 'dev environment (settings)'),
+          captures: captureLookup(registry, documentUri, seeded, new Map()),
+        }),
+      ).filter(({ label }) => !label.includes('.'));
+
+    expect(bare()).toEqual([{ label: 'tenant', detail: 'seed › tenant = tenant-other' }]);
+    expect(bare({ tenant: 'tenant-env' })).toEqual([]);
+
+    registry.begin(
+      { id: 9, key: `${documentUri}\n@page`, label: 'page', startedAt: time + 1 },
+      names,
+    );
+    registry.update(9, 'cursor', resolved('cursor-2'));
+
+    expect(bare({ tenant: 'tenant-env' })).toEqual([
+      { label: 'cursor', detail: 'page › cursor = cursor-2' },
+      { label: 'tenant', detail: 'page › tenant …' },
+    ]);
+  });
+
   it('cuts a long value in a detail at 60 characters', () => {
     const registry = new CaptureRegistry();
     registry.begin({ id: 5, key: startRunKey, label: 'startRun', startedAt: time }, definitions);
     registry.update(5, 'threadId', resolved('t'.repeat(1_048_576)));
 
     expect(
-      captureCompletions(file, captureLookup(registry, documentUri, file, new Map()))[0],
+      captureCompletions(
+        file,
+        testSources({ captures: captureLookup(registry, documentUri, file, new Map()) }),
+      )[0],
     ).toEqual({
       label: 'startRun.threadId',
       detail: `startRun › threadId = ${'t'.repeat(59)}…`,

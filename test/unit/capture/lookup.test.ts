@@ -115,44 +115,54 @@ describe('captureLookup', () => {
     const lookup = lookupOf(registry);
 
     expect(lookup.request('startRun', 'threadId')).toBeUndefined();
-    expect(lookup.bare('threadId')).toEqual({
+    expect(lookup.bare('threadId')).toBeUndefined();
+    expect(lookup.elsewhere('threadId')).toEqual({
       kind: 'not-run',
       label: 'startRun',
       producerName: 'startRun',
     });
   });
 
-  it('a bare name reads the capture whose run started most recently, in any document', () => {
+  it("a bare name reads this document's newest capture, and elsewhere reads the newest of other documents", () => {
     const registry = new CaptureRegistry();
+    const threadOnly = [{ name: 'threadId', secret: false }];
     registry.begin({ id: 7, key: startKey, label: 'startRun', startedAt: 10 }, declared);
     registry.update(7, 'threadId', resolved('thread-1', 7));
     registry.begin(
       { id: 8, key: 'file:///other.http\n@restart', label: 'restart', startedAt: 20 },
-      [{ name: 'threadId', secret: false }],
+      threadOnly,
     );
     registry.update(8, 'threadId', resolved('thread-2', 8));
+    const lookup = lookupOf(registry);
 
-    expect(lookupOf(registry).bare('threadId')).toMatchObject({
-      kind: 'value',
-      text: 'thread-2',
-      label: 'restart',
-    });
+    expect(lookup.bare('threadId')).toMatchObject({ kind: 'value', text: 'thread-1' });
+    expect(lookup.elsewhere('threadId')).toMatchObject({ kind: 'value', text: 'thread-2' });
+
+    registry.begin(
+      { id: 9, key: 'file:///agent.http\n@again', label: 'again', startedAt: 30 },
+      threadOnly,
+    );
+    registry.update(9, 'threadId', resolved('thread-3', 9));
+
+    expect(lookup.bare('threadId')).toMatchObject({ kind: 'value', text: 'thread-3' });
+    expect(lookup.elsewhere('threadId')).toMatchObject({ kind: 'value', text: 'thread-2' });
   });
 
   it('a bare name nobody captured yet comes from the first request in this file that declares it', () => {
     const lookup = lookupOf(new CaptureRegistry());
 
-    expect(lookup.bare('threadId')).toEqual({
+    expect(lookup.bare('threadId')).toBeUndefined();
+    expect(lookup.elsewhere('threadId')).toEqual({
       kind: 'not-run',
       label: 'startRun',
       producerName: 'startRun',
     });
-    expect(lookup.bare('note')).toEqual({
+    expect(lookup.elsewhere('note')).toEqual({
       kind: 'not-run',
       label: 'Summarise',
       producerName: 'file:///agent.http\n#1 POST https://api.example.test/agent/summary',
     });
-    expect(lookup.bare('summary')).toEqual({
+    expect(lookup.elsewhere('summary')).toEqual({
       kind: 'not-run',
       label: 'POST https://••••••@api.example.test/agent/summary',
       producerName:
@@ -171,7 +181,7 @@ describe('captureLookup', () => {
     expect(lookup.request('startRun', 'threadId')).toMatchObject({ kind: 'pending' });
     for (const [index, producer] of [summarise, untitled].entries()) {
       const name = producer.captures[0]?.name ?? '';
-      expect(lookup.bare(name)).toMatchObject({
+      expect(lookup.elsewhere(name)).toMatchObject({
         label: requestLabel(producer),
         producerName: requestKey(documentUri, producer, index + 1),
       });
@@ -179,7 +189,10 @@ describe('captureLookup', () => {
   });
 
   it('a name no request declares and nobody captured is not a capture', () => {
-    expect(lookupOf(new CaptureRegistry()).bare('cursor')).toBeUndefined();
+    const lookup = lookupOf(new CaptureRegistry());
+
+    expect(lookup.bare('cursor')).toBeUndefined();
+    expect(lookup.elsewhere('cursor')).toBeUndefined();
   });
 
   it('response references read the evaluated results and wait for the rest', () => {

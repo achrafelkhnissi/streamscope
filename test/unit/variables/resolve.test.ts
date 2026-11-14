@@ -451,7 +451,9 @@ describe('resolveRequest with captures', () => {
     const bare = followUp(
       {
         captures: inMemoryCaptures({
-          bare: { threadId: { kind: 'not-run', label: 'startRun', producerName: 'startRun' } },
+          elsewhere: {
+            threadId: { kind: 'not-run', label: 'startRun', producerName: 'startRun' },
+          },
         }),
       },
       'GET https://api.example.test/threads/{{threadId}}',

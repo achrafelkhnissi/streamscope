@@ -10,7 +10,7 @@ import type { ResponseHead } from '../transport/model';
 import { responseSelector } from '../variables/references';
 import { waitKey, type CaptureWait, type ResolutionProblem } from '../variables/resolve';
 import type { CaptureLookup, CaptureLookupResult } from '../variables/sources';
-import { captureLookup, lookupResult, namedRequestKey, responseKey } from './lookup';
+import { captureLookup, inDocument, lookupResult, namedRequestKey, responseKey } from './lookup';
 import {
   captureFailedMessage,
   ownCaptureReason,
@@ -172,9 +172,11 @@ function within<T>(
 export class CaptureService implements RunCaptures {
   readonly lookup: CaptureLookup;
   private readonly definitions: readonly CaptureDefinition[];
+  private readonly names: ReadonlySet<string>;
   private readonly responses = new Map<string, CaptureLookupResult>();
   private readonly previous = new Map<string, CaptureEntry>();
   private key: string | undefined;
+  private label: string | undefined;
 
   constructor(private readonly options: CaptureServiceOptions) {
     this.definitions = options.request.captures.flatMap(
@@ -190,15 +192,22 @@ export class CaptureService implements RunCaptures {
               },
             ],
     );
+    this.names = new Set(this.definitions.map((definition) => definition.name));
     const base = captureLookup(options.registry, options.documentUri, options.file, this.responses);
+    const local = inDocument(options.documentUri);
     this.lookup = {
       request: (requestName, captureName) => {
         const result = base.request(requestName, captureName);
         return this.isOwn(result) ? this.previousValue(result.label, captureName) : result;
       },
-      bare: (captureName) => {
-        const result = base.bare(captureName);
-        return this.isOwn(result) ? this.newerValue(result.label, captureName) : result;
+      bare: (captureName) => this.newestInDocument(captureName, local),
+      elsewhere: (captureName) => {
+        const result = base.elsewhere(captureName);
+        return this.label !== undefined &&
+          this.names.has(captureName) &&
+          (result === undefined || result.kind === 'not-run')
+          ? { kind: 'failed', message: ownCaptureReason(this.label, captureName) }
+          : result;
       },
       response: (requestName, reference) => base.response(requestName, reference),
     };
@@ -206,10 +215,10 @@ export class CaptureService implements RunCaptures {
 
   begin(run: { id: number; key: string; label: string; startedAt: number }): void {
     const { registry } = this.options;
-    const names = new Set(this.definitions.map((definition) => definition.name));
     this.key = run.key;
+    this.label = run.label;
     for (const entry of registry.forRequest(run.key)) {
-      if (entry.result.state !== 'pending' && names.has(entry.name)) {
+      if (entry.result.state !== 'pending' && this.names.has(entry.name)) {
         this.previous.set(entry.name, entry);
       }
     }
@@ -331,13 +340,20 @@ export class CaptureService implements RunCaptures {
       : lookupResult(previous);
   }
 
-  private newerValue(label: string, name: string): CaptureLookupResult {
-    const other = this.options.registry.latest(name, this.key);
+  private newestInDocument(
+    name: string,
+    local: (request: string) => boolean,
+  ): CaptureLookupResult | undefined {
+    const other = this.options.registry.latest(
+      name,
+      (request) => request !== this.key && local(request),
+    );
     const previous = this.previous.get(name);
-    if (other === undefined || (previous !== undefined && startedLater(previous, other))) {
-      return this.previousValue(label, name);
-    }
-    return lookupResult(other);
+    const newest =
+      previous !== undefined && (other === undefined || startedLater(previous, other))
+        ? previous
+        : other;
+    return newest === undefined ? undefined : lookupResult(newest);
   }
 
   private answer(wait: ResponseWait, result: CaptureLookupResult | undefined): void {

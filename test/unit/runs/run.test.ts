@@ -1866,6 +1866,37 @@ describe('waiting for captured values', () => {
     });
   });
 
+  it('a file variable seeds a request that captures the name it consumes, then the capture takes over', async () => {
+    let pages = 0;
+    const api = await track(
+      startHttpServer((_request, response) => {
+        pages += 1;
+        response.writeHead(200, { 'Content-Type': 'application/json' });
+        response.end(JSON.stringify({ next: `page-${String(pages + 1)}` }));
+      }),
+    );
+    const registry = new CaptureRegistry();
+    const pageKey = `${documentUri}\n@page`;
+    const lines = [
+      '@cursor = start',
+      '',
+      '# @name page',
+      '# @capture cursor = body.next',
+      `GET ${api.url}/items?cursor={{cursor}}`,
+    ];
+
+    const first = await startRun(capturing(registry, lines, 0), dependencies).done;
+    expect(first.problems).toEqual([]);
+    await waitFor(() => registry.get(pageKey, 'cursor')?.result.state === 'resolved');
+    const second = await startRun(capturing(registry, lines, 0), dependencies).done;
+
+    expect(second.problems).toEqual([]);
+    expect(api.requests.map((request) => request.url)).toEqual([
+      '/items?cursor=start',
+      '/items?cursor=page-2',
+    ]);
+  });
+
   it('a request that consumes its own capture with no previous value is refused at once', async () => {
     const lines = [
       '# @name items',
@@ -2783,7 +2814,7 @@ describe('waiting for captured values', () => {
           captures: lookup,
         };
         const completions = new Map(
-          captureCompletions(file, lookup).map(({ label, detail }) => [label, detail]),
+          captureCompletions(file, sources).map(({ label, detail }) => [label, detail]),
         );
         const sent = await startRun(
           capturing(registry, lines, 1, (key) => (key === loginKey ? login : undefined)),

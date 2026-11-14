@@ -397,6 +397,31 @@ describe('captures in the editor', () => {
     assert.ok(labels.includes('threadId'), labels.join(', '));
   });
 
+  it('a bare name a file variable seeds completes and hovers as that file variable while its capture has no value', async () => {
+    const document = await open('seeded.http', [
+      '@cursor = start',
+      '',
+      '# @name page',
+      '# @capture cursor = body.next',
+      'GET https://api.example.test/items?cursor={{cursor}}',
+      'X-Next: {{',
+    ]);
+
+    const list = await vscode.commands.executeCommand<vscode.CompletionList>(
+      'vscode.executeCompletionItemProvider',
+      document.uri,
+      new vscode.Position(5, document.lineAt(5).text.length),
+      '{',
+    );
+    const cursor = list.items.find(
+      (item) => (typeof item.label === 'string' ? item.label : item.label.label) === 'cursor',
+    );
+    const text = await hoverText(document, 4, '{{cursor}}');
+
+    assert.equal(cursor?.detail, 'file variable');
+    assert.equal(text, '{{cursor}} = start\n\nfile variable');
+  });
+
   it('hovering a response reference still says its producer has not run', async () => {
     const document = await open('response-hover.http', [
       '# @name login',

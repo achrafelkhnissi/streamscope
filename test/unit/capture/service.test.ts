@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { captureLookup } from '../../../src/capture/lookup';
 import { CaptureRegistry } from '../../../src/capture/registry';
 import { CaptureService, type ProducerRun } from '../../../src/capture/service';
 import type { CaptureResult } from '../../../src/capture/tracker';
@@ -6,9 +7,10 @@ import { parseHttpFile } from '../../../src/http-file/parse';
 import type { HttpFile } from '../../../src/http-file/model';
 import { requestKey } from '../../../src/runs/run';
 import type { ResponseHead } from '../../../src/transport/model';
-import { describeReference } from '../../../src/variables/inspect';
-import type { CaptureWait } from '../../../src/variables/resolve';
-import { testSources } from '../variables/sources';
+import { describeReference, variableDiagnostics } from '../../../src/variables/inspect';
+import { resolveRequest, type CaptureWait, type Resolution } from '../../../src/variables/resolve';
+import type { VariableSources } from '../../../src/variables/sources';
+import { sourced, testSources } from '../variables/sources';
 import { expectNoChild, missingWorker, useCaptureWorker } from './worker';
 
 const documentUri = 'file:///agent.http';
@@ -272,7 +274,8 @@ describe('CaptureService', () => {
     const first = service(registry, 1);
     first.begin({ id: 11, key: continueKey, label: 'continue', startedAt: 11 });
 
-    expect(first.lookup.bare('threadId')).toEqual({
+    expect(first.lookup.bare('threadId')).toBeUndefined();
+    expect(first.lookup.elsewhere('threadId')).toEqual({
       kind: 'failed',
       message: 'continue cannot use its own capture threadId.',
     });
@@ -336,10 +339,12 @@ describe('CaptureService', () => {
     const captures = service(registry, 1, () => producer);
     captures.begin({ id: 15, key: continueKey, label: 'continue', startedAt: 15 });
     await captures.wait([sessionWait], 15, { timeoutMs: 30_000, signal: signal() });
+    expect(captures.lookup.bare('threadId')).toMatchObject({ kind: 'value', text: 'thread-1' });
 
     captures.observer({ id: 15, label: 'continue', wallStartedAt: 0, sensitiveValues: [] });
 
-    expect(captures.lookup.bare('threadId')).toMatchObject({ kind: 'failed' });
+    expect(captures.lookup.bare('threadId')).toBeUndefined();
+    expect(captures.lookup.elsewhere('threadId')).toMatchObject({ kind: 'failed' });
     expect(captures.lookup.response('startRun', 'response.headers.X-Session')).toBeUndefined();
   });
 
@@ -758,5 +763,173 @@ describe('response references and secrets', () => {
 
     await expectNoChild();
     expect(captures.lookup.response('startRun', 'response.body.$.token')).toBeUndefined();
+  });
+});
+
+describe('the order of a bare name', () => {
+  const apiUri = 'file:///api.http';
+  const otherKey = 'file:///other.http\n@seed';
+  const apiLines = [
+    '@baseUrl = https://api.example.test',
+    '',
+    '###',
+    '# @name me',
+    'GET {{baseUrl}}/me',
+    'Authorization: Bearer {{$secret token}}',
+  ];
+
+  function seed(registry: CaptureRegistry, name: string, id = 90): void {
+    registry.begin({ id, key: otherKey, label: 'seed', startedAt: id }, [{ name, secret: false }]);
+  }
+
+  function resolveIn(
+    registry: CaptureRegistry,
+    lines: string[],
+    sources: Partial<VariableSources> = {},
+  ): Resolution {
+    const parsed = parseHttpFile(lines.join('\n'));
+    const index = parsed.requests.length - 1;
+    const request = parsed.requests[index];
+    if (!request) {
+      throw new Error('expected a request');
+    }
+    const captures = new CaptureService({
+      registry,
+      documentUri: apiUri,
+      file: parsed,
+      request,
+      workerFile: missingWorker,
+      runs: () => undefined,
+    });
+    captures.begin({
+      id: 100,
+      key: requestKey(apiUri, request, index),
+      label: request.name ?? 'request',
+      startedAt: 100,
+    });
+    return resolveRequest(parsed, request, testSources({ ...sources, captures: captures.lookup }));
+  }
+
+  it("another document's capture neither replaces a file variable nor is waited on while pending", () => {
+    const registry = new CaptureRegistry();
+    const secrets = new Map([['token', 'synthetic-token-55aa']]);
+    seed(registry, 'baseUrl');
+
+    const pending = resolveIn(registry, apiLines, { secrets });
+    registry.update(90, 'baseUrl', resolved('https://attacker.invalid/collect', 90));
+    const replaced = resolveIn(registry, apiLines, { secrets });
+
+    for (const resolution of [replaced, pending]) {
+      expect(resolution).toMatchObject({
+        ok: true,
+        request: {
+          url: 'https://api.example.test/me',
+          headers: [{ name: 'Authorization', value: 'Bearer synthetic-token-55aa' }],
+        },
+      });
+    }
+  });
+
+  it("another document's capture still applies when nothing else defines the name", () => {
+    const registry = new CaptureRegistry();
+    seed(registry, 'tenant');
+    const lines = ['GET https://api.example.test/me?tenant={{tenant}}'];
+
+    expect(resolveIn(registry, lines)).toEqual({
+      ok: false,
+      problems: [],
+      waits: [{ kind: 'capture', request: otherKey, name: 'tenant', label: 'seed' }],
+    });
+    registry.update(90, 'tenant', resolved('tenant-other', 90));
+    expect(resolveIn(registry, lines)).toMatchObject({
+      ok: true,
+      request: { url: 'https://api.example.test/me?tenant=tenant-other' },
+    });
+  });
+
+  it('a producer in this document that never ran gives way to an environment value', () => {
+    const lines = [
+      '# @name login',
+      '# @capture tenant = body.tenant',
+      'POST https://api.example.test/login',
+      '',
+      '###',
+      '# @name me',
+      'GET https://api.example.test/me?tenant={{tenant}}',
+    ];
+
+    expect(
+      resolveIn(new CaptureRegistry(), lines, {
+        environmentName: 'dev',
+        environment: sourced({ tenant: 'tenant-env' }, 'dev environment (settings)'),
+      }),
+    ).toMatchObject({
+      ok: true,
+      request: { url: 'https://api.example.test/me?tenant=tenant-env' },
+    });
+  });
+
+  it('a pending capture in this document is waited on even when a file variable has its name', () => {
+    const registry = new CaptureRegistry();
+    const lines = [
+      '@tenant = tenant-file',
+      '',
+      '# @name login',
+      '# @capture tenant = body.tenant',
+      'POST https://api.example.test/login',
+      '',
+      '###',
+      '# @name me',
+      'GET https://api.example.test/me?tenant={{tenant}}',
+    ];
+    const loginKey = `${apiUri}\n@login`;
+    registry.begin({ id: 95, key: loginKey, label: 'login', startedAt: 95 }, [
+      { name: 'tenant', secret: false },
+    ]);
+
+    expect(resolveIn(registry, lines)).toEqual({
+      ok: false,
+      problems: [],
+      waits: [{ kind: 'capture', request: loginKey, name: 'tenant', label: 'login' }],
+    });
+    registry.update(95, 'tenant', resolved('tenant-captured', 95));
+    expect(resolveIn(registry, lines)).toMatchObject({
+      ok: true,
+      request: { url: 'https://api.example.test/me?tenant=tenant-captured' },
+    });
+  });
+
+  it("a hover on {{baseUrl}} shows the file variable that sending uses, not another document's capture", () => {
+    const registry = new CaptureRegistry();
+    seed(registry, 'baseUrl');
+    registry.update(90, 'baseUrl', resolved('https://attacker.invalid/collect', 90));
+    const parsed = parseHttpFile(apiLines.join('\n'));
+
+    expect(
+      describeReference(
+        parsed,
+        'baseUrl',
+        testSources({ captures: captureLookup(registry, apiUri, parsed, new Map()) }),
+      ),
+    ).toEqual({
+      kind: 'value',
+      value: 'https://api.example.test',
+      origin: 'file variable',
+      sensitive: false,
+    });
+  });
+
+  it('a name only another document captures is not reported as undefined', () => {
+    const registry = new CaptureRegistry();
+    seed(registry, 'tenant');
+    registry.update(90, 'tenant', resolved('tenant-other', 90));
+    const parsed = parseHttpFile('GET https://api.example.test/me?tenant={{tenant}}');
+
+    expect(
+      variableDiagnostics(
+        parsed,
+        testSources({ captures: captureLookup(registry, apiUri, parsed, new Map()) }),
+      ),
+    ).toEqual([]);
   });
 });

@@ -234,7 +234,10 @@ class Scope implements VariableScope {
     if (shared) {
       return this.sourcedVariable(expression, shared, 'shared', stack);
     }
-    return failure(expression, this.undefinedMessage(expression));
+    const elsewhere = this.sources.captures.elsewhere(expression);
+    return elsewhere === undefined
+      ? failure(expression, this.undefinedMessage(expression))
+      : this.captured(expression, expression, elsewhere);
   }
 
   private captured(expression: string, name: string, result: CaptureLookupResult): Evaluated {

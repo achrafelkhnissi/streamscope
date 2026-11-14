@@ -16,14 +16,17 @@ export function sourced(
 export function inMemoryCaptures(results: {
   requests?: Record<string, CaptureLookupResult>;
   bare?: Record<string, CaptureLookupResult>;
+  elsewhere?: Record<string, CaptureLookupResult>;
   responses?: Record<string, CaptureLookupResult>;
 }): CaptureLookup {
   const requests = new Map(Object.entries(results.requests ?? {}));
   const bare = new Map(Object.entries(results.bare ?? {}));
+  const elsewhere = new Map(Object.entries(results.elsewhere ?? {}));
   const responses = new Map(Object.entries(results.responses ?? {}));
   return {
     request: (requestName, captureName) => requests.get(`${requestName}.${captureName}`),
     bare: (captureName) => bare.get(captureName),
+    elsewhere: (captureName) => elsewhere.get(captureName),
     response: (requestName, reference) => responses.get(`${requestName}.${reference}`),
   };
 }

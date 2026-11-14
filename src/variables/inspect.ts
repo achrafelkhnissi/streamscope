@@ -160,7 +160,8 @@ function definedName(file: HttpFile, name: string, sources: VariableSources): bo
     sources.environment.has(name) ||
     sources.shared.has(name) ||
     declaredNames(file).captures.has(name) ||
-    sources.captures.bare(name) !== undefined
+    sources.captures.bare(name) !== undefined ||
+    sources.captures.elsewhere(name) !== undefined
   );
 }
 

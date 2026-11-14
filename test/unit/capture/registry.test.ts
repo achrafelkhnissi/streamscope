@@ -39,6 +39,7 @@ function failed(reason: string): CaptureResult {
 const pending: CaptureResult = { state: 'pending' };
 const threadId = [{ name: 'threadId', secret: false }];
 const messageId = [{ name: 'messageId', secret: false }];
+const everyRequest = (): boolean => true;
 const thirtySeconds = { timeoutMs: 30_000 };
 
 function waitOptions(signal = new AbortController().signal): {
@@ -125,7 +126,7 @@ describe('CaptureRegistry', () => {
 
     expect(registry.forRequest(startKey)).toStrictEqual([]);
     expect(registry.get(startKey, 'threadId')).toBeUndefined();
-    expect(registry.latest('threadId')).toBeUndefined();
+    expect(registry.latest('threadId', everyRequest)).toBeUndefined();
     expect(registry.size).toBe(0);
   });
 
@@ -134,7 +135,7 @@ describe('CaptureRegistry', () => {
 
     expect(registry.get(startKey, 'threadId')).toBeUndefined();
     expect(registry.forRequest(startKey)).toStrictEqual([]);
-    expect(registry.latest('threadId')).toBeUndefined();
+    expect(registry.latest('threadId', everyRequest)).toBeUndefined();
   });
 
   it('latest(name) is the capture whose run started last', () => {
@@ -144,32 +145,43 @@ describe('CaptureRegistry', () => {
     registry.update(1, 'threadId', resolved('thread-1', 1));
     registry.update(2, 'threadId', resolved('thread-2', 2));
 
-    expect(registry.latest('threadId')).toMatchObject({ runId: 1, request: startKey });
+    expect(registry.latest('threadId', everyRequest)).toMatchObject({
+      runId: 1,
+      request: startKey,
+    });
 
     registry.begin(run(3, continueKey, 'continue', 400), threadId);
-    expect(registry.latest('threadId')).toMatchObject({
+    expect(registry.latest('threadId', everyRequest)).toMatchObject({
       runId: 3,
       request: continueKey,
       result: pending,
     });
 
     registry.begin(run(4, continueKey, 'continue', 500), messageId);
-    expect(registry.latest('threadId')).toMatchObject({ runId: 1, request: startKey });
-    expect(registry.latest('messageId')).toMatchObject({ runId: 4, request: continueKey });
+    expect(registry.latest('threadId', everyRequest)).toMatchObject({
+      runId: 1,
+      request: startKey,
+    });
+    expect(registry.latest('messageId', everyRequest)).toMatchObject({
+      runId: 4,
+      request: continueKey,
+    });
   });
 
-  it('latest(name, except) leaves out one request', () => {
+  it('latest(name, include) leaves out the requests include rejects', () => {
     const registry = new CaptureRegistry();
     registry.begin(run(1, startKey, 'startRun', 100), threadId);
     registry.begin(run(2, summaryKey, 'summary', 200), threadId);
     registry.begin(run(3, continueKey, 'continue', 300), threadId);
 
-    expect(registry.latest('threadId', continueKey)).toMatchObject({
+    expect(registry.latest('threadId', (request) => request !== continueKey)).toMatchObject({
       runId: 2,
       request: summaryKey,
     });
-    expect(registry.latest('threadId', summaryKey)).toMatchObject({ runId: 3 });
-    expect(registry.latest('messageId', continueKey)).toBeUndefined();
+    expect(registry.latest('threadId', (request) => request !== summaryKey)).toMatchObject({
+      runId: 3,
+    });
+    expect(registry.latest('messageId', (request) => request !== continueKey)).toBeUndefined();
   });
 
   it('an update from a superseded run is ignored', () => {
@@ -456,7 +468,7 @@ describe('CaptureRegistry', () => {
 
     expect(registry.size).toBe(2);
     expect(registry.forRequest(startKey)).toStrictEqual([]);
-    expect(registry.latest('threadId')).toMatchObject({ runId: 3 });
+    expect(registry.latest('threadId', everyRequest)).toMatchObject({ runId: 3 });
   });
 
   it('tells listeners about each reset and update, and the returned function removes one', () => {

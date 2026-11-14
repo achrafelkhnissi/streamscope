@@ -201,7 +201,7 @@ export function registerVariableFeatures(
             const sources = await variables.sourcesFor(document);
             const completions = new Map<string, string>();
             for (const { label, detail } of [
-              ...captureCompletions(file, sources.captures),
+              ...captureCompletions(file, sources),
               ...variableCompletions(file, sources),
             ]) {
               if (!completions.has(label)) {

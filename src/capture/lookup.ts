@@ -19,6 +19,11 @@ export function responseKey(requestName: string, reference: string): string {
   return `${requestName}\n${reference}`;
 }
 
+export function inDocument(documentUri: string): (request: string) => boolean {
+  const prefix = `${documentUri}\n`;
+  return (request) => request.startsWith(prefix);
+}
+
 function producerIdentity(documentUri: string, { request, index }: Producer): string {
   const { method, url } = request.requestLine;
   return request.name ?? `${documentUri}\n#${String(index)} ${method.toUpperCase()} ${url}`;
@@ -74,13 +79,18 @@ export function captureLookup(
   file: HttpFile,
   responses: ReadonlyMap<string, CaptureLookupResult>,
 ): CaptureLookup {
+  const local = inDocument(documentUri);
   return {
     request: (requestName, captureName) => {
       const entry = registry.get(namedRequestKey(documentUri, requestName), captureName);
       return entry === undefined ? undefined : lookupResult(entry);
     },
     bare: (captureName) => {
-      const entry = registry.latest(captureName);
+      const entry = registry.latest(captureName, local);
+      return entry === undefined ? undefined : lookupResult(entry);
+    },
+    elsewhere: (captureName) => {
+      const entry = registry.latest(captureName, (request) => !local(request));
       if (entry !== undefined) {
         return lookupResult(entry);
       }

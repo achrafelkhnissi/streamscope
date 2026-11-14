@@ -78,7 +78,7 @@ JavaScript scripts, GraphQL helpers, WebSocket and gRPC, cURL import and export,
 ### Capture
 
 - **FR-C1** `# @capture [secret] name = expression` on the producing request (grammar in section 10).
-- **FR-C2** `{{request.name}}` reads a capture of a specific request; `{{name}}` reads the most recent capture with that name from any request in the workspace session.
+- **FR-C2** `{{request.name}}` reads a capture of a specific request; `{{name}}` reads the most recent capture with that name from a request in the same file, and a capture from another file in the workspace session only when no file variable, environment or `$shared` value has the name (section 10).
 - **FR-C3** `first`/`nth` captures resolve as soon as the matching event arrives; `last`, `all`, `count` and `text` resolve when the stream ends.
 - **FR-C4** A request that needs a pending capture waits for it (default 30 s, setting `streamscope.capture.waitTimeout`) in the run status Waiting, its CodeLens showing "Waiting for startRun › threadId · 3 s" beside Stop. If the value fails or times out, the request is blocked with an error.
 - **FR-C5** A new run of the producer resets its captures to pending.
@@ -103,7 +103,7 @@ JavaScript scripts, GraphQL helpers, WebSocket and gRPC, cURL import and export,
 - **FR-N1** Read environments from `rest-client.environmentVariables` (including `$shared`) and from `http-client.env.json` and `http-client.private.env.json` next to the file or at the workspace root. On name conflicts in the active environment, JetBrains files win over REST Client settings and the private file wins over the shared file **(builder's call)**.
 - **FR-N2** Status bar picker for the active environment, remembered per workspace.
 - **FR-N3** `{{$secret name}}` asks once in a masked input box, stores the value in SecretStorage scoped to the workspace, and masks it everywhere. Commands: Set Secret, Clear Secret, List Secrets.
-- **FR-N4** Variable precedence for a bare `{{name}}`: capture, file variable, active environment, `$shared`.
+- **FR-N4** Variable precedence for a bare `{{name}}`: capture from the same file, file variable, active environment, `$shared`, capture from another file (section 10).
 
 ### Coexistence
 
@@ -447,7 +447,16 @@ Capture evaluation (`src/capture/tracker.ts`, `body.ts`, `task-budget.ts`):
 
 ### Resolution order
 
-For `{{x}}` without a request prefix: the capture named `x` whose producing run started most recently, from any request in the workspace session, then file variable `x`, active environment `x`, `$shared` `x`. The newest capture includes the request's own previous value when it re-captures the name it consumes, such as a pagination cursor.
+For `{{x}}` without a request prefix, the first of these that applies:
+
+1. A capture named `x` from a request in the same file, the one whose run started most recently, including the request's own previous value when it re-captures the name it consumes. A resolved value is used, a pending one is waited for and a failed one blocks the request. A capture with no value yet, because its producer has not run or because the request captures `x` itself and has no earlier value, goes on to the next step.
+2. File variable `x`.
+3. Active environment `x`.
+4. `$shared` `x`.
+5. A capture named `x` from a request in another file of the workspace session, the newest, with the same rules as step 1.
+6. Nothing defines `x`. When a request in the file declares the capture, the request is blocked because that producer has not run, or, for a request that captures `x` itself, because it cannot use its own capture (see Waiting). Otherwise `x` is undefined.
+
+A value taken from another file's response therefore never replaces a value written in the file, the environment or `$shared`, and a file variable can seed a request that captures the name it consumes: with `@cursor = start` and `# @capture cursor = body.next`, the first send uses `start` and each later send uses the captured cursor.
 
 For `{{name.x}}`, when `name` is a request in the file: capture `x` of request `name`, then a variable literally named `name.x`, then an error that the request has no such capture ("startRun has no capture named threadI."). `{{name.response.…}}` is REST Client's response reference (a header, the whole body with `*`, or a JSONPath starting with `$`). `{{name.request.…}}` references and XPath are not supported; the request is blocked with a message that says so. Hovering shows which one was used.
 
@@ -465,8 +474,8 @@ Environment and `.env` details, settled in M3:
 
 The request is blocked, with the message shown, when:
 
-- the producer has never run in this session: "`{{threadId}}` comes from startRun, which has not run in this session." This happens at once. The error notification offers "Run startRun", which sends the producer only when clicked;
-- it would wait for its own capture and has no earlier value of it: "startRun cannot use its own capture threadId.", at once;
+- the producer has never run in this session and nothing else defines the name (Resolution order): "`{{threadId}}` comes from startRun, which has not run in this session." This happens at once. The error notification offers "Run startRun", which sends the producer only when clicked;
+- it would wait for its own capture, has no earlier value of it and nothing else defines the name: "startRun cannot use its own capture threadId.", at once;
 - two runs would wait for each other's captures: "startRun and continue wait for each other's captures.", at once;
 - the capture fails: "startRun › threadId failed: <reason>.";
 - the wait times out: "startRun › threadId did not arrive within 30 s.".
