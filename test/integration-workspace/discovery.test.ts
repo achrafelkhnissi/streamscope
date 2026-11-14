@@ -1,5 +1,5 @@
 import * as assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
@@ -165,6 +165,34 @@ describe('Run File in a workspace', () => {
         'Run File opened the file',
       );
     } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  it('does not read or run a file in a linked folder outside the workspace', async () => {
+    const outside = mkdtempSync(path.join(tmpdir(), 'streamscope-linked-'));
+    writeFileSync(path.join(outside, 'away.http'), 'GET https://api.example.test/away\n');
+    const link = workspaceUri('linked');
+    symlinkSync(outside, link.fsPath, 'junction');
+    const away = workspaceUri('linked', 'away.http');
+    const refusal =
+      'This file is in a linked folder outside the workspace folder, so Streamscope does not read it.';
+    try {
+      await resolveTests(away);
+      const item = (await testItems(away))[0];
+      assert.equal(item?.error, refusal);
+      assert.deepEqual(item.children, []);
+
+      await runFileNotices();
+      await testReports();
+      await vscode.commands.executeCommand('streamscope.runFile', away);
+
+      assert.deepEqual(await runFileNotices(), [
+        `Streamscope did not run ${vscode.workspace.asRelativePath(away)}: ${refusal}`,
+      ]);
+      assert.deepEqual(await testReports(), []);
+    } finally {
+      rmSync(link.fsPath, { recursive: true, force: true });
       rmSync(outside, { recursive: true, force: true });
     }
   });

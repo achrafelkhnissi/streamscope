@@ -35,7 +35,7 @@ Each request has one response panel, which a new run of the request replaces. It
 - **Body:** a normal response's body, with JSON indented and numbers and duplicate keys kept as received.
 - **Checks:** the result of each `# @expect` line.
 
-Streamscope detects NDJSON and Server-Sent Events from the bytes, not only from `Content-Type`, and never adds headers you did not write. A long stream keeps its newest events in memory and older ones on disk, so it can run for hours. **Streamscope: Save Response** saves the body as received, after decompression, and **Streamscope: Show History** lists the session's last 50 runs.
+Streamscope detects NDJSON and Server-Sent Events from the bytes, not only from `Content-Type`, and never adds an `Accept` header you did not write. Besides what HTTP needs (`Host`, `Content-Length`, `Connection`), it adds only `Accept-Encoding` when you did not set one, and `Authorization` when the URL holds user info. A long stream keeps its newest events in memory and older ones on disk, so it can run for hours. **Streamscope: Save Response** saves the body as received, after decompression, and **Streamscope: Show History** lists the session's last 50 runs.
 
 ## Request syntax
 
@@ -85,7 +85,7 @@ Content-Type: application/json
 - **Waiting.** A request that needs a value still pending waits for it, up to `streamscope.capture.waitTimeout` (30 s), and its CodeLens shows "Waiting for startRun › threadId" beside **Stop**. If the producer has not run in this session and nothing else defines the name, the request is not sent, and the message offers to run it. Streamscope never sends a request you did not send.
 - **Failures.** A capture that fails, such as an event that never arrived or a missing field, blocks the requests that need it, with the reason.
 - **Seeing values.** After a run, the value or the reason it failed appears after each `# @capture` line, and the response panel lists the run's captured values.
-- **Secrets.** A `secret` capture, a capture of a credential header such as `headers["x-session-token"]` or of a session cookie, and a capture whose name looks like a credential show as `••••••`.
+- **Secrets.** A `secret` capture, a capture of a credential header such as `headers["x-session-token"]` or of a session cookie, and a capture whose name looks like a credential show as `••••••`. The response itself is shown as received.
 
 Expressions also filter and reshape values: `body.items[?status == "ok"].id | join(",")`, `count(type == "TEXT_MESSAGE_CONTENT")`, `headers["location"] | match(/orders\/(\d+)/)`, `jsonpath("$.items[0].id")` and `body.next | default("none")`. REST Client's `{{login.response.body.$.token}}` and `{{login.response.headers.X-Token}}` work as well. The full syntax is in [section 10 of the design](docs/design.md#10-variable-extraction-and-resolution).
 
@@ -136,7 +136,7 @@ X-Thread: {{threadId}}
 - **Results:** a request passes when it gets a response and all its checks pass, whatever its HTTP status. A failed check is reported at its `# @expect` line, for example `` `status == 201` got 500 ``. A request that fails to connect, times out or cannot be sent is an error.
 - **Skips:** a request that needs a capture from a request that failed, was not sent or was stopped in the same run is skipped, and the test output gives the reason. That carries down a chain of requests.
 - **Stopping:** stopping the run cancels the request in progress; the rest stay not run.
-- File runs open no response panels; a request whose panel is already open shows its new run there. The Testing view lists files in the workspace and untitled files, skips `node_modules`, and does not read linked files or files over 1 MiB. File runs need a trusted workspace.
+- File runs open no response panels; a request whose panel is already open shows its new run there. The Testing view lists files in the workspace and untitled files, skips `node_modules`, and does not read a closed file that is itself a link or is over 1 MiB. File runs need a trusted workspace.
 
 ## Environments and secrets
 
@@ -200,11 +200,11 @@ Streamscope uses the same `http` language and reads REST Client's syntax, reques
 
 ## Privacy
 
-Streamscope sends no telemetry, needs no account, and makes no network requests except the ones you send. Responses and history stay in memory, and long streams in files in Streamscope's own storage folder on your machine, which are deleted when a run leaves the history or VS Code closes. Secrets stay in VS Code's secret storage.
+Streamscope sends no telemetry, needs no account, and makes no network requests except the ones you send. Responses stay on your machine: the newest events in memory, and every response body also in a private file (readable only by you) in Streamscope's storage folder, deleted when the run leaves the history, when VS Code closes, or at the next start after a crash. Secrets you enter stay in VS Code's secret storage.
 
 ## Security notes
 
-- Credentials are masked in the log, notifications, hovers, the response panel, the Testing view, history and errors: `Authorization`, `Proxy-Authorization`, `Cookie`, `Set-Cookie`, API-key headers, URL user info, `{{$secret …}}` values and `secret` captures.
+- Credentials are masked wherever Streamscope describes a request or a captured value (the log, notifications, hovers, the Headers view's request, captured values, the Testing view, history and errors): `Authorization`, `Proxy-Authorization`, `Cookie`, `Set-Cookie`, API-key headers, URL user info, `{{$secret …}}` values and `secret` captures. Response bodies, events and response headers are shown and saved as the server sent them.
 - Redirects to another origin drop credential headers and any header that carries a secret, and a 307 or 308 redirect never resends a request body to another origin or from https to http.
 - TLS verification is on unless you opt out for one request (`# @insecure`) or one environment.
 - Body files must lie inside the workspace folder, and a captured value or response can never choose which file is sent.

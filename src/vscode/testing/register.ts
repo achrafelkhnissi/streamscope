@@ -249,6 +249,14 @@ export function registerTesting(
       notify(outsideMessage);
       return;
     }
+    const open = vscode.workspace.textDocuments.some(
+      (candidate) => candidate.uri.toString() === uri.toString(),
+    );
+    const problem = open || uri.scheme !== 'file' ? undefined : await closedFileProblem(uri);
+    if (problem !== undefined) {
+      notify(`Streamscope did not run ${vscode.workspace.asRelativePath(uri)}: ${problem}`);
+      return;
+    }
     const document = await vscode.workspace.openTextDocument(uri);
     if (!isTested(document)) {
       notify(noFileMessage);

@@ -67,15 +67,25 @@ describe('release workflow', () => {
       expect(block, name).toMatch(/^ {4}permissions:\n {6}contents: read\n {6}id-token: write$/m);
     }
     expect(job('publish-marketplace')).toContain(
-      'npx vsce publish --oidc --packagePath "streamscope-${VERSION}.vsix" ${PRE_RELEASE:+"$PRE_RELEASE"}',
+      'npm exec --no -- vsce publish --oidc --packagePath "streamscope-${VERSION}.vsix" ${PRE_RELEASE:+"$PRE_RELEASE"}',
     );
     expect(job('publish-open-vsx')).toContain(
-      'npx ovsx publish --trusted-publishing --packagePath "streamscope-${VERSION}.vsix"',
+      'npm exec --no -- ovsx publish --trusted-publishing --packagePath "streamscope-${VERSION}.vsix"',
     );
     for (const name of ['check', 'package', 'github-release']) {
       expect(job(name), name).not.toContain('id-token');
       expect(job(name), name).not.toContain('environment:');
     }
+  });
+
+  it('never lets npx fetch a tool from the registry', () => {
+    expect(workflow).not.toMatch(/\bnpx\b/);
+  });
+
+  it('releases only a commit that is on main', () => {
+    const block = job('package');
+    expect(block).toMatch(/^ {10}fetch-depth: 0$/m);
+    expect(block).toContain('git merge-base --is-ancestor "$GITHUB_SHA" origin/main');
   });
 
   it('pins every action to a commit SHA', () => {

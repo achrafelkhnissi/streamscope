@@ -1,5 +1,6 @@
 import { spawn, spawnSync } from 'node:child_process';
 import {
+  copyFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -18,7 +19,7 @@ import {
 } from '@vscode/test-electron';
 import { startStreamServer } from '../support/stream-server';
 import { workbenchTarget, type DevToolsTarget } from './view/devtools';
-import { devToolsPort, profileSettings } from './view/launch';
+import { devToolsPort, profileSettings, vscodeEnvironment } from './view/launch';
 
 export type Scene = 'stream' | 'file-run';
 
@@ -265,11 +266,26 @@ export async function runRecording(scene: Scene): Promise<RecordingResult> {
   const frameDirectory = path.join(root, 'out', 'record', scene);
   rmSync(frameDirectory, { recursive: true, force: true });
   mkdirSync(frameDirectory, { recursive: true });
-  const gif = path.join(root, 'images', `${scene === 'stream' ? 'live-stream' : 'file-run'}.gif`);
+  const name = `${scene === 'stream' ? 'live-stream' : 'file-run'}.gif`;
+  const recorded = path.join(root, 'out', 'record', name);
+  const gif = path.join(root, 'images', name);
   const sandbox = realpathSync(mkdtempSync(path.join(tmpdir(), 'ssr-')));
   const server = await startStreamServer();
+  const env = vscodeEnvironment(process.env, {});
   let pid: number | undefined;
   let devTools: DevTools | undefined;
+  const stopNow = (): void => {
+    if (pid !== undefined) {
+      killGroup(pid);
+    }
+    rmSync(sandbox, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+  };
+  const onSignal = (signal: NodeJS.Signals): void => {
+    stopNow();
+    process.exit(signal === 'SIGINT' ? 130 : 143);
+  };
+  process.once('SIGINT', onSignal);
+  process.once('SIGTERM', onSignal);
   try {
     const userDataDir = path.join(sandbox, 'ud');
     const extensionsDir = path.join(sandbox, 'ext');
@@ -291,6 +307,7 @@ export async function runRecording(scene: Scene): Promise<RecordingResult> {
     const profile = [`--user-data-dir=${userDataDir}`, `--extensions-dir=${extensionsDir}`];
     const install = spawnSync(cli ?? '', [...cliArgs, ...profile, '--install-extension', vsix], {
       encoding: 'utf8',
+      env,
     });
     if (install.status !== 0) {
       throw new Error(`Installing ${vsix} failed: ${install.stderr}`);
@@ -309,7 +326,7 @@ export async function runRecording(scene: Scene): Promise<RecordingResult> {
         ...profile,
         workspace,
       ],
-      { detached: true, stdio: ['ignore', 'ignore', 'pipe'] },
+      { detached: true, env, stdio: ['ignore', 'ignore', 'pipe'] },
     );
     pid = child.pid;
     let stderr = '';
@@ -350,7 +367,7 @@ export async function runRecording(scene: Scene): Promise<RecordingResult> {
     const firstTimestamp = frames[0]?.timestamp ?? started;
     const end = firstTimestamp + (performance.now() / 1000 - started);
     writeFileSync(path.join(frameDirectory, 'frames.txt'), concatList(frames, end));
-    mkdirSync(path.dirname(gif), { recursive: true });
+
     const ffmpeg = spawnSync(
       'ffmpeg',
       [
@@ -363,25 +380,26 @@ export async function runRecording(scene: Scene): Promise<RecordingResult> {
         path.join(frameDirectory, 'frames.txt'),
         '-vf',
         `fps=10,scale=${String(gifWidth)}:-1:flags=lanczos,split[a][b];[a]palettegen[p];[b][p]paletteuse`,
-        gif,
+        recorded,
       ],
       { encoding: 'utf8' },
     );
     if (ffmpeg.status !== 0) {
       throw new Error(`ffmpeg failed: ${ffmpeg.stderr}`);
     }
-    const bytes = statSync(gif).size;
+    const bytes = statSync(recorded).size;
     const problem = gifProblem(bytes);
     if (problem !== undefined) {
       throw new Error(problem);
     }
+    mkdirSync(path.dirname(gif), { recursive: true });
+    copyFileSync(recorded, gif);
     return { scene, gif: path.relative(root, gif), frames: frames.length, bytes };
   } finally {
+    process.removeListener('SIGINT', onSignal);
+    process.removeListener('SIGTERM', onSignal);
     devTools?.close();
-    if (pid !== undefined) {
-      killGroup(pid);
-    }
     await server.close();
-    rmSync(sandbox, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+    stopNow();
   }
 }

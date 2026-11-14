@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { isTestedUri, maxTestFileBytes, testFileProblem } from '../../../src/runs/test-file';
 
 describe('testFileProblem', () => {
-  const plain = { symbolicLink: false, file: true, size: 120 };
+  const plain = { symbolicLink: false, outside: false, file: true, size: 120 };
 
   it('accepts a regular file up to 1 MiB', () => {
     expect(maxTestFileBytes).toBe(1_048_576);
@@ -13,6 +13,9 @@ describe('testFileProblem', () => {
   it('refuses symbolic links, non-files and oversize files', () => {
     expect(testFileProblem({ ...plain, symbolicLink: true })).toBe(
       'Streamscope does not read linked files.',
+    );
+    expect(testFileProblem({ ...plain, outside: true })).toBe(
+      'This file is in a linked folder outside the workspace folder, so Streamscope does not read it.',
     );
     expect(testFileProblem({ ...plain, file: false })).toBe('This is not a file.');
     expect(testFileProblem({ ...plain, size: maxTestFileBytes + 1 })).toBe(

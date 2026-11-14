@@ -1,6 +1,6 @@
 import { parseArgs } from 'node:util';
 import { startStreamServer } from '../support/stream-server';
-import { runActivationBenchmark } from './activation';
+import { activationBudgetMs, runActivationBenchmark } from './activation';
 import { runRecording } from './record';
 import { runSoak } from './soak';
 import { measureThroughput } from './throughput';
@@ -78,6 +78,10 @@ async function main(): Promise<void> {
   if (command === 'activation') {
     const result = await runActivationBenchmark(Number(values.files));
     console.log(JSON.stringify(result, null, 2));
+    if (!(result.medianMs < activationBudgetMs)) {
+      console.error(`The median activation is over the ${String(activationBudgetMs)} ms budget.`);
+      process.exitCode = 1;
+    }
     return;
   }
   if (command === 'record') {

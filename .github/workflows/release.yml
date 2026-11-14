@@ -67,6 +67,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
+          fetch-depth: 0
+      - name: Check that the commit is on main
+        run: git merge-base --is-ancestor "$GITHUB_SHA" origin/main
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version-file: .nvmrc
@@ -128,7 +131,7 @@ jobs:
         env:
           VERSION: ${{ needs.package.outputs.version }}
           PRE_RELEASE: ${{ needs.package.outputs.pre-release }}
-        run: npx vsce publish --oidc --packagePath "streamscope-${VERSION}.vsix" ${PRE_RELEASE:+"$PRE_RELEASE"}
+        run: npm exec --no -- vsce publish --oidc --packagePath "streamscope-${VERSION}.vsix" ${PRE_RELEASE:+"$PRE_RELEASE"}
 
   publish-open-vsx:
     needs: package
@@ -154,7 +157,7 @@ jobs:
       - name: Publish to Open VSX
         env:
           VERSION: ${{ needs.package.outputs.version }}
-        run: npx ovsx publish --trusted-publishing --packagePath "streamscope-${VERSION}.vsix"
+        run: npm exec --no -- ovsx publish --trusted-publishing --packagePath "streamscope-${VERSION}.vsix"
 
   github-release:
     needs: [package, publish-marketplace, publish-open-vsx]

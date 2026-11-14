@@ -21,6 +21,11 @@ async function realPath(candidate: string): Promise<string | undefined> {
   }
 }
 
+export async function resolvesInside(file: string, root: string): Promise<boolean> {
+  const real = await realPath(file);
+  return real !== undefined && isInside(real, (await realPath(root)) ?? root);
+}
+
 function isInside(file: string, root: string): boolean {
   return file === root || file.startsWith(root.endsWith(path.sep) ? root : root + path.sep);
 }

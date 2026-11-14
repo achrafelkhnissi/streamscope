@@ -2,6 +2,7 @@ export const maxTestFileBytes = 1_048_576;
 
 export interface TestFileStat {
   symbolicLink: boolean;
+  outside: boolean;
   file: boolean;
   size: number;
 }
@@ -15,6 +16,9 @@ export function isTestedUri(uri: { scheme: string }): boolean {
 export function testFileProblem(stat: TestFileStat): string | undefined {
   if (stat.symbolicLink) {
     return 'Streamscope does not read linked files.';
+  }
+  if (stat.outside) {
+    return 'This file is in a linked folder outside the workspace folder, so Streamscope does not read it.';
   }
   if (!stat.file) {
     return 'This is not a file.';

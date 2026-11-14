@@ -31,6 +31,8 @@ export interface WorkspaceFile {
   content: string;
 }
 
+export const activationBudgetMs = 50;
+
 const runs = 5;
 const launchTimeoutMs = 120_000;
 
