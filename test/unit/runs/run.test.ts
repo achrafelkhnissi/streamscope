@@ -1,5 +1,6 @@
 import {
   chmodSync,
+  mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
@@ -2301,6 +2302,108 @@ describe('waiting for captured values', () => {
         { message: 'continue cannot use its own response.', range: at(2, 11, 50) },
       ]);
       expect(api.requests).toEqual([]);
+    });
+  });
+
+  describe('a body file path', () => {
+    const refused =
+      'Body file paths cannot use captured values or response references. Write the path in the file or in a variable.';
+
+    async function uploads(): Promise<{ api: LocalServer; folder: string }> {
+      const api = await track(
+        startHttpServer((request, response) => {
+          if (request.url === '/names') {
+            response.writeHead(200, { 'Content-Type': 'application/json', 'X-File': '../.env' });
+            response.end('{"name":"../.env"}');
+            return;
+          }
+          response.end('ok');
+        }),
+      );
+      const folder = bodyFolder('.env', 'SYNTHETIC_KEY=synthetic-env-secret\n');
+      mkdirSync(path.join(folder, 'uploads'));
+      writeFileSync(path.join(folder, 'uploads', 'report.txt'), 'synthetic report');
+      return { api, folder };
+    }
+
+    function upload(api: LocalServer, written: string, before: string[] = []): string[] {
+      return [
+        ...before,
+        '# @name names',
+        '# @capture name = body.name',
+        `POST ${api.url}/names`,
+        '',
+        '###',
+        '# @name upload',
+        `POST ${api.url}/upload`,
+        'Content-Type: text/plain',
+        '',
+        `< ./uploads/${written}`,
+      ];
+    }
+
+    it('is refused when a captured value chose it, and nothing is read or sent', async () => {
+      const { api, folder } = await uploads();
+      const registry = new CaptureRegistry();
+      const names = startRun(capturing(registry, upload(api, '{{name}}'), 0), dependencies);
+      await names.done;
+      await waitFor(
+        () => registry.get(`${documentUri}\n@names`, 'name')?.result.state === 'resolved',
+      );
+
+      const blocked = await startRun(
+        {
+          ...capturing(registry, upload(api, '{{name}}'), 1),
+          bodyFiles: { documentDir: folder, containmentRoot: folder },
+        },
+        dependencies,
+      ).done;
+
+      expect(blocked.status).toBe('blocked');
+      expect(blocked.problems.map((problem) => problem.message)).toEqual([refused]);
+      expect(blocked.problems[0]?.range.start.line).toBe(9);
+      expect(api.requests.map((request) => request.url)).toEqual(['/names']);
+    });
+
+    it('is refused when a response reference chose it', async () => {
+      const { api, folder } = await uploads();
+      const registry = new CaptureRegistry();
+      const lines = upload(api, '{{names.response.headers.X-File}}');
+      const names = startRun(capturing(registry, lines, 0), dependencies);
+      await names.done;
+
+      const blocked = await startRun(
+        {
+          ...capturing(registry, lines, 1, (key) =>
+            key === `${documentUri}\n@names` ? names : undefined,
+          ),
+          bodyFiles: { documentDir: folder, containmentRoot: folder },
+        },
+        dependencies,
+      ).done;
+
+      expect(blocked.status).toBe('blocked');
+      expect(blocked.problems.map((problem) => problem.message)).toEqual([refused]);
+      expect(api.requests.map((request) => request.url)).toEqual(['/names']);
+    });
+
+    it('still works when a file variable chose it', async () => {
+      const { api, folder } = await uploads();
+      const lines = upload(api, '{{report}}', ['@report = report.txt', '']);
+
+      const sent = await startRun(
+        {
+          ...capturing(new CaptureRegistry(), lines, 1),
+          bodyFiles: { documentDir: folder, containmentRoot: folder },
+        },
+        dependencies,
+      ).done;
+
+      expect(sent.problems).toEqual([]);
+      expect(sent.status).toBe('completed');
+      expect(api.requests.map((request) => request.body.toString())).toEqual([
+        'synthetic report\n',
+      ]);
     });
   });
 

@@ -205,7 +205,7 @@ Verified in Phase 1: inside the extension host, VS Code patches `http`/`https` a
 Design:
 
 - **API.** `node:http`/`node:https` `request()`, called through the module object so VS Code's patch applies. A `Transport` interface keeps a future `fetch` implementation for VS Code for the Web possible.
-- **Request body.** Strings from the file, or a stream from a `< path` file resolved inside the workspace folder (section 15). `Content-Length` is set when the size is known; otherwise chunked.
+- **Request body.** Strings from the file, or a stream from a `< path` file resolved inside the workspace folder (section 15). A path that uses a captured value or a response reference, directly or through a variable, is refused, so server data never chooses which local file is sent. `Content-Length` is set when the size is known; otherwise chunked.
 - **Headers.** Sent as written, in order, with original casing. Response headers are kept raw (`rawHeaders`) for display; duplicates are preserved.
 - **Redirects.** Own loop (FR-S4) so every hop is visible and auth headers never cross origins.
 - **Decompression.** `zlib` streams for gzip, deflate, br and zstd (zstd verified in VS Code 1.101's Node 22.15.1). The raw compressed byte count is recorded; decompressed bytes feed the stream pipeline immediately.
@@ -460,6 +460,8 @@ A value taken from another file's response therefore never replaces a value writ
 
 For `{{name.x}}`, when `name` is a request in the file: capture `x` of request `name`, then a variable literally named `name.x`, then an error that the request has no such capture ("startRun has no capture named threadI."). `{{name.response.…}}` is REST Client's response reference (a header, the whole body with `*`, or a JSONPath starting with `$`). `{{name.request.…}}` references and XPath are not supported; the request is blocked with a message that says so. Hovering shows which one was used.
 
+A `< path` or `<@ path` body file path may use variables, but not captured values or response references, directly or through a file, environment or `$shared` variable. Such a request is blocked with "Body file paths cannot use captured values or response references. Write the path in the file or in a variable."
+
 Environment and `.env` details, settled in M3:
 
 - `$shared` is also read from `http-client*.env.json`, as Visual Studio does; without an active environment only `$shared` applies.
@@ -588,7 +590,7 @@ Nothing is written to the workspace except files the user asks to save.
 | Secrets shown or stored in clear text                                          | SecretStorage only; masking registry used by every output the extension writes; the capture system never writes `secret` values to history or disk (response bytes that contain them stay only in the owner-only spill file, deleted with the run)                                |
 | Expression libraries executing code                                            | Own expression language without `eval`; `@swaggerexpert/jsonpath` (RFC 9535, no eval) only; JSONPath libraries with code-execution CVEs are banned                                                                                                                                |
 | Response content attacking the UI                                              | Native views render text only; a webview, if chosen, follows the CSP rules in section 13                                                                                                                                                                                          |
-| Body files reading outside the project                                         | `< path` resolves inside the workspace folder; symlinks resolving outside are rejected; in restricted mode body files are not read                                                                                                                                                |
+| Body files reading outside the project                                         | `< path` resolves inside the workspace folder; symlinks resolving outside are rejected; in restricted mode body files are not read; a path that uses a captured value or a response reference is refused                                                                          |
 | TLS downgrade                                                                  | Verification on by default; opt-out per request or environment only, never global, never via `NODE_TLS_REJECT_UNAUTHORIZED`                                                                                                                                                       |
 | Supply chain                                                                   | Runtime dependencies: `@swaggerexpert/jsonpath` and its transitive `apg-lite`, bundled into `dist/extension.js` and `dist/capture-worker.js`; npm `ignore-scripts`, exact versions, 7-day release cooldown; SHA-pinned CI actions; release from a protected environment with OIDC |
 

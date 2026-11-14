@@ -39,6 +39,7 @@ export type ResolvedBodyPart =
   | {
       kind: 'file';
       path: string;
+      usesCapture: boolean;
       processVariables: boolean;
       encoding: string | undefined;
       pathRange: Range;
@@ -79,11 +80,13 @@ interface Failure {
 }
 
 type Evaluated =
-  { ok: true; value: string; capture?: CapturedValue } | { ok: false; failures: Failure[] };
+  | { ok: true; value: string; capture?: CapturedValue; usesCapture?: true }
+  | { ok: false; failures: Failure[] };
 
 interface Substituted {
   text: string;
   failures: Failure[];
+  usesCapture: boolean;
 }
 
 const escapePattern = /\\(.)/g;
@@ -111,6 +114,7 @@ function substitute(text: string, evaluate: (expression: string) => Evaluated): 
   const failures: Failure[] = [];
   let result = '';
   let from = 0;
+  let usesCapture = false;
   for (const reference of scanReferences(text, 0).references) {
     const start = reference.range.start.character;
     const end = reference.range.end.character;
@@ -118,13 +122,20 @@ function substitute(text: string, evaluate: (expression: string) => Evaluated): 
     result += text.slice(from, start);
     if (evaluated.ok) {
       result += evaluated.value;
+      usesCapture ||= evaluated.usesCapture === true;
     } else {
       failures.push(...evaluated.failures);
       result += text.slice(start, end);
     }
     from = end;
   }
-  return { text: result + text.slice(from), failures };
+  return { text: result + text.slice(from), failures, usesCapture };
+}
+
+function substitutedValue(substituted: Substituted): Evaluated {
+  return substituted.usesCapture
+    ? { ok: true, value: substituted.text, usesCapture: true }
+    : { ok: true, value: substituted.text };
 }
 
 function failure(
@@ -252,6 +263,7 @@ class Scope implements VariableScope {
         return {
           ok: true,
           value: result.text,
+          usesCapture: true,
           capture: {
             label: result.label,
             name,
@@ -488,7 +500,7 @@ class Scope implements VariableScope {
     const evaluated = this.remember(
       variable.name,
       substituted.failures.length === 0
-        ? { ok: true, value: substituted.text }
+        ? substitutedValue(substituted)
         : {
             ok: false,
             failures: substituted.failures.map((entry) => ({
@@ -523,7 +535,7 @@ class Scope implements VariableScope {
     const evaluated = this.remember(
       name,
       substituted.failures.length === 0
-        ? { ok: true, value: substituted.text }
+        ? substitutedValue(substituted)
         : {
             ok: false,
             failures: substituted.failures.map((entry) =>
@@ -584,11 +596,12 @@ function resolveInScope(
 ): { resolution: Resolution; scope: Scope } {
   const scope = new Scope(file, sources);
   const failures: Failure[] = [];
-  const text = (value: string): string => {
-    const substituted = substitute(value, (expression) => scope.evaluate(expression));
-    failures.push(...substituted.failures);
-    return substituted.text;
+  const substituted = (value: string): Substituted => {
+    const result = substitute(value, (expression) => scope.evaluate(expression));
+    failures.push(...result.failures);
+    return result;
   };
+  const text = (value: string): string => substituted(value).text;
   const resolved: ResolvedRequest = {
     method: request.requestLine.method,
     url: text(request.requestLine.url),
@@ -598,17 +611,20 @@ function resolveInScope(
       name: text(header.name),
       value: text(header.value),
     })),
-    body: request.body.map((part): ResolvedBodyPart =>
-      part.kind === 'text'
-        ? { kind: 'text', lines: part.lines.map(text) }
-        : {
-            kind: 'file',
-            path: text(part.path),
-            processVariables: part.processVariables,
-            encoding: part.encoding,
-            pathRange: part.pathRange,
-          },
-    ),
+    body: request.body.map((part): ResolvedBodyPart => {
+      if (part.kind === 'text') {
+        return { kind: 'text', lines: part.lines.map(text) };
+      }
+      const filePath = substituted(part.path);
+      return {
+        kind: 'file',
+        path: filePath.text,
+        usesCapture: filePath.usesCapture,
+        processVariables: part.processVariables,
+        encoding: part.encoding,
+        pathRange: part.pathRange,
+      };
+    }),
   };
   if (failures.length === 0) {
     return {

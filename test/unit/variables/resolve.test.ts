@@ -197,11 +197,44 @@ describe('resolveRequest', () => {
       {
         kind: 'file',
         path: './fixtures/payload.json',
+        usesCapture: false,
         processVariables: true,
         encoding: 'latin1',
         pathRange: at(3, 9, 31),
       },
     ]);
+  });
+
+  it('marks a body file path that a captured value chose, directly or through a variable', () => {
+    const value: CaptureLookupResult = {
+      kind: 'value',
+      text: '../.env',
+      secret: false,
+      sensitive: [],
+      label: 'names',
+      provenance: { runId: 1, event: undefined, path: 'name', time: 0 },
+    };
+    const paths = (...lines: string[]): { path: string; usesCapture: boolean }[] => {
+      const result = resolveWith(
+        { captures: inMemoryCaptures({ bare: { name: value } }) },
+        ...lines,
+      );
+      return result.ok
+        ? result.request.body.flatMap((part) =>
+            part.kind === 'file' ? [{ path: part.path, usesCapture: part.usesCapture }] : [],
+          )
+        : [];
+    };
+
+    expect(paths('POST https://api.example.test/upload', '', '< ./uploads/{{name}}')).toEqual([
+      { path: './uploads/../.env', usesCapture: true },
+    ]);
+    expect(
+      paths('@chosen = {{name}}', 'POST https://api.example.test/upload', '', '< ./{{chosen}}'),
+    ).toEqual([{ path: './../.env', usesCapture: true }]);
+    expect(
+      paths('@plain = report.txt', 'POST https://api.example.test/upload', '', '< ./{{plain}}'),
+    ).toEqual([{ path: './report.txt', usesCapture: false }]);
   });
 
   it('scope.resolveText resolves file and system variables in file contents', () => {

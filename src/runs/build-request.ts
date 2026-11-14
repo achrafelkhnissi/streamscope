@@ -21,6 +21,8 @@ type FilePart = Extract<ResolvedBodyPart, { kind: 'file' }>;
 
 const restrictedBodyFileMessage =
   'Body files are not read in a restricted workspace. Trust the workspace to send them.';
+const capturedBodyFileMessage =
+  'Body file paths cannot use captured values or response references. Write the path in the file or in a variable.';
 const securePorts: ReadonlySet<string> = new Set(['443', '8443']);
 const hostPortPattern = /:(\d+)$/;
 
@@ -118,6 +120,10 @@ async function bodyParts(
     }
     if (context.restricted) {
       problems.push({ message: restrictedBodyFileMessage, range: part.pathRange });
+      continue;
+    }
+    if (part.usesCapture) {
+      problems.push({ message: capturedBodyFileMessage, range: part.pathRange });
       continue;
     }
     const built = await filePart(part, scope, context);
