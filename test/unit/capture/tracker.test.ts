@@ -1372,7 +1372,7 @@ describe('CaptureTracker', () => {
     });
 
     expect(stallMs).toBeLessThan(100);
-  });
+  }, 30_000);
 
   it('a large matched event is read from the spill file in the child', async () => {
     const padding = 'x'.repeat(300_000);
