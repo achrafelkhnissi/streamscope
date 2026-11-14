@@ -136,6 +136,7 @@ describe('extension manifest', () => {
       'streamscope.moveToSecretStorage',
       'streamscope.showLog',
       'streamscope.showHistory',
+      'streamscope.captureValue',
     ]);
   });
 
@@ -282,6 +283,9 @@ describe('extension manifest', () => {
       'editorLangId == http && resourceScheme != streamscope-response',
     );
     expect(palette['streamscope.moveToSecretStorage']).toBe('false');
+    expect(palette['streamscope.captureValue']).toBe(
+      "resourceScheme == streamscope-response || activeWebviewPanelId == 'streamscope.response'",
+    );
     for (const command of [
       'streamscope.stopRequest',
       'streamscope.saveResponse',
@@ -304,6 +308,21 @@ describe('extension manifest', () => {
     expect(titles['streamscope.showHistory']).toBe('Show History');
     expect(titles['streamscope.showResponseBody']).toBe('Open Response Body in Editor');
     expect(titles['streamscope.showResponseHeaders']).toBe('Open Response Headers in Editor');
+  });
+
+  it('offers Capture This Value in the context menu of event and Body documents', () => {
+    const titles = Object.fromEntries(
+      manifest.contributes.commands.map(({ command, title }) => [command, title]),
+    );
+
+    expect(titles['streamscope.captureValue']).toBe('Capture This Value…');
+    expect(manifest.contributes.menus['editor/context']).toEqual([
+      {
+        command: 'streamscope.captureValue',
+        when: 'resourceScheme == streamscope-response && !(resourceFilename =~ /\\.headers\\.http$/)',
+        group: 'streamscope@1',
+      },
+    ]);
   });
 
   it('puts Show Response on response documents and the run actions on the response panel', () => {

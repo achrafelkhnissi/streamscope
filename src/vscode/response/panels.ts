@@ -6,6 +6,7 @@ import { PanelFeed, type PanelCaptureSource } from '../../response/panel-feed';
 import { panelHtml } from '../../response/panel-html';
 import {
   parsePanelMessage,
+  type FromPanel,
   type PanelBody,
   type PanelCapture,
   type PanelView,
@@ -50,6 +51,11 @@ export interface ResponsePanelsOptions {
   captures: PanelCaptureSource;
   benchmark?: PanelBenchmark;
   save(run: RunHandle, documentUri: vscode.Uri): Promise<void>;
+  capture(
+    run: RunHandle,
+    message: Extract<FromPanel, { type: 'capture' }>,
+    body: PanelBody,
+  ): Promise<void>;
 }
 
 export interface ShowOptions {
@@ -228,6 +234,18 @@ export class ResponsePanels implements vscode.Disposable {
     return false;
   }
 
+  requestCapture(key: string): void {
+    const entry = this.entries.get(key);
+    if (entry?.ready === true) {
+      void entry.panel?.webview.postMessage({ type: 'captureSelection' });
+    }
+  }
+
+  deliver(key: string, value: unknown): Promise<void> {
+    const entry = this.entries.get(key);
+    return (entry === undefined ? undefined : this.handle(entry, value)) ?? Promise.resolve();
+  }
+
   active(): string | undefined {
     for (const entry of this.entries.values()) {
       if (entry.panel?.active === true) {
@@ -349,11 +367,11 @@ export class ResponsePanels implements vscode.Disposable {
   private receive(entry: Entry, value: unknown): void {
     const timer = this.options.benchmark?.timer;
     if (timer === undefined) {
-      this.handle(entry, value);
+      void this.handle(entry, value);
       return;
     }
     const started = performance.now();
-    this.handle(entry, value);
+    void this.handle(entry, value);
     timer.record(performance.now() - started);
   }
 
@@ -374,10 +392,10 @@ export class ResponsePanels implements vscode.Disposable {
     timer.record(performance.now() - started);
   }
 
-  private handle(entry: Entry, value: unknown): void {
+  private handle(entry: Entry, value: unknown): Promise<void> | undefined {
     const message = parsePanelMessage(value, entry.feed.count);
     if (message === undefined || ('run' in message && message.run !== entry.run.id)) {
-      return;
+      return undefined;
     }
     switch (message.type) {
       case 'ready':
@@ -417,6 +435,10 @@ export class ResponsePanels implements vscode.Disposable {
           .openEvent(entry.run, message.index, this.besidePanel(entry))
           .catch(reportFailure(`open event ${String(message.index)} in the editor`));
         return;
+      case 'capture':
+        return this.options
+          .capture(entry.run, message, entry.feed.body)
+          .catch(reportFailure('capture the value'));
     }
   }
 
