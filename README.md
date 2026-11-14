@@ -18,6 +18,7 @@ File variables (`@name = value`) and the system variables `{{$guid}}`, `{{$times
 Request directives:
 
 - `# @timeout 30s` limits the request's total time;
+- `# @until type == "RUN_FINISHED"` ends a stream at the first event that matches, closes the connection and counts the request as completed;
 - `# @no-redirect` returns a redirect response instead of following it;
 - `# @insecure` skips TLS verification for that request only.
 
@@ -91,6 +92,34 @@ POST {{baseUrl}}/agent/run
 - **Live:** each check settles at the first event that decides it, while the stream is still running, and never changes afterwards. `count(…) > 2` passes at the third match; `!exists(first(type == "RUN_ERROR"))` fails at the first error. A failed check does not stop the stream or block captures.
 - **Results:** the response view's Checks tab lists every check with its expected and actual values, such as `status == 201` got 500. The status line shows `4/5 checks`, the CodeLens shows `✓ 200 OK · 120 events · 4.3 s · 5/5 checks`, and a ✓ or ✗ appears after each `# @expect` line, with the detail on hover.
 - **Secrets:** values in a check's detail are masked the same way capture failures are.
+
+## File runs
+
+Each `.http` and `.rest` file is a suite in VS Code's Testing view, and each request is a test with a run button in the gutter. Run a whole file from the Testing view or with **Streamscope: Run File**:
+
+```http
+@baseUrl = https://api.example.test
+
+### Start agent run
+# @name startRun
+# @capture threadId = first(type == "RUN_STARTED").threadId
+# @expect status == 200
+# @until type == "RUN_FINISHED"
+POST {{baseUrl}}/agent/run
+
+### Continue
+# @name continue
+# @timeout 30s
+# @expect body.threadId == "synthetic-thread-1"
+POST {{baseUrl}}/agent/continue
+X-Thread: {{threadId}}
+```
+
+- **Order:** requests run in file order, one at a time, and each finishes, with its checks settled, before the next starts. The file's text when the run starts is used, saved or not.
+- **Results:** a request passes when it gets a response and all its checks pass, whatever its HTTP status. A failed check is reported at its `# @expect` line, for example `` `status == 201` got 500 ``. A request that fails to connect, times out or cannot be sent is an error.
+- **Skips:** a request that needs a capture from a request that failed, was not sent or was stopped in the same run is skipped, and the test output gives the reason. That carries down a chain of requests.
+- **Stopping:** stopping the run cancels the request in progress; the rest stay not run.
+- File runs open no response panels; a request whose panel is already open shows its new run there. File runs need a trusted workspace.
 
 ## Restricted workspaces
 
