@@ -30,6 +30,7 @@ import type { EnvironmentStore } from '../environments/environment-store';
 import type { ParseCache } from '../language/parse-cache';
 import { httpSelector } from '../language/register';
 import { logRunEnd, logRunStart, logRunWaiting, recordingLog, type RunLog } from '../log';
+import { captureWhereMessage, ValueCapture, type NameQuestion } from '../response/capture-value';
 import { ResponsePanels } from '../response/panels';
 import { closeResponseTabs, ResponsePresenter } from '../response/presenter';
 import { ResponseFileSystem, responseScheme } from '../response/response-file-system';
@@ -347,6 +348,40 @@ export function registerRequestFeatures(
   )
     ? new PanelProbe()
     : undefined;
+  const nameAnswers: (string | undefined)[] = [];
+  const nameWaiters: ((answer: string | undefined) => void)[] = [];
+  let namesAsked = 0;
+  let lastQuestion: NameQuestion | undefined;
+  const askName = testMode
+    ? (question: NameQuestion): Promise<string | undefined> => {
+        namesAsked += 1;
+        lastQuestion = question;
+        if (nameAnswers.length > 0) {
+          return Promise.resolve(nameAnswers.shift());
+        }
+        return new Promise((resolve) => {
+          nameWaiters.push(resolve);
+        });
+      }
+    : (question: NameQuestion): Promise<string | undefined> =>
+        Promise.resolve(
+          vscode.window.showInputBox({
+            title: 'Capture This Value',
+            value: question.value,
+            valueSelection: [0, question.value.length],
+            prompt: question.prompt,
+            validateInput: question.validate,
+          }),
+        );
+  const definedNames = async (document: vscode.TextDocument): Promise<ReadonlySet<string>> => {
+    const catalog = await environments.catalogFor(document.uri);
+    return new Set([
+      ...cache.get(document).fileVariables.map(({ name }) => name),
+      ...catalog.variables.keys(),
+      ...catalog.shared.keys(),
+    ]);
+  };
+  const valueCapture = new ValueCapture({ cache, presenter, askName, definedNames });
   const panels = new ResponsePanels({
     extensionUri: context.extensionUri,
     state: context.globalState,
@@ -354,7 +389,22 @@ export function registerRequestFeatures(
     captures,
     benchmark,
     save: (run, documentUri) => saveRun(run, documentUri, undefined),
+    capture: (run, message, body) => valueCapture.fromPanel(run, message, body),
   });
+
+  const captureValue = async (): Promise<void> => {
+    const shownKey = panels.active();
+    if (shownKey !== undefined) {
+      panels.requestCapture(shownKey);
+      return;
+    }
+    const editor = vscode.window.activeTextEditor;
+    if (editor?.document.uri.scheme === responseScheme) {
+      await valueCapture.fromEditor(editor);
+      return;
+    }
+    void vscode.window.showWarningMessage(captureWhereMessage);
+  };
 
   const history = new RunHistory(historyLimit, (run) => !isActive(run) && !panels.isShown(run));
 
@@ -688,6 +738,7 @@ export function registerRequestFeatures(
     vscode.commands.registerCommand('streamscope.showHistory', showHistory),
     vscode.commands.registerCommand('streamscope.showResponseHeaders', openDocument('headers')),
     vscode.commands.registerCommand('streamscope.showResponseBody', openDocument('body')),
+    vscode.commands.registerCommand('streamscope.captureValue', captureValue),
   );
 
   void closeResponseTabs();
@@ -731,6 +782,30 @@ export function registerRequestFeatures(
         () => captures.listenerCount,
       ),
       vscode.commands.registerCommand('streamscope.test.closeResponseTabs', closeResponseTabs),
+      vscode.commands.registerCommand(
+        'streamscope.test.panelMessage',
+        (key?: unknown, message?: unknown) =>
+          typeof key === 'string' ? panels.deliver(key, message) : undefined,
+      ),
+      vscode.commands.registerCommand('streamscope.test.answerCaptureName', (answer?: unknown) => {
+        const chosen = typeof answer === 'string' ? answer : undefined;
+        const waiter = nameWaiters.shift();
+        if (waiter === undefined) {
+          nameAnswers.push(chosen);
+        } else {
+          waiter(chosen);
+        }
+      }),
+      vscode.commands.registerCommand('streamscope.test.captureNamesAsked', () => namesAsked),
+      vscode.commands.registerCommand('streamscope.test.lastCaptureQuestion', (input?: unknown) =>
+        lastQuestion === undefined
+          ? undefined
+          : {
+              value: lastQuestion.value,
+              prompt: lastQuestion.prompt,
+              validation: typeof input === 'string' ? lastQuestion.validate(input) : undefined,
+            },
+      ),
       vscode.commands.registerCommand(
         'streamscope.test.openEvent',
         async (key?: unknown, index?: unknown) => {

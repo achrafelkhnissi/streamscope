@@ -155,7 +155,7 @@ Questions for the M6 plan:
 - whether content over the limit opens in the editor automatically or through the button (suggested: the button);
 - whether a setting should always show the Body in an editor;
 - whether Headers starts as a panel tab (suggested) or a document;
-- whether click-to-capture from documents uses a hand-written JSON position scanner or the `jsonc-parser` package, which needs approval as a new dependency;
+- whether click-to-capture from documents uses a hand-written JSON position scanner or the `jsonc-parser` package, which needs approval as a new dependency (answered in M8: a hand-written scanner, `src/response/json-position.ts`, so no new dependency);
 - whether Save Stream is enough for searching all events in an editor, or an "Open Events in Editor" snapshot is needed;
 - that overflow documents, like M2's documents today, can be read by other extensions.
 

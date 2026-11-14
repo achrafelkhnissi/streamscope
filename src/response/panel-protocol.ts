@@ -98,7 +98,8 @@ export type ToPanel =
       truncated: boolean;
     }
   | { type: 'select'; view: PanelView }
-  | { type: 'expand'; index: number };
+  | { type: 'expand'; index: number }
+  | { type: 'captureSelection' };
 
 export type FromPanel =
   | { type: 'ready' }
@@ -109,7 +110,9 @@ export type FromPanel =
   | { type: 'save'; run: number }
   | { type: 'tab'; view: PanelView }
   | { type: 'open'; run: number; target: 'body' | 'headers' }
-  | { type: 'openEvent'; run: number; index: number };
+  | { type: 'openEvent'; run: number; index: number }
+  | { type: 'capture'; run: number; target: 'event'; index: number; offset: number }
+  | { type: 'capture'; run: number; target: 'body'; offset: number };
 
 const viewNames: readonly string[] = panelViews;
 
@@ -128,6 +131,15 @@ function isRun(value: unknown): value is number {
 
 function isIndex(value: unknown, eventCount: number): value is number {
   return typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= eventCount;
+}
+
+function isOffset(value: unknown): value is number {
+  return (
+    typeof value === 'number' &&
+    Number.isInteger(value) &&
+    value >= 0 &&
+    value <= panelLimits.inlineBodyBytes
+  );
 }
 
 function isView(value: unknown): value is PanelView {
@@ -181,6 +193,23 @@ export function parsePanelMessage(value: unknown, eventCount: number): FromPanel
         isRun(run) &&
         (target === 'body' || target === 'headers')
         ? { type: 'open', run, target }
+        : undefined;
+    }
+    case 'capture': {
+      const { run, target, index, offset } = value;
+      if (target === 'event') {
+        return hasOnly(value, ['type', 'run', 'target', 'index', 'offset']) &&
+          isRun(run) &&
+          isIndex(index, eventCount) &&
+          isOffset(offset)
+          ? { type: 'capture', run, target, index, offset }
+          : undefined;
+      }
+      return target === 'body' &&
+        hasOnly(value, ['type', 'run', 'target', 'offset']) &&
+        isRun(run) &&
+        isOffset(offset)
+        ? { type: 'capture', run, target, offset }
         : undefined;
     }
     default:

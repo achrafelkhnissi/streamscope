@@ -234,6 +234,21 @@ describe('panelHtml', () => {
     expect(page).toContain('role="status"');
   });
 
+  it('has a Body capture button and a hint region', () => {
+    const page = html();
+
+    expect(page).toContain(
+      '<button type="button" id="open" hidden>Open in Editor</button><button type="button" id="capture" hidden>Capture This Value…</button>',
+    );
+    expect(page).toContain('<p id="capture-hint" hidden></p><pre id="body"></pre>');
+  });
+
+  it('has a capture note under the tabs for the Command Palette', () => {
+    expect(html()).toMatch(
+      /<div class="tabs" role="tablist"[^\n]*<\/div>\n<p id="capture-note" hidden><\/p>\n<ul class="captures"/,
+    );
+  });
+
   it('has a Save Response button next to Stop, disabled until there is something to save', () => {
     const page = html();
 

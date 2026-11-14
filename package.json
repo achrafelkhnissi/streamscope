@@ -154,6 +154,11 @@
         "title": "Show History",
         "category": "Streamscope",
         "icon": "$(history)"
+      },
+      {
+        "command": "streamscope.captureValue",
+        "title": "Capture This Value…",
+        "category": "Streamscope"
       }
     ],
     "keybindings": [
@@ -197,6 +202,17 @@
         {
           "command": "streamscope.moveToSecretStorage",
           "when": "false"
+        },
+        {
+          "command": "streamscope.captureValue",
+          "when": "resourceScheme == streamscope-response || activeWebviewPanelId == 'streamscope.response'"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "streamscope.captureValue",
+          "when": "resourceScheme == streamscope-response && !(resourceFilename =~ /\\.headers\\.http$/)",
+          "group": "streamscope@1"
         }
       ],
       "editor/title": [

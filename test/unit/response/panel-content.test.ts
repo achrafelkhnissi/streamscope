@@ -5,6 +5,7 @@ import {
   capTail,
   compactEventJson,
   detailNote,
+  detailText,
   eventNote,
   eventText,
   panelBody,
@@ -455,5 +456,27 @@ describe('capTail', () => {
     expect(text.endsWith(kept.text)).toBe(true);
     expect(Buffer.byteLength(kept.text)).toBeLessThanOrEqual(8);
     expect(kept.text).toBe('ééend');
+  });
+});
+
+describe('detailText', () => {
+  it('detailText is what the feed posts for an event', () => {
+    expect(detailText(event({ type: 'A', id: 12345678901234567890n }))).toEqual({
+      text: '{\n  "type": "A",\n  "id": 12345678901234567890\n}',
+      truncated: false,
+    });
+    const large = event({ pad: 'x'.repeat(panelLimits.inlineEventBytes) });
+    const shown = detailText(large);
+    expect(shown.truncated).toBe(true);
+    expect(Buffer.byteLength(shown.text)).toBeLessThanOrEqual(panelLimits.inlineEventBytes);
+    expect(shown.text).toBe(eventText(large, panelLimits.inlineEventBytes).text);
+    const wide = event({ pad: 'é'.repeat(panelLimits.inlineEventBytes / 2) });
+    expect(Buffer.byteLength(detailText(wide).text)).toBeLessThanOrEqual(
+      panelLimits.inlineEventBytes,
+    );
+    expect(detailText(undefined)).toEqual({
+      text: 'This event is no longer available.',
+      truncated: false,
+    });
   });
 });

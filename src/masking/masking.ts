@@ -23,6 +23,13 @@ const previewLookahead = 1_024;
 
 const maxDisplayLength = 4_096;
 
+const sensitiveNameWords: ReadonlySet<string> = new Set([...sensitiveWords, 'jwt']);
+const nameWord = /[A-Z]+(?![a-z])|[A-Z]?[a-z]+|\d+/g;
+
+export function isSensitiveName(name: string): boolean {
+  return (name.match(nameWord) ?? []).some((word) => sensitiveNameWords.has(word.toLowerCase()));
+}
+
 export function isSensitiveHeader(name: string): boolean {
   return name
     .toLowerCase()

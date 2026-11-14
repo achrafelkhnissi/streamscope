@@ -194,6 +194,52 @@ describe('parsePanelMessage', () => {
     expect(parse({ type: 'tab' })).toBeUndefined();
   });
 
+  it('accepts a capture message for an event and for the body', () => {
+    expect(parse({ type: 'capture', run: 2, target: 'event', index: 3, offset: 17 })).toEqual({
+      type: 'capture',
+      run: 2,
+      target: 'event',
+      index: 3,
+      offset: 17,
+    });
+    expect(parse({ type: 'capture', run: 2, target: 'body', offset: 0 }, 0)).toEqual({
+      type: 'capture',
+      run: 2,
+      target: 'body',
+      offset: 0,
+    });
+    expect(
+      parse({ type: 'capture', run: 2, target: 'body', offset: panelLimits.inlineBodyBytes }),
+    ).toEqual({ type: 'capture', run: 2, target: 'body', offset: panelLimits.inlineBodyBytes });
+    expectTypeOf<{ type: 'captureSelection' }>().toExtend<ToPanel>();
+  });
+
+  it('refuses capture messages with extra keys, a bad run, an index past the event count, a negative, fractional or oversized offset, or an unknown target', () => {
+    const event = { type: 'capture', run: 2, target: 'event', index: 3, offset: 17 };
+    const body = { type: 'capture', run: 2, target: 'body', offset: 17 };
+    for (const value of [
+      { ...event, path: ['threadId'] },
+      { ...body, index: 3 },
+      { ...event, run: 0 },
+      { ...event, run: 1.5 },
+      { ...event, run: '2' },
+      { ...event, index: eventCount + 1 },
+      { ...event, index: 0 },
+      { type: 'capture', run: 2, target: 'event', offset: 17 },
+      { ...event, offset: -1 },
+      { ...event, offset: 1.5 },
+      { ...event, offset: panelLimits.inlineBodyBytes + 1 },
+      { ...event, offset: '17' },
+      { ...body, offset: Number.NaN },
+      { ...body, target: 'headers' },
+      { ...body, target: 'raw' },
+      { type: 'capture', run: 2, offset: 1 },
+      { type: 'captureSelection' },
+    ]) {
+      expect(parse(value), JSON.stringify(value)).toBeUndefined();
+    }
+  });
+
   it('rejects an unknown type or one that names something on the prototype', () => {
     expect(parse({ type: 'capture' })).toBeUndefined();
     expect(parse({ type: 'command', id: 'workbench.action.quit' })).toBeUndefined();

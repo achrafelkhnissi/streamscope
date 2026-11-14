@@ -6,7 +6,7 @@ import { maskedPreview } from '../masking/masking';
 import type { RunHandle, RunSnapshot } from '../runs/run';
 import { classifyContentType } from '../streaming/detect';
 import { renderHeadersDocument } from './headers-document';
-import { capTail, detailNote, eventText, isEventStream, panelStatus } from './panel-content';
+import { capTail, detailNote, detailText, isEventStream, panelStatus } from './panel-content';
 import {
   panelLimits,
   type PanelBody,
@@ -27,7 +27,6 @@ export const captureRefreshMs = 50;
 const maxPanelCaptures = 64;
 const captureTextLength = 200;
 const partBytes = panelLimits.messageBytes / 2;
-const unavailableEvent = 'This event is no longer available.';
 
 function readEvent(store: EventStore, index: number): Promise<StreamEvent | undefined> {
   return store.read(index).catch(() => undefined);
@@ -397,19 +396,15 @@ export class PanelFeed {
     if (generation !== this.generation) {
       return;
     }
-    const shown =
-      event === undefined
-        ? { text: unavailableEvent, truncated: false }
-        : eventText(event, panelLimits.inlineEventBytes);
-    const capped = capText(shown.text, panelLimits.inlineEventBytes);
+    const shown = detailText(event);
     const note = event === undefined ? undefined : detailNote(event, index);
     this.options.post({
       type: 'detail',
       run: this.run.id,
       index,
-      text: capped.text,
+      text: shown.text,
       note: note === undefined ? undefined : capText(note, panelLimits.inlineEventBytes).text,
-      truncated: shown.truncated || capped.cut,
+      truncated: shown.truncated,
     });
   }
 

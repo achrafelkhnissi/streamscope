@@ -20,7 +20,13 @@ import type { RunHandle, RunSnapshot } from '../../runs/run';
 import { responseScheme, type ResponseFileSystem } from './response-file-system';
 
 export type ResponseDocument =
-  { key: string; target: 'body' | 'headers' } | { key: string; target: 'event'; index: number };
+  | { key: string; target: 'body' | 'headers' }
+  | { key: string; target: 'event'; index: number; jsonStart: number };
+
+interface EventDocument {
+  index: number;
+  jsonStart: number;
+}
 
 interface Documents {
   number: number;
@@ -30,7 +36,7 @@ interface Documents {
   headers: vscode.Uri | undefined;
   body: vscode.Uri | undefined;
   staleBody: vscode.Uri | undefined;
-  events: Map<string, number>;
+  events: Map<string, EventDocument>;
   formatting: AbortController | undefined;
   formatted: CachedPromise<EncodedBody | undefined>;
 }
@@ -95,9 +101,9 @@ export class ResponsePresenter {
       if (documents.headers !== undefined && sameUri(documents.headers, uri)) {
         return { key, target: 'headers' };
       }
-      const index = documents.events.get(uri.path);
-      if (index !== undefined) {
-        return { key, target: 'event', index };
+      const event = documents.events.get(uri.path);
+      if (event !== undefined) {
+        return { key, target: 'event', ...event };
       }
     }
     return undefined;
@@ -208,13 +214,13 @@ export class ResponsePresenter {
     }
     const extension = event.kind === 'json' ? '.json' : '.txt';
     const uri = responseUri(`${documents.base}/event-${String(index)}${extension}`);
-    const content = await this.eventContent(event, index);
+    const { content, jsonStart } = await this.eventContent(event, index);
     if (documents.run !== run) {
       return;
     }
     this.files.write(uri, content);
     documents.events.delete(uri.path);
-    documents.events.set(uri.path, index);
+    documents.events.set(uri.path, { index, jsonStart });
     const dropped: vscode.Uri[] = [];
     for (const path of documents.events.keys()) {
       if (documents.events.size - dropped.length <= maxEventDocuments) {
@@ -229,7 +235,10 @@ export class ResponsePresenter {
     await this.discard(documents, dropped);
   }
 
-  private async eventContent(event: StreamEvent, index: number): Promise<Uint8Array> {
+  private async eventContent(
+    event: StreamEvent,
+    index: number,
+  ): Promise<{ content: Uint8Array; jsonStart: number }> {
     const encoder = new TextEncoder();
     let content: Uint8Array;
     let truncated = false;
@@ -246,7 +255,11 @@ export class ResponsePresenter {
       truncated = shown.truncated;
     }
     const note = eventNote(event, index, truncated);
-    return note === undefined ? content : Buffer.concat([encoder.encode(`${note}\n\n`), content]);
+    if (note === undefined) {
+      return { content, jsonStart: 0 };
+    }
+    const prefix = `${note}\n\n`;
+    return { content: Buffer.concat([encoder.encode(prefix), content]), jsonStart: prefix.length };
   }
 
   private create(key: string): Documents {

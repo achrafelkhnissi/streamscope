@@ -38,9 +38,11 @@ export class StreamSession {
   private readonly batcher: UpdateBatcher;
   private closed = false;
   private spillBehind = false;
+  private readonly fields: readonly string[];
 
   constructor(private readonly options: StreamSessionOptions) {
     const limits: StreamLimits = { ...defaultStreamLimits, ...options.limits };
+    this.fields = limits.typeFields;
     this.store = new EventStore({
       memoryEvents: limits.memoryEvents,
       memoryBytes: limits.memoryBytes,
@@ -89,6 +91,10 @@ export class StreamSession {
         },
       },
     );
+  }
+
+  get typeFields(): readonly string[] {
+    return this.fields;
   }
 
   get format(): FormatDecision | undefined {

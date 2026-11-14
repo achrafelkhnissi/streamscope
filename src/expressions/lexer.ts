@@ -113,7 +113,7 @@ const simpleEscapes: ReadonlyMap<string, string> = new Map([
 
 type Escape = { ok: true; value: string; end: number } | { ok: false; end: number };
 
-function isKeyword(word: string): word is Keyword {
+export function isKeyword(word: string): word is Keyword {
   return keywordSet.has(word);
 }
 
