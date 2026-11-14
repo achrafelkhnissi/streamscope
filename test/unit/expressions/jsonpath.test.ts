@@ -326,6 +326,20 @@ describe('checkJsonPath', () => {
     expect(checkJsonPath("$[?match(@.a, '.*')]")).toBeUndefined();
   });
 
+  it('rejects a function call with a third argument at its comma, before parsing', () => {
+    const tooMany = 'A JSONPath function takes at most two arguments.';
+    const three = '$[?match(@.a, "x", "y")]';
+    const wide = `$[?a(1,b(1,c(${Array<string>(180).fill('1').join(',')}`;
+    const parsesBefore = vi.mocked(parse).mock.calls.length;
+
+    expect(checkJsonPath(three)).toEqual({ message: tooMany, offset: three.lastIndexOf(',') });
+    expect(checkJsonPath(wide)).toEqual({ message: tooMany, offset: wide.indexOf('1,1,1') + 3 });
+    expect(vi.mocked(parse).mock.calls.length).toBe(parsesBefore);
+    expect(checkJsonPath('$[?count(@[0,1,2]) > 0]')).toBeUndefined();
+    expect(checkJsonPath("$[?match(@.a, 'a,b,c')]")).toBeUndefined();
+    expect(checkJsonPath('$[?search(@.a, "x") && match(@.b, "y")]')).toBeUndefined();
+  });
+
   it('rejects an unknown function at the offset of its name', () => {
     const message = (name: string): string =>
       `Unknown function \`${name}\`; the functions are length, count, match, search and value.`;

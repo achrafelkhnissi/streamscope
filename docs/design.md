@@ -434,7 +434,7 @@ Regular expressions. A JavaScript regex cannot be interrupted on the extension h
 JSONPath:
 
 - `jsonpath()` and REST Client's `{{x.response.body.$…}}` references are evaluated in a child process, never on the extension host. The process has 5 s and a 1 GiB heap and is killed when it passes either; the capture then fails with "jsonpath() took too long or used too much memory".
-- The extension host only validates a query: at most 384 characters, at most 3 levels of parentheses, at most 32 levels of brackets, and no function other than `length`, `count`, `match`, `search` and `value`.
+- The extension host only validates a query: at most 384 characters, at most 3 levels of parentheses, at most 32 levels of brackets, at most two arguments per function call (a third is rejected before the query is parsed), and no function other than `length`, `count`, `match`, `search` and `value`.
 - Inside a JSONPath filter, a large integer compared with a number compares false. Use the capture language for exact large-integer comparisons.
 
 Capture evaluation (`src/capture/tracker.ts`, `body.ts`, `task-budget.ts`):

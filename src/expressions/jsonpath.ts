@@ -40,6 +40,8 @@ const lengthMessage = 'the query is longer than 384 characters';
 const complexMessage = 'the query is too complex to check';
 const parenthesesMessage = `the query nests too deeply (more than ${String(maxParentheses)} levels of parentheses)`;
 const bracketsMessage = `the query nests too deeply (more than ${String(maxBrackets)} levels of brackets)`;
+const argumentsMessage = 'A JSONPath function takes at most two arguments.';
+const functionNameChar = /[a-z0-9_]/;
 const patternFlags = 'u';
 
 const compiledPatterns = new Map<string, CompiledPatterns>();
@@ -229,6 +231,7 @@ function limitProblem(query: string): JsonPathProblem | undefined {
   let parentheses = 0;
   let brackets = 0;
   let quote = '';
+  const groups: { call: boolean; brackets: number; commas: number }[] = [];
   for (let index = 0; index < query.length; index += 1) {
     const char = query.charAt(index);
     if (quote !== '') {
@@ -244,8 +247,18 @@ function limitProblem(query: string): JsonPathProblem | undefined {
       if (parentheses > maxParentheses) {
         return { message: parenthesesMessage, offset: index };
       }
+      groups.push({ call: functionNameChar.test(query.charAt(index - 1)), brackets, commas: 0 });
     } else if (char === ')' && parentheses > 0) {
       parentheses -= 1;
+      groups.pop();
+    } else if (char === ',') {
+      const group = groups.at(-1);
+      if (group?.call === true && group.brackets === brackets) {
+        group.commas += 1;
+        if (group.commas > 1) {
+          return { message: argumentsMessage, offset: index };
+        }
+      }
     } else if (char === '[') {
       brackets += 1;
       if (brackets > maxBrackets) {
