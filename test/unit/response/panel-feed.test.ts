@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CaptureRegistry } from '../../../src/capture/registry';
+import { CheckRegistry } from '../../../src/checks/registry';
 import { CaptureTracker, type CaptureResult } from '../../../src/capture/tracker';
 import { StreamSession } from '../../../src/events/session';
 import { SpillArea, type SpillFile } from '../../../src/events/spill';
@@ -72,6 +73,7 @@ function harness(
     readRaw?: () => Promise<string | undefined>;
     readReply?: () => Promise<string | undefined>;
     registry?: CaptureRegistry;
+    checks?: CheckRegistry;
     timed?: (work: () => void) => void;
   } = {},
 ): Harness {
@@ -110,6 +112,7 @@ function harness(
       streamView: options.streamView ?? 'events',
       post: (message) => posted.push(message),
       captures: registry,
+      checks: options.checks ?? new CheckRegistry(),
       timed:
         options.timed ??
         ((work) => {
@@ -1206,5 +1209,48 @@ describe('PanelFeed for a run whose Raw and Reply were dropped from memory', () 
     expect(page.readRaw).not.toHaveBeenCalled();
     expect(page.readReply).not.toHaveBeenCalled();
     expect(page.last().reply).toEqual({ reset: true, text: 'Hello' });
+  });
+});
+
+describe('checks in the panel', () => {
+  const key = 'file:///requests.http\n@items';
+
+  it("sends the run's checks with reset and their changes with update, capped at 64", () => {
+    vi.useFakeTimers();
+    const checks = new CheckRegistry();
+    checks.begin(
+      { id: 7, key, startedAt: 7 },
+      Array.from({ length: 70 }, (_, at) => ({ text: `status == ${String(200 + at)}`, line: at })),
+    );
+    const page = harness({ checks });
+    page.feed.start();
+
+    const reset = page.reset();
+    expect(reset.checks).toHaveLength(64);
+    expect(reset.checks[0]).toEqual({ text: 'status == 200', state: 'pending', detail: '' });
+    expect(reset.status.text).toContain('0/70 checks');
+
+    checks.update(7, 1, { state: 'failed', detail: 'got 200', settledAt: undefined });
+    checks.update(7, 0, { state: 'passed', settledAt: undefined });
+    vi.advanceTimersByTime(captureRefreshMs);
+
+    const update = page.last();
+    expect(update.checks?.slice(0, 2)).toEqual([
+      { text: 'status == 200', state: 'passed', detail: '' },
+      { text: 'status == 201', state: 'failed', detail: 'got 200' },
+    ]);
+    expect(update.status.text).toContain('1/70 checks');
+    page.feed.refresh();
+    expect(page.last().checks).toBeUndefined();
+  });
+
+  it('shows no checks of another run', () => {
+    const checks = new CheckRegistry();
+    checks.begin({ id: 8, key, startedAt: 8 }, [{ text: 'status == 200', line: 0 }]);
+    const page = harness({ checks });
+    page.feed.start();
+
+    expect(page.reset().checks).toEqual([]);
+    expect(page.reset().status.text).not.toContain('checks');
   });
 });

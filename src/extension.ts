@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { CaptureRegistry } from './capture/registry';
+import { CheckRegistry } from './checks/registry';
 import { offerToHideOtherSendLenses } from './vscode/coexistence';
 import { EnvironmentStore } from './vscode/environments/environment-store';
 import { registerEnvironmentPicker } from './vscode/environments/picker';
@@ -27,12 +28,21 @@ export function activate(context: vscode.ExtensionContext): void {
   const secrets = new SecretStore(context.secrets, context.workspaceState, workspaceIdentity());
   registerSecretCommands(context, secrets);
   const captures = new CaptureRegistry();
+  const checks = new CheckRegistry();
   context.subscriptions.push(
     vscode.workspace.onDidGrantWorkspaceTrust(() => {
       captures.clear();
     }),
   );
-  const requests = registerRequestFeatures(context, log, cache, environments, secrets, captures);
+  const requests = registerRequestFeatures(
+    context,
+    log,
+    cache,
+    environments,
+    secrets,
+    captures,
+    checks,
+  );
   shutdown = requests.shutdown;
   const variables = createLanguageVariables(
     context,
@@ -43,7 +53,7 @@ export function activate(context: vscode.ExtensionContext): void {
     requests.hasRun,
   );
   registerVariableFeatures(context, cache, variables, secrets);
-  registerLanguageFeatures(context, cache, variables, captures);
+  registerLanguageFeatures(context, cache, variables, captures, checks);
   void offerToHideOtherSendLenses(context);
   log.info('Extension activated');
 }

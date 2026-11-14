@@ -1,4 +1,4 @@
-import { CaptureReader, JsonPathBudget, RequestChecks, type Clock } from './captures';
+import { CaptureReader, ExpectReader, JsonPathBudget, RequestChecks, type Clock } from './captures';
 import { directiveDiagnostics, requestNamePattern } from './directives';
 import {
   directiveKinds,
@@ -354,11 +354,14 @@ function parseBlock(
   }
   const checks = new RequestChecks(budget);
   const reader = new CaptureReader(checks);
+  const expectReader = new ExpectReader(checks);
   for (const directive of directives) {
     diagnostics.push(
       ...(directive.kind === 'capture'
         ? reader.read(directive)
-        : directiveDiagnostics(directive, checks)),
+        : directive.kind === 'expect'
+          ? expectReader.read(directive)
+          : directiveDiagnostics(directive, checks)),
     );
   }
   const firstDirective = directives[0];
@@ -391,6 +394,7 @@ function parseBlock(
       name: name !== undefined && requestNamePattern.test(name) ? name : undefined,
       directives,
       captures: reader.captures,
+      expects: expectReader.expects,
       requestLine: parseRequestLine(lines, sections.urlLines),
       headers: sections.headerLines.map((line) => parseHeader(lines, line)),
       body,

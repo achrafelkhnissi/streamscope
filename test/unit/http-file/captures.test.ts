@@ -550,7 +550,7 @@ describe('parseHttpFile jsonpath() queries', () => {
 });
 
 describe('parseHttpFile # @expect and # @until', () => {
-  it('accepts valid arguments without storing them', () => {
+  it('accepts valid arguments, storing only captures and expects', () => {
     const found = firstRequest(
       '# @capture id = body.id',
       '# @expect status == 201 && exists(body.id)',
@@ -567,6 +567,7 @@ describe('parseHttpFile # @expect and # @until', () => {
       'body',
       'captures',
       'directives',
+      'expects',
       'headers',
       'name',
       'range',

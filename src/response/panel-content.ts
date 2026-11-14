@@ -1,9 +1,10 @@
+import type { CheckSummary } from '../checks/registry';
 import type { JsonValue, StreamEvent } from '../events/model';
 import { maskValues } from '../masking/masking';
 import type { RawData, RunSnapshot } from '../runs/run';
 import { formatLabel } from '../streaming/detect';
 import { formatBody } from './format-body';
-import { formatBytes, formatDuration, waitingText } from './labels';
+import { checksText, formatBytes, formatDuration, waitingText } from './labels';
 import { panelLimits, type PanelBody, type PanelStatus } from './panel-protocol';
 import { capText } from './panel-rows';
 
@@ -47,7 +48,7 @@ export function isEventStream(run: RunSnapshot): boolean {
   return !run.bodyKept;
 }
 
-export function panelStatus(run: RunSnapshot): PanelStatus {
+export function panelStatus(run: RunSnapshot, checks?: CheckSummary): PanelStatus {
   const stream = run.stream;
   const events = stream?.store.count ?? 0;
   const streaming = isEventStream(run);
@@ -62,6 +63,10 @@ export function panelStatus(run: RunSnapshot): PanelStatus {
     parts.push(formatBytes(run.receivedBytes));
   }
   parts.push(formatDuration(run.elapsedMs));
+  const summary = checksText(checks);
+  if (summary !== undefined) {
+    parts.push(summary);
+  }
   const reason =
     run.status === 'failed'
       ? run.failure?.message

@@ -18,6 +18,7 @@ import { captureHint } from '../../../src/capture/hints';
 import { captureLookup } from '../../../src/capture/lookup';
 import { CaptureRegistry } from '../../../src/capture/registry';
 import { CaptureService } from '../../../src/capture/service';
+import { CheckRegistry } from '../../../src/checks/registry';
 import type { CaptureResult } from '../../../src/capture/tracker';
 import type { SpillFile } from '../../../src/events/spill';
 import { parseHttpFile } from '../../../src/http-file/parse';
@@ -3092,6 +3093,7 @@ describe('waiting for captured values', () => {
           streamView: 'events',
           post: (message) => posted.push(message),
           captures: registry,
+          checks: new CheckRegistry(),
           timed: (work) => {
             work();
           },
@@ -3266,6 +3268,7 @@ describe('waiting for captured values', () => {
         streamView: 'events',
         post: (message) => posted.push(message),
         captures: registry,
+        checks: new CheckRegistry(),
         timed: (work) => {
           work();
         },
@@ -3356,6 +3359,7 @@ describe('waiting for captured values', () => {
           streamView: 'events',
           post: (message) => posted.push(message),
           captures: registry,
+          checks: new CheckRegistry(),
           timed: (work) => {
             work();
           },
@@ -3464,6 +3468,7 @@ describe('waiting for captured values', () => {
           streamView: 'events',
           post: (message) => posted.push(message),
           captures: registry,
+          checks: new CheckRegistry(),
           timed: (work) => {
             work();
           },
@@ -3582,6 +3587,7 @@ describe('waiting for captured values', () => {
           streamView: 'events',
           post: (message) => posted.push(message),
           captures: registry,
+          checks: new CheckRegistry(),
           timed: (work) => {
             work();
           },

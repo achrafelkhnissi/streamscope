@@ -3,6 +3,8 @@ import * as vscode from 'vscode';
 import { benchmarkEnabled } from '../../benchmark/contract';
 import type { CaptureRegistry } from '../../capture/registry';
 import { CaptureService } from '../../capture/service';
+import type { CheckRegistry } from '../../checks/registry';
+import { CheckService } from '../../checks/service';
 import type { StreamSession } from '../../events/session';
 import { SpillArea } from '../../events/spill';
 import type { HttpFile, HttpRequest, Range } from '../../http-file/model';
@@ -228,6 +230,7 @@ export function registerRequestFeatures(
   environments: EnvironmentStore,
   secrets: SecretStore,
   captures: CaptureRegistry,
+  checks: CheckRegistry,
 ): RequestFeatures {
   const testMode = context.extensionMode === vscode.ExtensionMode.Test;
   const loggedLines: string[] = [];
@@ -280,7 +283,14 @@ export function registerRequestFeatures(
     clock: () => performance.now(),
   };
   const registry = new RunRegistry(dependencies);
-  const lenses = new RequestCodeLenses(cache, registry);
+  const lenses = new RequestCodeLenses(cache, registry, checks);
+  const stopRemasking = captures.onDidChange((key) => {
+    const runId = checks.runOf(key);
+    if (runId !== undefined) {
+      checks.remask(key, captures.secretsOf(runId));
+    }
+  });
+  context.subscriptions.push({ dispose: stopRemasking });
   const statusBar = new RunStatusBar(registry);
 
   const saveStream = async (stream: StreamSession, chosen: vscode.Uri): Promise<void> => {
@@ -387,6 +397,7 @@ export function registerRequestFeatures(
     state: context.globalState,
     presenter,
     captures,
+    checks,
     benchmark,
     save: (run, documentUri) => saveRun(run, documentUri, undefined),
     capture: (run, message, body) => valueCapture.fromPanel(run, message, body),
@@ -527,6 +538,12 @@ export function registerRequestFeatures(
         request,
         workerFile: captureWorker,
         runs: (producer) => registry.latest(producer),
+      }),
+      checks: new CheckService({
+        registry: checks,
+        request,
+        workerFile: captureWorker,
+        secretsOf: (runId) => captures.secretsOf(runId),
       }),
       waitTimeoutMs: captureSettings.waitTimeoutMs,
     });

@@ -29,7 +29,8 @@ import type { BodyFileContext } from './body-files';
 import { buildOutgoingRequest, type BuildResult } from './build-request';
 import { parseDuration } from './duration';
 import { bodySourceOf, readBodyFromSpill, type DataSource } from './body-spill';
-import type { CaptureWaitOutcome, RunCaptures, RunEnd, RunObserver } from './observer';
+import { combineObservers } from './combine-observers';
+import type { CaptureWaitOutcome, RunCaptures, RunChecks, RunEnd, RunObserver } from './observer';
 import { readRawTail } from './raw-read';
 import { RawTail } from './raw-tail';
 
@@ -96,6 +97,7 @@ export interface RunInput {
   spill: SpillArea | undefined;
   limits: StreamLimits;
   captures: RunCaptures;
+  checks: RunChecks;
   waitTimeoutMs: number;
 }
 
@@ -422,12 +424,13 @@ export function startRun(
   const observe = (): RunObserver | undefined => {
     if (!observed) {
       observed = true;
-      observer = captures.observer({
+      const info = {
         id,
         label: input.label,
         wallStartedAt: state.wallStartedAt,
         sensitiveValues: state.sensitiveValues,
-      });
+      };
+      observer = combineObservers([captures.observer(info), input.checks.observer(info)]);
     }
     return observer;
   };
@@ -564,6 +567,7 @@ export function startRun(
       return finish({ status: 'cancelled' });
     }
     captures.begin({ id, key: input.key, label: input.label, startedAt: state.startedAt });
+    input.checks.begin({ id, key: input.key, startedAt: state.startedAt });
     const blocking = [...timeoutProblems(), ...expressionProblems(input.file, request)];
     let prepared = await prepare(blocking);
     let rounds = 0;

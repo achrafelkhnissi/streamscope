@@ -139,6 +139,32 @@ describe('labels', () => {
     ).toBe('This body is no longer available.');
   });
 
+  it('describes a completed run with its checks', () => {
+    expect(describeOutcome(snapshot(), { passed: 2, failed: 0, total: 2 })).toBe(
+      '✓ 200 OK · 1.2 KB · 120 ms · 2/2 checks',
+    );
+    expect(describeOutcome(snapshot(), { passed: 1, failed: 1, total: 2 })).toBe(
+      '✗ 200 OK · 1.2 KB · 120 ms · 1/2 checks',
+    );
+    expect(describeOutcome(snapshot(), { passed: 1, failed: 0, total: 2 })).toBe(
+      '200 OK · 1.2 KB · 120 ms · 1/2 checks',
+    );
+    expect(describeOutcome(snapshot(), undefined)).toBe('200 OK · 1.2 KB · 120 ms');
+    expect(describeOutcome(snapshot(), { passed: 0, failed: 0, total: 0 })).toBe(
+      '200 OK · 1.2 KB · 120 ms',
+    );
+    expect(
+      describeOutcome(
+        snapshot({
+          status: 'failed',
+          head: undefined,
+          failure: { kind: 'refused', message: 'Connection refused.' },
+        }),
+        { passed: 0, failed: 2, total: 2 },
+      ),
+    ).toBe('Failed: Connection refused.');
+  });
+
   it('describes each outcome', () => {
     expect(describeOutcome(snapshot())).toBe('200 OK · 1.2 KB · 120 ms');
     expect(

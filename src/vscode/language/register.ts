@@ -1,3 +1,4 @@
+import type { CheckRegistry } from '../../checks/registry';
 import * as vscode from 'vscode';
 import { CaptureChanges } from '../../capture/changes';
 import type { CaptureRegistry } from '../../capture/registry';
@@ -5,6 +6,7 @@ import type { HttpFile, HttpRequest, ParseDiagnostic, Range } from '../../http-f
 import { variableDiagnostics } from '../../variables/inspect';
 import { affectedDocuments } from './affected-documents';
 import { CaptureInlayHints } from './captures';
+import { CheckDecorations, checkDecorations } from './check-decorations';
 import type { ParseCache } from './parse-cache';
 import type { LanguageVariables } from './variables';
 
@@ -76,9 +78,12 @@ export function registerLanguageFeatures(
   cache: ParseCache,
   variables: LanguageVariables,
   captures: CaptureRegistry,
+  checks: CheckRegistry,
 ): void {
   const diagnostics = vscode.languages.createDiagnosticCollection('streamscope');
   const hints = new CaptureInlayHints(cache, captures);
+  const decorations = new CheckDecorations(cache, checks);
+  context.subscriptions.push(decorations);
   const pending = new Map<string, ReturnType<typeof setTimeout>>();
 
   const updateVariables = async (document: vscode.TextDocument, file: HttpFile): Promise<void> => {
@@ -190,6 +195,20 @@ export function registerLanguageFeatures(
         hintChanges += 1;
       }),
       vscode.commands.registerCommand('streamscope.test.inlayHintChanges', () => hintChanges),
+      vscode.commands.registerCommand('streamscope.test.checkDecorations', (uri?: unknown) => {
+        const document = vscode.workspace.textDocuments.find(
+          (candidate) => uri instanceof vscode.Uri && candidate.uri.toString() === uri.toString(),
+        );
+        return document === undefined
+          ? []
+          : checkDecorations(document, cache, checks).map(({ line, start, end, state, text }) => ({
+              line,
+              start,
+              end,
+              state,
+              text,
+            }));
+      }),
     );
   }
 

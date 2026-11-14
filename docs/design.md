@@ -93,7 +93,13 @@ JavaScript scripts, GraphQL helpers, WebSocket and gRPC, cURL import and export,
 ### Checks
 
 - **FR-E1** `# @expect expression` lines; each evaluates to true or false using the capture language plus `exists`, `count`, `before`, `unique` (section 10).
-- **FR-E2** A check settles as soon as its answer is known, and fails early when it can no longer pass.
+- **FR-E2** A check settles as soon as its answer is known, and fails early when it can no longer pass. M9 settles the details:
+  - **Logic:** each check is evaluated as true, false or not yet known, with `&&`, `||` and `!` following Kleene logic. A value it reads settles as a capture would: at the headers for `status`, `headers` and `cookies`, at the matching event for one `first(…)` or `nth(…)`, else at the end of the run.
+  - **Counts:** `count(…)` compared with a number literal is decided from the running count, starting at 0 when the headers arrive: `> k`, `>= k` and `!= k` pass, and `< k`, `<= k` and `== k` fail, as soon as the count makes them certain. `exists(first(…))`, `exists(last(…))` and `exists(nth(k, …))` are decided from the matching event itself, whatever its size.
+  - **`before(a, b)`:** passes at the first event matching `a` if no event so far matched `b`, and fails at the first event matching `b` if no earlier event matched `a`; an event matching both fails it. If neither matches, it fails at the end.
+  - **`unique(…)`:** settles when its list does, at the end for `all(…)`; two items are equal when `==` says so. `exists`, `before` and `unique` combine with `&&`, `||` and `!`, or compare with `true` or `false`.
+  - **Settled checks never change.** A request that is stopped, fails or is not sent fails its pending checks with that reason, and a check still undecided when a run completes fails. A value that cannot be evaluated (over 1 MiB, too much work, no longer available) fails its check with that reason, whatever `!` or `||` surrounds it. A request has at most 64 `# @expect` lines, and its checks read at most 64 distinct values.
+  - **Details:** a failed check shows the expected and actual values, for example `` `status == 201` got 500 ``. Each value is masked in full (the run's sensitive values, sensitive response headers, its `secret` captures, user info in URLs) and then cut to 200 characters; a detail is at most 4,096 characters.
 - **FR-E3** Results appear in the Checks view, as a summary in the status line, as ✓ / ✗ decorations beside each `# @expect` line, and in the Testing view during file runs. A failed check does not stop the stream or block captures.
 
 ### Runs
@@ -194,7 +200,7 @@ Principles:
 | `src/streaming`           | UTF-8 decoding, line framing with size limits, format detection, SSE and NDJSON interpreters, reply adapters                                                 | nothing                             |
 | `src/events`              | Event model, in-memory ring buffer, spill file, batched change notifications                                                                                 | `streaming`                         |
 | `src/capture`             | Capture registry per session, resolution states, provenance, waiting with timeouts                                                                           | `expressions`, `events`             |
-| `src/checks`              | Evaluate `# @expect` lines live, early failure                                                                                                               | `expressions`, `events`             |
+| `src/checks`              | Evaluate `# @expect` lines live, early failure                                                                                                               | `expressions`, `events`, `capture`  |
 | `src/runs`                | Request lifecycle state machine, file-run orchestration, skip rules                                                                                          | all core modules                    |
 | `src/vscode/language`     | Grammar contribution, CodeLens, outline, folding, hovers, completion, diagnostics, quick fixes, inlay hints, decorations                                     | core                                |
 | `src/vscode/response`     | Response view webview panel and its overflow documents (section 13), status bar run indicator                                                                | `events`, `runs`                    |
@@ -571,7 +577,7 @@ The M5 spike chose the webview; [decisions/response-surface.md](decisions/respon
 
 ### Editor-side presentation (both surfaces)
 
-- CodeLens above each request: "Send", or "Stop · 34 events · 2.1 s" while running, then "✓ 200 · 120 events · 4.3 s · 5/5 checks".
+- CodeLens above each request: "Send", or "Stop · 34 events · 2.1 s" while running, then "✓ 200 OK · 120 events · 4.3 s · 5/5 checks" (✓ when every check passed, ✗ when one failed).
 - Inlay hints after `# @capture` lines with values; ✓ / ✗ decorations on `# @expect` lines.
 - Status bar: active environment; a live run indicator with Stop.
 

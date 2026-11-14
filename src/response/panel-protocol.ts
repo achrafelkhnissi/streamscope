@@ -57,6 +57,12 @@ export interface PanelCapture {
   text: string;
 }
 
+export interface PanelCheck {
+  text: string;
+  state: 'pending' | 'passed' | 'failed';
+  detail: string;
+}
+
 export type PanelBody =
   | { kind: 'none' }
   | { kind: 'arriving' }
@@ -75,6 +81,7 @@ export type ToPanel =
       headers: string;
       body: PanelBody;
       captures: PanelCapture[];
+      checks: PanelCheck[];
     }
   | {
       type: 'update';
@@ -87,6 +94,7 @@ export type ToPanel =
       body: PanelBody | undefined;
       headers: string | undefined;
       captures: PanelCapture[] | undefined;
+      checks: PanelCheck[] | undefined;
     }
   | { type: 'rows'; run: number; rows: PanelRow[] }
   | {

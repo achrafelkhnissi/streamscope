@@ -3,6 +3,7 @@ import { checkJsonPath, knownJsonPathCheck, type KnownCheck } from '../expressio
 import { parseExpression, sourcesOf, type ExpressionContext } from '../expressions/parse';
 import type {
   CaptureDirective,
+  ExpectDirective,
   DiagnosticCode,
   Directive,
   ParseDiagnostic,
@@ -12,6 +13,7 @@ import type {
 import { span } from './ranges';
 
 const maxCaptures = 64;
+const maxExpects = 64;
 const jsonPathBudgetMs = 10;
 const uncheckedMessage =
   'Some jsonpath() queries in this request were not checked yet; they are checked as you edit.';
@@ -174,5 +176,44 @@ export class CaptureReader {
       range: directive.range,
     });
     return [...diagnostics, ...checked.diagnostics];
+  }
+}
+
+export class ExpectReader {
+  readonly expects: ExpectDirective[] = [];
+  private lines = 0;
+
+  constructor(private readonly checks: RequestChecks) {}
+
+  read(directive: Directive): ParseDiagnostic[] {
+    if (directive.argument === '') {
+      return [
+        problem('empty-expect', 'Expected an expression after "# @expect".', directive.range),
+      ];
+    }
+    this.lines += 1;
+    if (this.lines > maxExpects) {
+      return this.lines === maxExpects + 1
+        ? [
+            problem(
+              'too-many-expects',
+              `A request can have at most ${String(maxExpects)} checks.`,
+              directive.range,
+            ),
+          ]
+        : [];
+    }
+    const checked = this.checks.expression(
+      directive.argument,
+      directive.argumentRange.start,
+      'expect',
+    );
+    this.expects.push({
+      text: directive.argument,
+      range: directive.range,
+      expressionRange: directive.argumentRange,
+      expression: checked.expression,
+    });
+    return checked.diagnostics;
   }
 }

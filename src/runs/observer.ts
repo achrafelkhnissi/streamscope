@@ -35,6 +35,16 @@ export interface RunObserver {
 
 export type CaptureWaitOutcome = { ok: true } | { ok: false; problem: ResolutionProblem };
 
+export interface RunChecks {
+  begin(run: { id: number; key: string; startedAt: number }): void;
+  observer(run: {
+    id: number;
+    label: string;
+    wallStartedAt: number;
+    sensitiveValues: readonly string[];
+  }): RunObserver | undefined;
+}
+
 export interface RunCaptures {
   lookup: CaptureLookup;
   observer(run: {
