@@ -19,6 +19,7 @@ async function main(): Promise<void> {
       events: { type: 'string', default: '100000' },
       size: { type: 'string', default: '1024' },
       captures: { type: 'string', default: '0' },
+      until: { type: 'string' },
       rate: { type: 'string' },
       minutes: { type: 'string', default: '1' },
       sample: { type: 'string', default: '5000' },
@@ -38,6 +39,7 @@ async function main(): Promise<void> {
       eventBytes,
       chunkBytes: 16 * 1024,
       captures: Number(values.captures),
+      until: values.until,
     });
     console.log(JSON.stringify(result, null, 2));
     return;

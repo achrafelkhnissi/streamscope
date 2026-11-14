@@ -47,6 +47,7 @@ export function snapshot(overrides: Partial<RunSnapshot> = {}): RunSnapshot {
     failure: undefined,
     problems: [],
     sensitiveValues: [],
+    untilEvent: undefined,
     ...overrides,
   };
 }

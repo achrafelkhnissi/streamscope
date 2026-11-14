@@ -2,6 +2,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { everySplit } from '../../support/chunks';
 import { streamFixtures } from '../../support/stream-fixtures';
 import { StreamSession, type StreamSessionOptions } from '../../../src/events/session';
 import { SpillArea } from '../../../src/events/spill';
@@ -378,5 +379,49 @@ describe('StreamSession', () => {
     expect(state.session.store.count).toBe(1);
     expect(state.updates).toBe(0);
     await area.dispose();
+  });
+});
+
+describe('StreamSession stopped from onEvent', () => {
+  const numbers = [1, 2, 3, 4, 5, 6];
+  const ndjson = encoder.encode(
+    numbers.map((n) => JSON.stringify({ type: 'STEP', n })).join('\n') + '\n',
+  );
+  const sse = encoder.encode(
+    numbers.map((n) => `event: step\ndata: {"n":${String(n)}}\n\n`).join(''),
+  );
+  const cases: [Uint8Array, string | undefined][] = [
+    [ndjson, 'application/x-ndjson'],
+    [ndjson, 'application/json'],
+    [ndjson, undefined],
+    [sse, 'text/event-stream'],
+    [sse, undefined],
+  ];
+
+  it('drops everything after stop() called from onEvent, at every chunk boundary', () => {
+    for (const [bytes, contentType] of cases) {
+      for (const stopAt of [1, 3]) {
+        for (const pieces of everySplit(bytes)) {
+          const seen: number[] = [];
+          const state = harness({
+            contentType,
+            onEvent: (event) => {
+              seen.push(event.index);
+              if (event.index === stopAt) {
+                state.session.stop();
+              }
+            },
+          });
+          for (const piece of pieces) {
+            state.session.write(piece);
+          }
+          state.session.end();
+
+          expect(seen).toEqual(numbers.slice(0, stopAt));
+          expect(state.session.store.count).toBe(stopAt);
+          state.session.dispose();
+        }
+      }
+    }
   });
 });

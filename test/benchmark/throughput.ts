@@ -6,6 +6,7 @@ import {
 } from '../../src/capture/tracker';
 import { StreamSession } from '../../src/events/session';
 import { parseExpression } from '../../src/expressions/parse';
+import { UntilWatch } from '../../src/runs/until';
 import { contentEvent, type SyntheticFormat } from '../support/stream-server';
 
 export interface ThroughputResult {
@@ -13,6 +14,8 @@ export interface ThroughputResult {
   events: number;
   eventBytes: number;
   captures: number;
+  until?: string;
+  untilMatched?: number;
   counted?: number;
   unmatched?: number;
   pauses: number;
@@ -70,6 +73,7 @@ export async function measureThroughput(options: {
   eventBytes: number;
   chunkBytes: number;
   captures: number;
+  until?: string;
 }): Promise<ThroughputResult> {
   const sentAt = performance.timeOrigin + performance.now();
   const parts: string[] = [];
@@ -92,6 +96,13 @@ export async function measureThroughput(options: {
           },
           path.resolve('dist/capture-worker.js'),
         );
+  const until =
+    options.until === undefined ? undefined : parseExpression(options.until, 'condition');
+  if (until !== undefined && !until.ok) {
+    throw new Error(`${options.until ?? ''}: ${until.error.message}`);
+  }
+  const watch = until === undefined ? undefined : new UntilWatch(until.expr);
+  let untilMatched = 0;
   const session = new StreamSession({
     contentType,
     directive: undefined,
@@ -100,10 +111,13 @@ export async function measureThroughput(options: {
     onUpdate: () => undefined,
     onText: () => undefined,
     onEvent:
-      tracker === undefined
+      tracker === undefined && watch === undefined
         ? undefined
         : (event) => {
-            tracker.event(event);
+            tracker?.event(event);
+            if (watch?.test(event) === 'match') {
+              untilMatched += 1;
+            }
           },
     backpressure: tracker,
   });
@@ -138,6 +152,7 @@ export async function measureThroughput(options: {
     events: session.store.count,
     eventBytes: options.eventBytes,
     captures: options.captures,
+    ...(options.until === undefined ? {} : { until: options.until, untilMatched }),
     ...(tracker === undefined ? {} : captureCounts(results)),
     pauses,
     seconds,

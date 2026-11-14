@@ -269,6 +269,14 @@ describe('panelStatus with checks', () => {
   });
 });
 
+describe('panelStatus after # @until', () => {
+  it('shows the event # @until ended the run at', () => {
+    expect(panelStatus(snapshot({ untilEvent: 3 })).text).toBe(
+      '200 OK · 1.2 KB · 120 ms · ended by # @until at event 3',
+    );
+  });
+});
+
 describe('panelBody', () => {
   it('shows a body within the inline limit in full', () => {
     const text = '{\n  "items": []\n}';
