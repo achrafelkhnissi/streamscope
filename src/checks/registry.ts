@@ -23,10 +23,18 @@ export interface CheckSummary {
   total: number;
 }
 
+function isSettled(request: RequestChecks): boolean {
+  return request.entries.every(({ result }) => result.state !== 'pending');
+}
+
 export class CheckRegistry {
   private readonly requests = new Map<string, RequestChecks>();
   private readonly runs = new Map<number, RequestChecks>();
   private readonly listeners = new Set<(key: string) => void>();
+  private readonly waiters = new Map<
+    number,
+    ((entries: readonly CheckEntry[] | undefined) => void)[]
+  >();
 
   constructor(private readonly limit = maxCheckRequests) {}
 
@@ -38,6 +46,14 @@ export class CheckRegistry {
     return this.listeners.size;
   }
 
+  get waiterCount(): number {
+    let count = 0;
+    for (const waiting of this.waiters.values()) {
+      count += waiting.length;
+    }
+    return count;
+  }
+
   begin(
     run: { id: number; key: string; startedAt: number },
     checks: readonly { text: string; line: number }[],
@@ -46,6 +62,7 @@ export class CheckRegistry {
     if (earlier !== undefined) {
       this.requests.delete(earlier.key);
       this.runs.delete(earlier.runId);
+      this.release(earlier.runId, undefined);
     }
     if (checks.length > 0) {
       if (this.requests.size >= this.limit) {
@@ -75,7 +92,31 @@ export class CheckRegistry {
       return;
     }
     entry.result = result;
+    if (this.waiters.has(runId) && isSettled(request)) {
+      this.release(runId, request.entries);
+    }
     this.emit(request.key);
+  }
+
+  settled(key: string, runId: number): Promise<readonly CheckEntry[] | undefined> {
+    const request = this.requests.get(key);
+    if (request === undefined) {
+      return Promise.resolve([]);
+    }
+    if (request.runId !== runId) {
+      return Promise.resolve(undefined);
+    }
+    if (isSettled(request)) {
+      return Promise.resolve(request.entries);
+    }
+    return new Promise((resolve) => {
+      const waiting = this.waiters.get(runId);
+      if (waiting === undefined) {
+        this.waiters.set(runId, [resolve]);
+      } else {
+        waiting.push(resolve);
+      }
+    });
   }
 
   runOf(key: string): number | undefined {
@@ -130,6 +171,17 @@ export class CheckRegistry {
     };
   }
 
+  private release(runId: number, entries: readonly CheckEntry[] | undefined): void {
+    const waiting = this.waiters.get(runId);
+    if (waiting === undefined) {
+      return;
+    }
+    this.waiters.delete(runId);
+    for (const resolve of waiting) {
+      resolve(entries);
+    }
+  }
+
   private emit(key: string): void {
     for (const listener of this.listeners) {
       listener(key);
@@ -146,6 +198,7 @@ export class CheckRegistry {
     if (oldest !== undefined) {
       this.requests.delete(oldest.key);
       this.runs.delete(oldest.runId);
+      this.release(oldest.runId, undefined);
       this.emit(oldest.key);
     }
   }
