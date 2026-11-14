@@ -37,7 +37,7 @@ function producerLabel(request: HttpRequest): string {
   );
 }
 
-export function lookupResult(entry: CaptureEntry): CaptureLookupResult {
+export function lookupResult(entry: CaptureEntry, secretPending: boolean): CaptureLookupResult {
   const { result, label, name } = entry;
   switch (result.state) {
     case 'pending':
@@ -50,6 +50,7 @@ export function lookupResult(entry: CaptureEntry): CaptureLookupResult {
         sensitive: result.sensitive,
         label,
         provenance: result.provenance,
+        ...(secretPending ? { secretPending: true } : {}),
       };
     case 'failed':
       return { kind: 'failed', message: captureFailedMessage(label, name, result.reason) };
@@ -80,19 +81,16 @@ export function captureLookup(
   responses: ReadonlyMap<string, CaptureLookupResult>,
 ): CaptureLookup {
   const local = inDocument(documentUri);
+  const found = (entry: CaptureEntry | undefined): CaptureLookupResult | undefined =>
+    entry === undefined ? undefined : lookupResult(entry, registry.hasPendingSecret(entry.runId));
   return {
-    request: (requestName, captureName) => {
-      const entry = registry.get(namedRequestKey(documentUri, requestName), captureName);
-      return entry === undefined ? undefined : lookupResult(entry);
-    },
-    bare: (captureName) => {
-      const entry = registry.latest(captureName, local);
-      return entry === undefined ? undefined : lookupResult(entry);
-    },
+    request: (requestName, captureName) =>
+      found(registry.get(namedRequestKey(documentUri, requestName), captureName)),
+    bare: (captureName) => found(registry.latest(captureName, local)),
     elsewhere: (captureName) => {
-      const entry = registry.latest(captureName, (request) => !local(request));
+      const entry = found(registry.latest(captureName, (request) => !local(request)));
       if (entry !== undefined) {
-        return lookupResult(entry);
+        return entry;
       }
       const producer = firstProducers(file).get(captureName);
       if (producer === undefined) {

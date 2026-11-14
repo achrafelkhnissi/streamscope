@@ -853,6 +853,73 @@ describe('the order of a bare name', () => {
     }
   });
 
+  it("a request's previous value counts as secret when its run's secret capture was still pending at the re-send", () => {
+    const lines = [
+      '# @name page',
+      '# @capture cursor = body.next',
+      '# @capture secret token = body.token',
+      'GET https://api.example.test/items?cursor={{cursor}}',
+    ];
+    const earlier = (tokenResolves: boolean): CaptureRegistry => {
+      const registry = new CaptureRegistry();
+      registry.begin({ id: 99, key: `${apiUri}\n@page`, label: 'page', startedAt: 99 }, [
+        { name: 'cursor', secret: false },
+        { name: 'token', secret: true },
+      ]);
+      registry.update(99, 'cursor', resolved('cursor-2', 99));
+      if (tokenResolves) {
+        registry.update(99, 'token', resolved('synthetic-token-2', 99, true));
+      }
+      return registry;
+    };
+
+    expect(resolveIn(earlier(false), lines)).toMatchObject({
+      ok: true,
+      request: { url: 'https://api.example.test/items?cursor=cursor-2' },
+      sensitiveValues: ['cursor-2'],
+    });
+    expect(resolveIn(earlier(true), lines)).toMatchObject({
+      ok: true,
+      request: { url: 'https://api.example.test/items?cursor=cursor-2' },
+      sensitiveValues: [],
+    });
+  });
+
+  it('a capture of a run whose secret capture is pending is secret for resolution, not for its displays', () => {
+    const registry = new CaptureRegistry();
+    const lines = [
+      '# @name login',
+      '# @capture location = headers["location"]',
+      '# @capture secret code = body.code',
+      'POST https://api.example.test/login',
+      '',
+      '###',
+      '# @name me',
+      'GET https://api.example.test/me',
+      'X-Location: {{location}}',
+      'X-Named: {{login.location}}',
+    ];
+    registry.begin({ id: 98, key: `${apiUri}\n@login`, label: 'login', startedAt: 98 }, [
+      { name: 'location', secret: false },
+      { name: 'code', secret: true },
+    ]);
+    registry.update(98, 'location', resolved('https://cb.example.test/cb', 98));
+    const parsed = parseHttpFile(lines.join('\n'));
+    const editor = testSources({ captures: captureLookup(registry, apiUri, parsed, new Map()) });
+
+    expect(resolveIn(registry, lines)).toMatchObject({
+      ok: true,
+      sensitiveValues: ['https://cb.example.test/cb'],
+    });
+    expect(describeReference(parsed, 'location', editor)).toMatchObject({
+      kind: 'value',
+      value: 'https://cb.example.test/cb',
+      sensitive: false,
+    });
+    registry.update(98, 'code', resolved('synthetic-code-1', 98, true));
+    expect(resolveIn(registry, lines)).toMatchObject({ ok: true, sensitiveValues: [] });
+  });
+
   it("another document's capture still applies when nothing else defines the name", () => {
     const registry = new CaptureRegistry();
     seed(registry, 'tenant');

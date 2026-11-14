@@ -177,6 +177,15 @@ export class CaptureRegistry {
     return latest?.entries.get(name);
   }
 
+  hasPendingSecret(runId: number): boolean {
+    for (const { secret, result } of this.runs.get(runId)?.entries.values() ?? []) {
+      if (secret && result.state === 'pending') {
+        return true;
+      }
+    }
+    return false;
+  }
+
   secretsOf(runId: number): readonly string[] {
     return this.runs.get(runId)?.secrets ?? [];
   }

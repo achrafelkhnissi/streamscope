@@ -2462,6 +2462,121 @@ describe('waiting for captured values', () => {
     expect(registry.waitCount).toBe(0);
   });
 
+  describe("a capture resolved while its run's secret capture is still pending", () => {
+    const loginKey = `${documentUri}\n@login`;
+    const token = 'synthetic-token-7f3a9c';
+
+    async function held(
+      headers: Record<string, string>,
+      first: string,
+      last: string,
+    ): Promise<{ api: LocalServer; release: () => void }> {
+      let finish = (): void => undefined;
+      const api = await track(
+        startHttpServer((request, response) => {
+          if (request.url !== '/login') {
+            response.end('ok');
+            return;
+          }
+          response.writeHead(200, headers);
+          response.flushHeaders();
+          if (first !== '') {
+            response.write(first);
+          }
+          finish = () => {
+            response.end(last);
+          };
+        }),
+      );
+      return {
+        api,
+        release: () => {
+          finish();
+        },
+      };
+    }
+
+    async function consumerLog(registry: CaptureRegistry, lines: string[]): Promise<string> {
+      const sent = await startRun(capturing(registry, lines, 1), dependencies).done;
+      expect(sent.status).toBe('completed');
+      const logged: string[] = [];
+      const record = (line: string): void => {
+        logged.push(line);
+      };
+      logRunEnd({ info: record, warn: record, debug: record }, sent);
+      return logged.join('\n');
+    }
+
+    it('a head-phase headers[…] capture is masked whole in a consumer log until the body secret resolves', async () => {
+      const { api, release } = await held(
+        { Location: `https://cb.example.test/cb#t=${token}`, 'Content-Type': 'application/json' },
+        '',
+        JSON.stringify({ code: token }),
+      );
+      const lines = [
+        '# @name login',
+        '# @capture location = headers["location"]',
+        '# @capture secret code = body.code',
+        `POST ${api.url}/login`,
+        '',
+        '###',
+        '# @name continue',
+        `GET ${api.url}/continue`,
+        'X-Location: {{location}}',
+      ];
+      const registry = new CaptureRegistry();
+      const login = startRun(capturing(registry, lines, 0), dependencies);
+      await waitFor(() => registry.get(loginKey, 'location')?.result.state === 'resolved');
+
+      const pending = await consumerLog(registry, lines);
+      expect(registry.get(loginKey, 'code')?.result.state).toBe('pending');
+      release();
+      await login.done;
+      await waitFor(() => registry.get(loginKey, 'code')?.result.state === 'resolved');
+      const resolved = await consumerLog(registry, lines);
+
+      expect(pending).toContain(`X-Location: ${maskedValue}`);
+      expect(pending).not.toContain(token);
+      expect(resolved).toContain(`X-Location: https://cb.example.test/cb#t=${maskedValue}`);
+      expect(resolved).not.toContain(token);
+    });
+
+    it('a stream first(…) capture is masked whole in a consumer log until a last(…) secret resolves', async () => {
+      const event = JSON.stringify({ type: 'SESSION', token });
+      const { api, release } = await held(
+        { 'Content-Type': 'application/x-ndjson' },
+        `${event}\n`,
+        '',
+      );
+      const lines = [
+        '# @name login',
+        '# @capture profile = first(type == "SESSION")',
+        '# @capture secret token = last(type == "SESSION").token',
+        `POST ${api.url}/login`,
+        '',
+        '###',
+        '# @name continue',
+        `GET ${api.url}/continue`,
+        'X-Profile: {{profile}}',
+      ];
+      const registry = new CaptureRegistry();
+      const login = startRun(capturing(registry, lines, 0), dependencies);
+      await waitFor(() => registry.get(loginKey, 'profile')?.result.state === 'resolved');
+
+      const pending = await consumerLog(registry, lines);
+      expect(registry.get(loginKey, 'token')?.result.state).toBe('pending');
+      release();
+      await login.done;
+      await waitFor(() => registry.get(loginKey, 'token')?.result.state === 'resolved');
+      const resolved = await consumerLog(registry, lines);
+
+      expect(pending).toContain(`X-Profile: ${maskedValue}`);
+      expect(pending).not.toContain(token);
+      expect(resolved).toContain(`X-Profile: {"type":"SESSION","token":"${maskedValue}"}`);
+      expect(resolved).not.toContain(token);
+    });
+  });
+
   describe('a secret capture whose text has a lone surrogate', () => {
     const loginKey = `${documentUri}\n@login`;
     const token = 'synthetic-\ud800-token';
