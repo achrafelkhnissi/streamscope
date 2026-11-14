@@ -329,7 +329,7 @@ export class CheckTracker {
       } else {
         continue;
       }
-      this.touch(use.check, this.ended ? undefined : index);
+      this.touch(use.check, index);
     }
     this.judgeNow();
   }

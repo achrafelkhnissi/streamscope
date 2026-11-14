@@ -6,6 +6,8 @@ import type { JsonValue, StreamEvent } from '../../../src/events/model';
 import type { SourceNode } from '../../../src/expressions/ast';
 import { evaluate, holds, type Outcome } from '../../../src/expressions/evaluate';
 import { parseExpression } from '../../../src/expressions/parse';
+import type { RunEnd } from '../../../src/runs/observer';
+import { captureSliceMs, TaskBudget } from '../../../src/capture/task-budget';
 import { startRun } from '../../../src/runs/run';
 import type { ResponseHead } from '../../../src/transport/model';
 import { startHttpServer, type LocalServer } from '../../support/servers';
@@ -644,5 +646,64 @@ describe('CheckTracker after the review', () => {
     }
     expect(performance.now() - started).toBeLessThan(1_000);
     expect(results.get(0)).toBeUndefined();
+  });
+
+  it('reports the deciding event of counts that settle after the run ended', async () => {
+    let time = 0;
+    const tasks: (() => void)[] = [];
+    const budget = new TaskBudget({
+      now: () => time,
+      nextTask: (callback) => {
+        tasks.push(callback);
+      },
+    });
+    const results = new Map<number, CheckResult>();
+    const tracker = new CheckTracker(
+      { id: 1, label: 'run', wallStartedAt: 0, sensitiveValues: [] },
+      ['count(type == "A") > 1', '!exists(first(type == "B"))'].map((text, index) => ({
+        index,
+        program: program(text),
+      })),
+      (index, result) => results.set(index, result),
+      workerFiles().worker,
+      budget,
+    );
+    tracker.head(okHead, access);
+    budget.enter();
+    time += captureSliceMs;
+    budget.leave();
+    for (const event of scripted([{ type: 'A' }, { type: 'A' }, { type: 'B' }])) {
+      tracker.event(event);
+    }
+    expect(results.size).toBe(0);
+    const completed: RunEnd = {
+      kind: 'completed',
+      format: 'ndjson',
+      contentType: 'application/x-ndjson',
+      bodyLength: 0,
+      spillPath: () => Promise.resolve(undefined),
+      reply: { recognised: false, truncated: false },
+      signal: new AbortController().signal,
+      readBody: () => Promise.resolve(undefined),
+      readReply: () => Promise.resolve(undefined),
+    };
+    const progress = { ended: false };
+    const ending = tracker.end(completed).then(() => {
+      progress.ended = true;
+    });
+    while (!progress.ended) {
+      for (const task of tasks.splice(0)) {
+        task();
+      }
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    await ending;
+
+    expect(results.get(0)).toEqual({ state: 'passed', settledAt: 2 });
+    expect(results.get(1)).toEqual({
+      state: 'failed',
+      detail: 'first(type == "B") matched event 3',
+      settledAt: 3,
+    });
   });
 });
