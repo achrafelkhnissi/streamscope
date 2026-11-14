@@ -261,6 +261,18 @@ describe('CaptureRegistry', () => {
     expect(registry.get(startKey, 'threadId')?.result).toStrictEqual(resolved('thread-trusted', 2));
   });
 
+  it('a run counts as started before clear when it began before, with or without captures', () => {
+    const registry = new CaptureRegistry();
+    registry.begin(run(1, startKey, 'startRun'), threadId);
+    registry.begin(run(2, continueKey, 'continue'), []);
+    expect(registry.startedBeforeClear(1)).toBe(false);
+
+    registry.clear();
+    registry.begin(run(3, startKey, 'startRun'), threadId);
+
+    expect([1, 2, 3].map((id) => registry.startedBeforeClear(id))).toEqual([true, true, false]);
+  });
+
   it('clear releases every wait without a value, and leaves no timer or listener', async () => {
     const registry = new CaptureRegistry();
     registry.begin(run(1, startKey, 'startRun'), threadId);

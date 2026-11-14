@@ -510,6 +510,29 @@ describe('CaptureService', () => {
     });
   });
 
+  it('a response reference waiting when the captures are cleared does not read the run that started before', async () => {
+    const registry = new CaptureRegistry();
+    const producer = producerRun(75);
+    registry.begin({ id: 75, key: startKey, label: 'startRun', startedAt: 75 }, []);
+    const captures = service(registry, 1, (key) => (key === startKey ? producer : undefined));
+    captures.begin({ id: 76, key: continueKey, label: 'continue', startedAt: 76 });
+    const body = responseWait('response.body.*');
+
+    const waiting = captures.wait([body], 76, { timeoutMs: 30_000, signal: signal() });
+    registry.clear();
+    producer.end('completed', '{"token":"synthetic-token-restricted"}');
+
+    expect(await waiting).toEqual({ ok: true });
+    expect(captures.lookup.response('startRun', 'response.body.*')).toBeUndefined();
+    expect(producer.reads).toEqual([]);
+    expect(await captures.settle([body], 76, signal())).toEqual([]);
+    expect(captures.lookup.response('startRun', 'response.body.*')).toEqual({
+      kind: 'not-run',
+      label: 'startRun',
+      producerName: 'startRun',
+    });
+  });
+
   it('a response reference to the waiting run itself is refused at once', async () => {
     const producer = producerRun(21, 'continue');
     const captures = service(new CaptureRegistry(), 1, () => producer);

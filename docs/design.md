@@ -608,7 +608,7 @@ Nothing is written to the workspace except files the user asks to save.
 
 The confirmation comes only for a request that would otherwise be sent, just before connecting, so a blocked request never asks; declining cancels it.
 
-Granting trust clears every capture of the session: values, failures and pending captures. Values a server sent while the workspace was restricted must not steer requests that now carry secrets. Later results of runs that started before the grant are dropped, and a request waiting on a cleared capture resolves again as if its producer had not run. Restricted mode is tested by `npm run test:restricted`, which opens a real untrusted folder because the standard test runner always disables Workspace Trust.
+Granting trust clears every capture of the session: values, failures and pending captures. Values a server sent while the workspace was restricted must not steer requests that now carry secrets. Later results of runs that started before the grant are dropped, and a request waiting on a cleared capture resolves again as if its producer had not run. A `{{name.response…}}` reference follows the same rule: it never reads the response of a run that started before the grant and resolves as if the producer had not run. Runs in flight at the grant are not cancelled, because the user sent each one; references simply ignore their responses. Restricted mode is tested by `npm run test:restricted`, which opens a real untrusted folder because the standard test runner always disables Workspace Trust.
 
 ### Masking
 

@@ -73,7 +73,7 @@ Expressions also filter and reshape values: `body.items[?status == "ok"].id | jo
 
 ## Restricted workspaces
 
-In a workspace you have not trusted, Streamscope still colours, outlines and checks `.http` files. Before sending, it asks once per session. It never reads secrets, `.env` files, `http-client.private.env.json`, environments from your user settings, process variables or body files there, and ignores `# @insecure` and environment TLS opt-outs. It uses only your own `streamscope.request.caFile` setting, and only when it is an absolute path. When you trust the workspace, the values captured until then are cleared, so run their requests again.
+In a workspace you have not trusted, Streamscope still colours, outlines and checks `.http` files. Before sending, it asks once per session. It never reads secrets, `.env` files, `http-client.private.env.json`, environments from your user settings, process variables or body files there, and ignores `# @insecure` and environment TLS opt-outs. It uses only your own `streamscope.request.caFile` setting, and only when it is an absolute path. When you trust the workspace, the values captured and the responses received until then are no longer used by later requests, so run their requests again.
 
 ## Requirements
 

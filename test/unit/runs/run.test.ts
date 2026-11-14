@@ -2195,6 +2195,32 @@ describe('waiting for captured values', () => {
       await waitFor(() => registry.get(loginKey, 'sid')?.result.state === 'resolved');
     });
 
+    it('after the captures are cleared, a run that started before is not read, and a later run is', async () => {
+      const api = await sessionServer();
+      const registry = new CaptureRegistry();
+      let login = startRun(capturing(registry, lines(api), 0), dependencies);
+      const latest = (key: string): RunHandle | undefined => (key === loginKey ? login : undefined);
+      await login.done;
+      registry.clear();
+
+      const blocked = await startRun(capturing(registry, lines(api), 1, latest), dependencies).done;
+      login = startRun(capturing(registry, lines(api), 0), dependencies);
+      await login.done;
+      const sent = await startRun(capturing(registry, lines(api), 1, latest), dependencies).done;
+
+      expect(blocked.problems).toEqual([
+        {
+          message:
+            '`{{login.response.headers.X-Session}}` comes from login, which has not run in this session.',
+          range: at(6, 11, 47),
+          producer: 'login',
+        },
+      ]);
+      expect(sent.status).toBe('completed');
+      expect(api.requests.map((request) => request.url)).toEqual(['/login', '/login', '/continue']);
+      expect(headerOf(api.requests[2] ?? { rawHeaders: [] }, 'x-session')).toBe('session-1');
+    });
+
     it('one to a request that never ran blocks at once, without waiting', async () => {
       const api = await sessionServer();
       const statuses: RunStatus[] = [];

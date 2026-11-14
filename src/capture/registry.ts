@@ -75,6 +75,8 @@ export class CaptureRegistry {
   private readonly waitsByRun = new Map<number, Set<Wait>>();
   private readonly listeners = new Set<(request: string, name: string) => void>();
   private waits = 0;
+  private newestRun = Number.NEGATIVE_INFINITY;
+  private clearedThrough = Number.NEGATIVE_INFINITY;
 
   constructor(private readonly limit = maxCaptureRequests) {}
 
@@ -94,6 +96,7 @@ export class CaptureRegistry {
     run: { id: number; key: string; label: string; startedAt: number },
     definitions: readonly { name: string; secret: boolean }[],
   ): void {
+    this.newestRun = Math.max(this.newestRun, run.id);
     const earlier = this.requests.get(run.key);
     if (earlier !== undefined) {
       this.remove(earlier);
@@ -225,6 +228,7 @@ export class CaptureRegistry {
   }
 
   clear(): void {
+    this.clearedThrough = this.newestRun;
     for (const captures of [...this.requests.values()]) {
       this.remove(captures);
     }
@@ -233,6 +237,10 @@ export class CaptureRegistry {
         wait.settle(undefined);
       }
     }
+  }
+
+  startedBeforeClear(runId: number): boolean {
+    return runId <= this.clearedThrough;
   }
 
   onDidChange(listener: (request: string, name: string) => void): () => void {

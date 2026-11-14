@@ -734,6 +734,9 @@ export function registerRequestFeatures(
 
   return {
     shutdown: sessionShutdown(history, spill),
-    hasRun: (key) => registry.latest(key) !== undefined,
+    hasRun: (key) => {
+      const run = registry.latest(key);
+      return run !== undefined && !captures.startedBeforeClear(run.id);
+    },
   };
 }

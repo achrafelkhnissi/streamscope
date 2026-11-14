@@ -364,9 +364,9 @@ export class CaptureService implements RunCaptures {
 
   private locate(wait: ResponseWait, runId: number): Located {
     const label = wait.requestName;
-    const { documentUri, runs } = this.options;
+    const { documentUri, registry, runs } = this.options;
     const run = runs(namedRequestKey(documentUri, label));
-    if (run === undefined) {
+    if (run === undefined || registry.startedBeforeClear(run.id)) {
       return { kind: 'answered', result: { kind: 'not-run', label, producerName: label } };
     }
     if (run.id === runId) {
@@ -375,9 +375,12 @@ export class CaptureService implements RunCaptures {
     return { kind: 'producer', run };
   }
 
-  private replaced(wait: ResponseWait, producer: ProducerRun): boolean {
-    const { documentUri, runs } = this.options;
-    return runs(namedRequestKey(documentUri, wait.requestName)) !== producer;
+  private outdated(wait: ResponseWait, producer: ProducerRun): boolean {
+    const { documentUri, registry, runs } = this.options;
+    return (
+      runs(namedRequestKey(documentUri, wait.requestName)) !== producer ||
+      registry.startedBeforeClear(producer.id)
+    );
   }
 
   private ready(wait: ResponseWait, producer: ProducerRun): boolean {
@@ -408,7 +411,7 @@ export class CaptureService implements RunCaptures {
       wait,
       await within(
         arrived.then(() =>
-          this.replaced(wait, producer) ? undefined : this.evaluate(wait, producer, signal),
+          this.outdated(wait, producer) ? undefined : this.evaluate(wait, producer, signal),
         ),
         timeoutMs,
         signal,
@@ -433,7 +436,7 @@ export class CaptureService implements RunCaptures {
       reference,
       signal,
     );
-    if (stopped()) {
+    if (stopped() || this.options.registry.startedBeforeClear(producer.id)) {
       return undefined;
     }
     if (!result.ok) {
