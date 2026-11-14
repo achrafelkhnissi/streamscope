@@ -400,6 +400,26 @@ describe('CaptureTracker', () => {
     expect(sensitive('note')).toEqual(['7', 'synthetic-sid-0001']);
   });
 
+  it('a keyword secret still carries into later body captures after a short provenance secret with the same text', async () => {
+    const run = harness([
+      capture('csrf', 'cookies.csrftoken', true, true),
+      capture('formToken', 'body.csrf', true),
+      capture('page', 'body.form'),
+    ]);
+
+    run.tracker.head(head('application/json', [['Set-Cookie', 'csrftoken=k7Q2x']]));
+    await run.tracker.end(
+      completed('json', {
+        body: JSON.stringify({ csrf: 'k7Q2x', form: '<input value=k7Q2x>' }),
+        contentType: 'application/json',
+      }),
+    );
+
+    expect(run.results.get('page')).toEqual(
+      resolved('<input value=k7Q2x>', undefined, 'form', false, ['k7Q2x']),
+    );
+  });
+
   it('carries short sensitive header and credential cookie values only into captures that read the headers or the cookies', async () => {
     const run = harness([
       capture('note', 'body.note'),

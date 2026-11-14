@@ -2681,6 +2681,51 @@ describe('waiting for captured values', () => {
     });
   });
 
+  it('a keyword secret after a short provenance secret with the same text masks a later body capture in a consumer log', async () => {
+    const loginKey = `${documentUri}\n@login`;
+    const api = await track(
+      startHttpServer((request, response) => {
+        if (request.url === '/login') {
+          response.writeHead(200, {
+            'Content-Type': 'application/json',
+            'Set-Cookie': 'csrftoken=k7Q2x',
+          });
+          response.end(JSON.stringify({ csrf: 'k7Q2x', form: '<input value=k7Q2x>' }));
+          return;
+        }
+        response.end('ok');
+      }),
+    );
+    const lines = [
+      '# @name login',
+      '# @capture csrf = cookies.csrftoken',
+      '# @capture secret formToken = body.csrf',
+      '# @capture page = body.form',
+      `POST ${api.url}/login`,
+      '',
+      '###',
+      '# @name continue',
+      `GET ${api.url}/continue`,
+      'X-Page: {{page}}',
+    ];
+    const registry = new CaptureRegistry();
+    await startRun(capturing(registry, lines, 0), dependencies).done;
+    await waitFor(() => registry.get(loginKey, 'page')?.result.state === 'resolved');
+
+    const sent = await startRun(capturing(registry, lines, 1), dependencies).done;
+    const logged: string[] = [];
+    const record = (line: string): void => {
+      logged.push(line);
+    };
+    logRunEnd({ info: record, warn: record, debug: record }, sent);
+
+    expect(captureHint(registry.get(loginKey, 'page'))?.label).toBe(
+      `= <input value=${maskedValue}>`,
+    );
+    expect(logged.join('\n')).toContain(`X-Page: <input value=${maskedValue}>`);
+    expect(logged.join('\n')).not.toContain('k7Q2x');
+  });
+
   it('a one-character cookie captured by provenance blanks no 1 in a body sibling, a consumer log or a response reference', async () => {
     const loginKey = `${documentUri}\n@login`;
     const api = await track(

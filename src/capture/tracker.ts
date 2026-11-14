@@ -1122,9 +1122,14 @@ export class CaptureTracker {
       },
     });
     const { secret, provenance } = tracked.definition;
-    if (secret && result.text !== '' && !this.secrets.head.includes(result.text)) {
-      this.secrets.head.push(result.text);
-      if (!provenance || result.text.length >= minimumHeaderValueLength) {
+    if (secret && result.text !== '') {
+      if (!this.secrets.head.includes(result.text)) {
+        this.secrets.head.push(result.text);
+      }
+      if (
+        (!provenance || result.text.length >= minimumHeaderValueLength) &&
+        !this.secrets.other.includes(result.text)
+      ) {
         this.secrets.other.push(result.text);
       }
     }
