@@ -50,7 +50,7 @@ export function contentEvent(
   );
 }
 
-function numberParameter(value: string | null, fallback: number): number {
+export function numberParameter(value: string | null, fallback: number): number {
   const parsed = value === null ? Number.NaN : Number(value);
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
 }
@@ -59,7 +59,7 @@ function now(): number {
   return performance.timeOrigin + performance.now();
 }
 
-function requestUrl(request: http.IncomingMessage): URL | undefined {
+export function requestUrl(request: http.IncomingMessage): URL | undefined {
   try {
     return new URL(request.url ?? '/', 'http://localhost');
   } catch {

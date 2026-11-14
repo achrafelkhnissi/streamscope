@@ -2129,10 +2129,7 @@ describe('waiting for captured values', () => {
       const record = (line: string): void => {
         logged.push(line);
       };
-      logRunEnd(
-        { info: record, warn: record, debug: record } as unknown as Parameters<typeof logRunEnd>[0],
-        sent,
-      );
+      logRunEnd({ info: record, warn: record, debug: record }, sent);
 
       expect(registry.get(loginKey, 'sid')?.result).toEqual({ state: 'pending' });
       expect(sent.sent?.headers).toContainEqual(['X-Sid', 'synthetic-sid']);
@@ -2396,10 +2393,7 @@ describe('waiting for captured values', () => {
       const record = (line: string): void => {
         logged.push(line);
       };
-      logRunEnd(
-        { info: record, warn: record, debug: record } as unknown as Parameters<typeof logRunEnd>[0],
-        sent,
-      );
+      logRunEnd({ info: record, warn: record, debug: record }, sent);
 
       expect(sent.sent?.headers).toContainEqual(['X-Echo', `received Bearer ${token}`]);
       expect(sent.sent?.headers).toContainEqual(['X-Note', `cookie ${cookie}`]);
@@ -2455,12 +2449,7 @@ describe('waiting for captured values', () => {
         const record = (line: string): void => {
           logged.push(line);
         };
-        logRunEnd(
-          { info: record, warn: record, debug: record } as unknown as Parameters<
-            typeof logRunEnd
-          >[0],
-          sent,
-        );
+        logRunEnd({ info: record, warn: record, debug: record }, sent);
         const reset = posted.find((message) => message.type === 'reset');
         return {
           strip: reset?.captures[0]?.text ?? '',
@@ -2697,12 +2686,7 @@ describe('waiting for captured values', () => {
         const record = (line: string): void => {
           logged.push(line);
         };
-        logRunEnd(
-          { info: record, warn: record, debug: record } as unknown as Parameters<
-            typeof logRunEnd
-          >[0],
-          sent,
-        );
+        logRunEnd({ info: record, warn: record, debug: record }, sent);
         const strip = new Map(
           (posted.find((message) => message.type === 'reset')?.captures ?? []).map(
             (capture) => [capture.name, capture.text] as const,

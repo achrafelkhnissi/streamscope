@@ -3,6 +3,7 @@ import * as http from 'node:http';
 import * as tls from 'node:tls';
 import { createParser, type EventSourceMessage } from 'eventsource-parser';
 import { describe, expect, it } from 'vitest';
+import { startAgentServer } from '../support/agent-server';
 import { createSelfSignedCertificate, derInteger } from '../support/certificate';
 import { everySplit, randomSplits } from '../support/chunks';
 import { startHttpServer } from '../support/servers';
@@ -38,6 +39,60 @@ function post(url: string, body: string): Promise<string> {
     request.on('error', reject);
     request.end(body);
   });
+}
+
+interface Exchange {
+  status: number | undefined;
+  headers: http.IncomingHttpHeaders;
+  body: string;
+  complete: boolean;
+  firstByteMs: number | undefined;
+  elapsedMs: number;
+}
+
+function exchange(url: string, body = '{"message": "hello"}'): Promise<Exchange> {
+  const startedAt = performance.now();
+  return new Promise((resolve, reject) => {
+    const request = http.request(url, { method: 'POST' }, (response) => {
+      const chunks: Buffer[] = [];
+      let firstByteMs: number | undefined;
+      response.on('data', (chunk: Buffer) => {
+        firstByteMs ??= performance.now() - startedAt;
+        chunks.push(chunk);
+      });
+      response.on('error', () => undefined);
+      response.on('close', () => {
+        resolve({
+          status: response.statusCode,
+          headers: response.headers,
+          body: Buffer.concat(chunks).toString(),
+          complete: response.complete,
+          firstByteMs,
+          elapsedMs: performance.now() - startedAt,
+        });
+      });
+    });
+    request.on('error', reject);
+    request.end(body);
+  });
+}
+
+function lines(body: string): string[] {
+  return body.split('\n').slice(0, -1);
+}
+
+function eventTypes(body: string): (string | undefined)[] {
+  return lines(body).map((line) => {
+    try {
+      return (JSON.parse(line) as { type: string }).type;
+    } catch {
+      return undefined;
+    }
+  });
+}
+
+function activeTimers(): number {
+  return process.getActiveResourcesInfo().filter((resource) => resource === 'Timeout').length;
 }
 
 describe('test support', () => {
@@ -210,5 +265,134 @@ describe('test support', () => {
     expect(blocks.every((block) => Buffer.byteLength(`${block}\n\n`) === 200)).toBe(true);
     expect(blocks.at(-1)).toContain('RUN_FINISHED');
     expect(override.contentType).toBe('application/json');
+  });
+
+  it('serves a synthetic agent run with a fresh threadId and session headers', async () => {
+    const server = await startAgentServer();
+    const first = await exchange(`${server.url}/agent/run`);
+    const second = await exchange(`${server.url}/agent/run`);
+    await server.close();
+
+    expect(first.status).toBe(200);
+    expect(first.complete).toBe(true);
+    expect(first.headers['content-type']).toBe('application/x-ndjson');
+    expect(first.headers['x-session-token']).toBe('synthetic-session');
+    expect(first.headers['set-cookie']).toEqual(['session=synthetic; Path=/']);
+    expect(lines(first.body)).toEqual([
+      '{"type":"RUN_STARTED","threadId":"synthetic-thread-1","runId":"synthetic-run-1"}',
+      '{"type":"TEXT_MESSAGE_CONTENT","messageId":"synthetic-message-1","delta":"Synthetic "}',
+      '{"type":"TEXT_MESSAGE_CONTENT","messageId":"synthetic-message-1","delta":"agent "}',
+      '{"type":"TEXT_MESSAGE_CONTENT","messageId":"synthetic-message-1","delta":"reply."}',
+      '{"type":"RUN_FINISHED","threadId":"synthetic-thread-1","runId":"synthetic-run-1","result":{"messageId":"synthetic-message-1","sequence":12345678901234567890}}',
+    ]);
+    expect(lines(second.body)[0]).toBe(
+      '{"type":"RUN_STARTED","threadId":"synthetic-thread-2","runId":"synthetic-run-2"}',
+    );
+  });
+
+  it('leaves out RUN_STARTED or RUN_FINISHED and adds one malformed line on request', async () => {
+    const server = await startAgentServer();
+    const withoutStart = await exchange(`${server.url}/agent/run?omit=started`);
+    const withoutFinish = await exchange(`${server.url}/agent/run?omit=finished`);
+    const malformed = await exchange(`${server.url}/agent/run?malformed=1`);
+    await server.close();
+
+    expect(eventTypes(withoutStart.body)).toEqual([
+      'TEXT_MESSAGE_CONTENT',
+      'TEXT_MESSAGE_CONTENT',
+      'TEXT_MESSAGE_CONTENT',
+      'RUN_FINISHED',
+    ]);
+    expect(eventTypes(withoutFinish.body)).toEqual([
+      'RUN_STARTED',
+      'TEXT_MESSAGE_CONTENT',
+      'TEXT_MESSAGE_CONTENT',
+      'TEXT_MESSAGE_CONTENT',
+    ]);
+    expect(eventTypes(malformed.body)).toEqual([
+      'RUN_STARTED',
+      'TEXT_MESSAGE_CONTENT',
+      undefined,
+      'TEXT_MESSAGE_CONTENT',
+      'TEXT_MESSAGE_CONTENT',
+      'RUN_FINISHED',
+    ]);
+    expect(withoutStart.complete && withoutFinish.complete && malformed.complete).toBe(true);
+  });
+
+  it('waits delayMs before RUN_STARTED and gapMs between events', async () => {
+    const server = await startAgentServer();
+    const delayed = await exchange(`${server.url}/agent/run?delayMs=600`);
+    const spaced = await exchange(`${server.url}/agent/run?gapMs=300`);
+    await server.close();
+
+    expect(delayed.firstByteMs).toBeGreaterThanOrEqual(550);
+    expect(eventTypes(delayed.body)[0]).toBe('RUN_STARTED');
+    expect(spaced.firstByteMs).toBeLessThan(spaced.elapsedMs - 1_100);
+    expect(spaced.elapsedMs).toBeGreaterThanOrEqual(1_150);
+    expect(eventTypes(spaced.body)).toHaveLength(5);
+  });
+
+  it('cuts the connection right after RUN_STARTED with fail=mid', async () => {
+    const server = await startAgentServer();
+    const cut = await exchange(`${server.url}/agent/run?fail=mid`);
+    await server.close();
+
+    expect(cut.status).toBe(200);
+    expect(cut.complete).toBe(false);
+    expect(eventTypes(cut.body)).toEqual(['RUN_STARTED']);
+  });
+
+  it('echoes the body of /agent/continue as JSON with every digit kept', async () => {
+    const server = await startAgentServer();
+    const body = '{"threadId": "synthetic-thread-1", "sequence": 12345678901234567890}';
+    const echoed = await exchange(
+      `${server.url}/agent/continue?sequence=12345678901234567890`,
+      body,
+    );
+    const missing = await exchange(`${server.url}/agent/missing`);
+    await server.close();
+
+    expect(echoed.status).toBe(200);
+    expect(echoed.headers['content-type']).toBe('application/json');
+    expect(echoed.body).toBe(body);
+    expect(server.requests[0]?.url).toBe('/agent/continue?sequence=12345678901234567890');
+    expect(missing.status).toBe(404);
+  });
+
+  it('releases every socket and timer when it closes in the middle of a run', async () => {
+    const before = activeTimers();
+    const server = await startAgentServer();
+    const openRun = (query: string): Promise<http.IncomingMessage> =>
+      new Promise((resolve, reject) => {
+        const request = http.request(
+          `${server.url}/agent/run?${query}`,
+          { method: 'POST' },
+          resolve,
+        );
+        request.on('error', reject);
+        request.end('{}');
+      });
+    const [delayed, spaced] = await Promise.all([openRun('delayMs=10000'), openRun('gapMs=10000')]);
+    const started = new Promise<void>((resolve) => {
+      spaced.once('data', () => {
+        resolve();
+      });
+    });
+    const closed = [delayed, spaced].map(
+      (response) =>
+        new Promise<void>((resolve) => {
+          response.on('error', () => undefined);
+          response.on('close', resolve);
+          response.resume();
+        }),
+    );
+    await started;
+    await server.close();
+    await Promise.all(closed);
+
+    expect(server.sockets.opened).toBe(2);
+    expect(server.sockets.closed).toBe(server.sockets.opened);
+    expect(activeTimers()).toBe(before);
   });
 });

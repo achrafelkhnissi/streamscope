@@ -28,7 +28,7 @@ import { PanelProbe, registerBenchmarkCommands } from '../benchmark/commands';
 import type { EnvironmentStore } from '../environments/environment-store';
 import type { ParseCache } from '../language/parse-cache';
 import { httpSelector } from '../language/register';
-import { logRunEnd, logRunStart, logRunWaiting } from '../log';
+import { logRunEnd, logRunStart, logRunWaiting, recordingLog, type RunLog } from '../log';
 import { ResponsePanels } from '../response/panels';
 import { closeResponseTabs, ResponsePresenter } from '../response/presenter';
 import { ResponseFileSystem, responseScheme } from '../response/response-file-system';
@@ -214,7 +214,12 @@ export function registerRequestFeatures(
   secrets: SecretStore,
   captures: CaptureRegistry,
 ): RequestFeatures {
-  const confirmRestrictedSend = confirmOnce(async () => {
+  const testMode = context.extensionMode === vscode.ExtensionMode.Test;
+  const loggedLines: string[] = [];
+  const runLog: RunLog = testMode ? recordingLog(log, loggedLines) : log;
+  const restrictedSends = { checks: 0, questions: 0 };
+  const restrictedAnswers: ((send: boolean) => void)[] = [];
+  const askRestrictedSend = async (): Promise<boolean> => {
     const choice = await vscode.window.showWarningMessage(
       'Send requests from this restricted workspace?',
       {
@@ -225,8 +230,23 @@ export function registerRequestFeatures(
       'Send',
     );
     return choice === 'Send';
-  });
-  const testMode = context.extensionMode === vscode.ExtensionMode.Test;
+  };
+  const confirmRestrictedSend = confirmOnce(
+    testMode
+      ? () => {
+          restrictedSends.questions += 1;
+          return new Promise<boolean>((resolve) => {
+            restrictedAnswers.push(resolve);
+          });
+        }
+      : askRestrictedSend,
+  );
+  const checkRestrictedSend = testMode
+    ? (): Promise<boolean> => {
+        restrictedSends.checks += 1;
+        return confirmRestrictedSend();
+      }
+    : confirmRestrictedSend;
   const spill = openSpillArea(context);
   const files = new ResponseFileSystem();
   const presenter = new ResponsePresenter(
@@ -423,7 +443,7 @@ export function registerRequestFeatures(
     }
     const restricted = !vscode.workspace.isTrusted;
     const area = await spill;
-    logRunStart(log, request.requestLine.method, request.requestLine.url);
+    logRunStart(runLog, request.requestLine.method, request.requestLine.url);
     const handle = registry.start({
       key,
       label: requestLabel(request),
@@ -433,7 +453,7 @@ export function registerRequestFeatures(
       settings: { ...settings.settings, insecureEnvironment: prepared.insecureEnvironment },
       variables: prepared.variables,
       restricted,
-      confirmSend: restricted ? confirmRestrictedSend : undefined,
+      confirmSend: restricted ? checkRestrictedSend : undefined,
       spill: area,
       limits: limits.limits,
       captures: new CaptureService({
@@ -459,7 +479,7 @@ export function registerRequestFeatures(
       const snapshot = handle.snapshot();
       if (snapshot.status === 'waiting' && snapshot.waitingFor !== loggedWait) {
         loggedWait = snapshot.waitingFor;
-        logRunWaiting(log, snapshot);
+        logRunWaiting(runLog, snapshot);
       }
       if (snapshot.status === 'receiving') {
         showRun();
@@ -468,7 +488,7 @@ export function registerRequestFeatures(
     });
     const run = await handle.done;
     stopWatching();
-    logRunEnd(log, run);
+    logRunEnd(runLog, run);
     if (registry.latest(key) !== handle) {
       return;
     }
@@ -678,6 +698,15 @@ export function registerRequestFeatures(
         typeof id === 'number' ? statuses.get(id) : undefined,
       ),
       vscode.commands.registerCommand('streamscope.test.blockedActions', () => lastBlocked),
+      vscode.commands.registerCommand('streamscope.test.logLines', () => loggedLines.splice(0)),
+      vscode.commands.registerCommand('streamscope.test.restrictedSends', () => ({
+        ...restrictedSends,
+      })),
+      vscode.commands.registerCommand('streamscope.test.answerRestrictedSend', (send?: unknown) => {
+        for (const answer of restrictedAnswers.splice(0)) {
+          answer(send === true);
+        }
+      }),
       vscode.commands.registerCommand(
         'streamscope.test.captureListeners',
         () => captures.listenerCount,
