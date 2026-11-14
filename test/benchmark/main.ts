@@ -1,6 +1,7 @@
 import { parseArgs } from 'node:util';
 import { startStreamServer } from '../support/stream-server';
 import { runActivationBenchmark } from './activation';
+import { runRecording } from './record';
 import { runSoak } from './soak';
 import { measureThroughput } from './throughput';
 import { runViewBenchmark } from './view/runner';
@@ -29,6 +30,7 @@ async function main(): Promise<void> {
       theme: { type: 'string' },
       extension: { type: 'string', multiple: true, default: [] },
       files: { type: 'string', default: '1' },
+      scene: { type: 'string', default: 'stream' },
     },
   });
   const format = values.format === 'sse' ? 'sse' : 'ndjson';
@@ -78,12 +80,17 @@ async function main(): Promise<void> {
     console.log(JSON.stringify(result, null, 2));
     return;
   }
+  if (command === 'record') {
+    const result = await runRecording(values.scene === 'file-run' ? 'file-run' : 'stream');
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
   if (command === 'serve') {
     await serve();
     return;
   }
   throw new Error(
-    'Usage: npm run bench -- throughput|soak|view|activation|serve [--format ndjson|sse] [options]',
+    'Usage: npm run bench -- throughput|soak|view|activation|record|serve [--format ndjson|sse] [options]',
   );
 }
 

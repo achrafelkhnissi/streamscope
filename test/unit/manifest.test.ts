@@ -53,6 +53,16 @@ const manifest = JSON.parse(
   readFileSync(new URL('../../package.json', import.meta.url), 'utf8'),
 ) as Manifest;
 
+const readme = readFileSync(new URL('../../README.md', import.meta.url), 'utf8');
+const changelog = readFileSync(new URL('../../CHANGELOG.md', import.meta.url), 'utf8');
+
+function defaultText(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `\`${JSON.stringify(value)}\``;
+  }
+  return value === '' ? '`""`' : `\`${String(value)}\``;
+}
+
 describe('extension manifest', () => {
   it('carries the Streamscope identity', () => {
     expect(manifest.name).toBe('streamscope');
@@ -432,6 +442,61 @@ describe('extension manifest', () => {
     });
     expect(manifest.scripts['test:restricted']).toBe(
       'npm run build && npm run compile:host-tests && node scripts/run-restricted-tests.mjs',
+    );
+  });
+});
+
+describe('README and changelog', () => {
+  it('documents every setting in the README', () => {
+    const rows = readme.split('\n').filter((line) => line.startsWith('| `streamscope.'));
+    const { properties } = manifest.contributes.configuration;
+    expect(rows).toHaveLength(Object.keys(properties).length);
+    for (const [name, { default: value }] of Object.entries(properties)) {
+      const row = rows.find((line) => line.startsWith(`| \`${name}\``));
+      expect(row, name).toBeDefined();
+      expect(row, name).toContain(defaultText(value));
+    }
+  });
+
+  it('documents every command in the README', () => {
+    for (const { title } of manifest.contributes.commands) {
+      expect(readme, title).toContain(`**Streamscope: ${title}**`);
+    }
+  });
+
+  it('links images through raw.githubusercontent.com over https', () => {
+    const images = [...readme.matchAll(/!\[[^\]]*\]\(([^)\s]+)\)|<img[^>]*\ssrc="([^"]+)"/g)].map(
+      (match) => match[1] ?? match[2] ?? '',
+    );
+    expect(images.length).toBeGreaterThanOrEqual(2);
+    for (const url of images) {
+      expect(url).toMatch(
+        /^https:\/\/raw\.githubusercontent\.com\/achrafelkhnissi\/streamscope\/main\/images\/[a-z0-9-]+\.(gif|png)$/,
+      );
+    }
+  });
+
+  it('states the privacy promise and links the security policy', () => {
+    expect(readme).toContain(
+      'Streamscope sends no telemetry, needs no account, and makes no network requests except the ones you send.',
+    );
+    expect(readme).toContain('[SECURITY.md](SECURITY.md)');
+  });
+
+  it('has a 0.1.0 changelog section with Keep a Changelog headings', () => {
+    const start = changelog.search(/^## \[0\.1\.0\]/m);
+    expect(start).toBeGreaterThanOrEqual(0);
+    const rest = changelog.slice(start + 1);
+    const end = rest.search(/^## /m);
+    const section = end === -1 ? rest : rest.slice(0, end);
+    expect(section.match(/^### \w+$/gm)).toEqual([
+      '### Added',
+      '### Changed',
+      '### Fixed',
+      '### Security',
+    ]);
+    expect(changelog).toMatch(
+      /^\[0\.1\.0\]: https:\/\/github\.com\/achrafelkhnissi\/streamscope\/releases\/tag\/v0\.1\.0$/m,
     );
   });
 });

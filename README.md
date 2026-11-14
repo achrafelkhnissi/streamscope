@@ -1,50 +1,66 @@
 # Streamscope
 
-A VS Code extension for sending requests from `.http` files and watching streaming responses (NDJSON, Server-Sent Events, chunked and LLM streams) arrive event by event.
+Send requests from `.http` files and watch streaming responses arrive event by event: NDJSON, Server-Sent Events, chunked bodies and LLM streams, even when the server labels NDJSON as `application/json`. Capture values from any single event, such as a `threadId` from a `RUN_STARTED` event, and reuse them in later requests.
 
-This version sends requests, shows normal and streaming responses, and captures values from responses and streamed events for later requests.
+![A streaming response in Streamscope: events arrive live in the Events view while the editor shows the request with its capture and checks](https://raw.githubusercontent.com/achrafelkhnissi/streamscope/main/images/live-stream.gif)
 
-## Sending requests
+Streamscope reads the same request syntax as REST Client, so existing `.http` files work.
 
-Put the cursor in a request and press `Cmd+Alt+Enter` (`Ctrl+Alt+Enter` on Windows and Linux), or click **Send Request** above it. The response opens beside the editor:
+## Quick start
 
-- **Body**: JSON is indented, keeping numbers and duplicate keys as received; other text is shown as received.
-- **Headers** (**Streamscope: Show Response Headers**): the status line and response headers, the request as sent with credentials masked, each redirect and the timing.
+1. Install Streamscope and open or create a file ending in `.http` or `.rest`.
+2. Write a request:
 
-While a request runs, **Stop** above it cancels it. **Streamscope: Save Response** saves the body as received, after decompression.
+   ```http
+   ### Start agent run
+   # @name startRun
+   POST https://agent.example.test/run
+   Content-Type: application/json
 
-File variables (`@name = value`) and the system variables `{{$guid}}`, `{{$timestamp}}`, `{{$datetime}}`, `{{$localDatetime}}` and `{{$randomInt}}` work as in REST Client. A request that refers to a value Streamscope cannot resolve is not sent: the message names the variable and its line.
+   {"message": "hello"}
+   ```
 
-Request directives:
+3. Put the cursor in it and press `Cmd+Alt+Enter` (`Ctrl+Alt+Enter` on Windows and Linux), or click **Send Request** above it.
 
-- `# @timeout 30s` limits the request's total time;
-- `# @until type == "RUN_FINISHED"` ends a stream at the first event that matches, closes the connection and counts the request as completed;
-- `# @no-redirect` returns a redirect response instead of following it;
-- `# @insecure` skips TLS verification for that request only.
+The response opens beside the editor. A stream shows each event as it arrives, and **Stop** above the request or in the panel cancels it.
 
-Settings: `streamscope.request.connectTimeout`, `streamscope.request.headersTimeout`, `streamscope.request.followRedirects`, `streamscope.request.maxRedirects`, `streamscope.request.caFile` (extra certificate authorities to trust) and `streamscope.codeLens.enabled`.
+## Responses
 
-## Environments and secrets
+Each request has one response panel, which a new run of the request replaces. Its views:
 
-Variables come from, in order: captures (below), file variables (`@name = value`), the active environment, then `$shared`.
+- **Events:** one row per event while the stream runs. Expand a row to see the event, open it in the editor with **Open Event in Editor**, or click a value and press **Capture This Value…**.
+- **Reply:** the text assembled from an LLM stream's deltas, for AG-UI, OpenAI Chat Completions, OpenAI Responses, Anthropic Messages and Ollama streams.
+- **Raw:** the response text exactly as received.
+- **Headers:** the status line and response headers, the request as sent with credentials masked, each redirect and the timing.
+- **Body:** a normal response's body, with JSON indented and numbers and duplicate keys kept as received.
+- **Checks:** the result of each `# @expect` line.
 
-- **Environments** are read from REST Client's `rest-client.environmentVariables` setting, and from `http-client.env.json` and `http-client.private.env.json` next to the `.http` file or at the root of its workspace folder. For the same name, the private file wins over the public file, which wins over the setting. `$shared` values apply to every environment.
-- **Choose the environment** from the status bar or with **Streamscope: Select Environment**. The choice is remembered per workspace.
-- **`{{$secret name}}`** asks for the value once, keeps it in VS Code's secret storage for this workspace, and hides it everywhere Streamscope writes. Use **Set Secret**, **Clear Secret** and **List Secrets** to manage values, or the **Move to secret storage** quick fix on a line like `@apiToken = …`.
-- **`{{$dotenv name}}`** reads `.env.<environment>` or `.env` next to the file, or in a parent folder up to the workspace folder.
-- **`{{$processEnv name}}`** reads VS Code's own environment.
-- Both accept `%name`, which first looks up the real name in the environment.
-- A missing value never becomes an empty one: the request is not sent.
-- An environment can set `"streamscope.insecure": true` to skip TLS verification for its requests.
+Streamscope detects NDJSON and Server-Sent Events from the bytes, not only from `Content-Type`, and never adds headers you did not write. A long stream keeps its newest events in memory and older ones on disk, so it can run for hours. **Streamscope: Save Response** saves the body as received, after decompression, and **Streamscope: Show History** lists the session's last 50 runs.
 
-Hover over `{{…}}` to see the value and where it comes from (secrets and credential-like values stay hidden). Completion offers variables after `{{` and directives after `# @`, and undefined variables get a warning.
+## Request syntax
+
+Requests are separated by `###` lines. File variables (`@name = value`) and the system variables `{{$guid}}`, `{{$timestamp}}`, `{{$datetime}}`, `{{$localDatetime}}` and `{{$randomInt}}` work as in REST Client. A request that refers to a value Streamscope cannot resolve is never sent: the message names the variable and its line. A body can come from a file in the workspace with `< path` or `<@ path`.
+
+Streamscope's directives go on comment lines before the request line:
+
+| Directive                         | Effect                                                                                               |
+| --------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `# @name startRun`                | Names the request, so other requests can read its captures and response                              |
+| `# @capture threadId = …`         | Takes a value from the response or from one event (see Captures)                                     |
+| `# @expect status == 200`         | States what the response must satisfy (see Checks)                                                   |
+| `# @until type == "RUN_FINISHED"` | Ends a stream at the first matching event, closes the connection and counts the request as completed |
+| `# @timeout 30s`                  | Limits the request's total time                                                                      |
+| `# @no-redirect`                  | Returns a redirect response instead of following it                                                  |
+| `# @insecure`                     | Skips TLS verification for this request only                                                         |
+
+Hover over `{{…}}` to see a value and where it comes from (secrets and credential-like values stay hidden). Completion offers variables after `{{` and directives after `# @`, and undefined variables get a warning.
 
 ## Captures
 
 A `# @capture` line takes a value from a response, including from single events of a stream, for later requests:
 
 ```http
-@baseUrl = https://agent.example.com
+@baseUrl = https://agent.example.test
 
 ### Start agent run
 # @name startRun
@@ -64,13 +80,12 @@ Content-Type: application/json
 ```
 
 - **When a value is ready.** `first(…)` and `nth(k, …)` resolve as soon as the matching event arrives, so a request can use `threadId` while the stream is still running. `last(…)`, `all(…)`, `count(…)` and `text` resolve when the stream ends; `status`, `headers` and `cookies` when the headers arrive; `body` and `jsonpath("$…")` when the body has arrived.
-- **Capturing without typing.** Click a value in an expanded event or in the Body tab and press **Capture This Value…**, or put the cursor on a value in an event or Body opened in the editor and run **Streamscope: Capture This Value…**. Streamscope suggests a name, writes the line, such as `# @capture delta = nth(3, type == "TEXT_MESSAGE_CONTENT").delta`, on the request that produced the response, and selects it. Start the name with `secret ` to mask the value; a name or key that looks like a credential, such as `sessionId` or `auth`, gets `secret` on its own. The line takes effect the next time the request runs.
+- **Capturing without typing.** Click a value in an expanded event or in the Body view and press **Capture This Value…**, or put the cursor on a value in an event or body opened in the editor and run **Streamscope: Capture This Value…**. Streamscope suggests a name, writes the line, such as `# @capture delta = nth(3, type == "TEXT_MESSAGE_CONTENT").delta`, on the request that produced the response, and selects it. Start the name with `secret ` to mask the value; a name or key that looks like a credential, such as `sessionId` or `auth`, gets `secret` on its own. The line takes effect the next time the request runs.
 - **Reading a value.** `{{startRun.threadId}}` reads the capture of the request named `startRun`. `{{messageId}}` reads the newest capture with that name from a request in the same file that still has the `# @capture` line. A file variable, environment or `$shared` value of that name comes next, and a capture from another file only after them. So `@cursor = start` seeds a request that captures `cursor` itself: the first send uses `start`, later sends the captured value.
 - **Waiting.** A request that needs a value still pending waits for it, up to `streamscope.capture.waitTimeout` (30 s), and its CodeLens shows "Waiting for startRun › threadId" beside **Stop**. If the producer has not run in this session and nothing else defines the name, the request is not sent, and the message offers to run it. Streamscope never sends a request you did not send.
-- **Body files.** A `< path` or `<@ path` body file path cannot use a captured value or a response reference, directly or through a variable, so a server never chooses which local file is sent.
 - **Failures.** A capture that fails, such as an event that never arrived or a missing field, blocks the requests that need it, with the reason.
-- **Seeing values.** After a run, the value or the reason it failed appears after each `# @capture` line, and the response view lists the run's captured values. Hovers and completion after `{{` know captures too.
-- **Secrets.** A `secret` capture, a capture of a credential header such as `headers["x-session-token"]` or of a session cookie, and a capture whose name looks like a credential show as `••••••`. The response itself is shown as received.
+- **Seeing values.** After a run, the value or the reason it failed appears after each `# @capture` line, and the response panel lists the run's captured values.
+- **Secrets.** A `secret` capture, a capture of a credential header such as `headers["x-session-token"]` or of a session cookie, and a capture whose name looks like a credential show as `••••••`.
 
 Expressions also filter and reshape values: `body.items[?status == "ok"].id | join(",")`, `count(type == "TEXT_MESSAGE_CONTENT")`, `headers["location"] | match(/orders\/(\d+)/)`, `jsonpath("$.items[0].id")` and `body.next | default("none")`. REST Client's `{{login.response.body.$.token}}` and `{{login.response.headers.X-Token}}` work as well. The full syntax is in [section 10 of the design](docs/design.md#10-variable-extraction-and-resolution).
 
@@ -90,12 +105,14 @@ POST {{baseUrl}}/agent/run
 ```
 
 - **Live:** each check settles at the first event that decides it, while the stream is still running, and never changes afterwards. `count(…) > 2` passes at the third match; `!exists(first(type == "RUN_ERROR"))` fails at the first error. A failed check does not stop the stream or block captures.
-- **Results:** the response view's Checks tab lists every check with its expected and actual values, such as `status == 201` got 500. The status line shows `4/5 checks`, the CodeLens shows `✓ 200 OK · 120 events · 4.3 s · 5/5 checks`, and a ✓ or ✗ appears after each `# @expect` line, with the detail on hover.
+- **Results:** the Checks view lists every check with its expected and actual values, such as `status == 201` got 500. The status line shows `4/5 checks`, the CodeLens shows `✓ 200 OK · 120 events · 4.3 s · 5/5 checks`, and a ✓ or ✗ appears after each `# @expect` line, with the detail on hover.
 - **Secrets:** values in a check's detail are masked the same way capture failures are.
 
 ## File runs
 
 Each `.http` and `.rest` file is a suite in VS Code's Testing view, and each request is a test with a run button in the gutter. Run a whole file from the Testing view or with **Streamscope: Run File**:
+
+![A file run in the Testing view: the first request passes, the second cannot connect, and the third is skipped because it needs a value from the second](https://raw.githubusercontent.com/achrafelkhnissi/streamscope/main/images/file-run.gif)
 
 ```http
 @baseUrl = https://api.example.test
@@ -119,15 +136,89 @@ X-Thread: {{threadId}}
 - **Results:** a request passes when it gets a response and all its checks pass, whatever its HTTP status. A failed check is reported at its `# @expect` line, for example `` `status == 201` got 500 ``. A request that fails to connect, times out or cannot be sent is an error.
 - **Skips:** a request that needs a capture from a request that failed, was not sent or was stopped in the same run is skipped, and the test output gives the reason. That carries down a chain of requests.
 - **Stopping:** stopping the run cancels the request in progress; the rest stay not run.
-- File runs open no response panels; a request whose panel is already open shows its new run there. File runs need a trusted workspace.
+- File runs open no response panels; a request whose panel is already open shows its new run there. The Testing view lists files in the workspace and untitled files, skips `node_modules`, and does not read linked files or files over 1 MiB. File runs need a trusted workspace.
+
+## Environments and secrets
+
+Variables come from, in order: captures, file variables (`@name = value`), the active environment, then `$shared`.
+
+- **Environments** are read from REST Client's `rest-client.environmentVariables` setting, and from `http-client.env.json` and `http-client.private.env.json` next to the `.http` file or at the root of its workspace folder. For the same name, the private file wins over the public file, which wins over the setting. `$shared` values apply to every environment.
+- **Choose the environment** from the status bar or with **Streamscope: Select Environment**. The choice is remembered per workspace.
+- **`{{$secret name}}`** asks for the value once, keeps it in VS Code's secret storage for this workspace, and hides it everywhere Streamscope writes. Use **Streamscope: Set Secret**, **Streamscope: Clear Secret** and **Streamscope: List Secrets** to manage values, or **Streamscope: Move to Secret Storage**, also offered as a quick fix on a line like `@apiToken = …`.
+- **`{{$dotenv name}}`** reads `.env.<environment>` or `.env` next to the file, or in a parent folder up to the workspace folder.
+- **`{{$processEnv name}}`** reads VS Code's own environment.
+- Both accept `%name`, which first looks up the real name in the environment.
+- A missing value never becomes an empty one: the request is not sent.
+- An environment can set `"streamscope.insecure": true` to skip TLS verification for its requests.
+
+## Settings
+
+| Setting                                | Default                     | Description                                                                                |
+| -------------------------------------- | --------------------------- | ------------------------------------------------------------------------------------------ |
+| `streamscope.request.connectTimeout`   | `30s`                       | How long to wait for the connection, including the TLS handshake                           |
+| `streamscope.request.headersTimeout`   | `300s`                      | How long to wait for the response headers once connected                                   |
+| `streamscope.request.followRedirects`  | `true`                      | Follow redirects; `# @no-redirect` turns it off for one request                            |
+| `streamscope.request.maxRedirects`     | `10`                        | The most redirects to follow for one request                                               |
+| `streamscope.request.caFile`           | `""`                        | A PEM file of extra certificate authorities to trust, added to the default and system ones |
+| `streamscope.capture.waitTimeout`      | `30s`                       | How long a request waits for a captured value that has not arrived yet                     |
+| `streamscope.stream.maxEventSize`      | `16MiB`                     | The largest single event to read; a larger one becomes an oversize event with a preview    |
+| `streamscope.stream.memoryEvents`      | `10000`                     | How many of the newest events of a stream stay in memory; older ones are read from disk    |
+| `streamscope.stream.maxSpillSize`      | `512MiB`                    | The most raw data kept on disk for one streaming response                                  |
+| `streamscope.stream.maxTotalSpillSize` | `2GiB`                      | The most raw data kept on disk across all runs in the history                              |
+| `streamscope.stream.typeFields`        | `["type","event","object"]` | The JSON fields whose value labels an event, tried in order                                |
+| `streamscope.view.default`             | `events`                    | The view a streaming response opens on until you pick another one                          |
+| `streamscope.codeLens.enabled`         | `true`                      | Show Send Request and the last outcome above each request                                  |
+
+Durations accept `500ms`, `30s` or `5m`, and sizes `512KiB`, `16MiB` or `2GiB`.
+
+## Commands
+
+All commands are in the Command Palette under **Streamscope:**.
+
+| Command                                          | What it does                                                                           |
+| ------------------------------------------------ | -------------------------------------------------------------------------------------- |
+| **Streamscope: Send Request**                    | Sends the request under the cursor (`Cmd+Alt+Enter`, `Ctrl+Alt+Enter`)                 |
+| **Streamscope: Stop Request**                    | Stops the request under the cursor                                                     |
+| **Streamscope: Run File**                        | Runs every request of the file in the Testing view                                     |
+| **Streamscope: Show Response**                   | Shows the response panel of the request under the cursor, or of a response document    |
+| **Streamscope: Switch Response View…**           | Picks the panel's view: Events, Reply, Raw, Headers, Body or Checks                    |
+| **Streamscope: Open Response Body in Editor**    | Opens the body in an editor, for large bodies                                          |
+| **Streamscope: Open Response Headers in Editor** | Opens the Headers view as an editor document                                           |
+| **Streamscope: Save Response**                   | Saves the body as received, after decompression                                        |
+| **Streamscope: Capture This Value…**             | Writes a `# @capture` line for the value under the cursor in an event or body document |
+| **Streamscope: Show History**                    | Lists the session's last 50 runs                                                       |
+| **Streamscope: Select Environment**              | Picks the active environment                                                           |
+| **Streamscope: Set Secret**                      | Stores a value for `{{$secret name}}`                                                  |
+| **Streamscope: Clear Secret**                    | Removes a stored secret                                                                |
+| **Streamscope: List Secrets**                    | Lists the names of stored secrets, never their values                                  |
+| **Streamscope: Move to Secret Storage**          | Moves a file variable's value into secret storage                                      |
+| **Streamscope: Show Log**                        | Opens Streamscope's output log                                                         |
+
+## Using Streamscope with REST Client
+
+Streamscope uses the same `http` language and reads REST Client's syntax, request references, system variables and `rest-client.environmentVariables`, so both extensions can open the same files. When REST Client or httpyac is installed, Streamscope offers once to turn off their Send link above each request, so only one shows. Streamscope's shortcut, `Cmd+Alt+Enter` (`Ctrl+Alt+Enter`), does not clash with REST Client's.
+
+## Privacy
+
+Streamscope sends no telemetry, needs no account, and makes no network requests except the ones you send. Responses and history stay in memory, and long streams in files in Streamscope's own storage folder on your machine, which are deleted when a run leaves the history or VS Code closes. Secrets stay in VS Code's secret storage.
+
+## Security notes
+
+- Credentials are masked in the log, notifications, hovers, the response panel, the Testing view, history and errors: `Authorization`, `Proxy-Authorization`, `Cookie`, `Set-Cookie`, API-key headers, URL user info, `{{$secret …}}` values and `secret` captures.
+- Redirects to another origin drop credential headers and any header that carries a secret, and a 307 or 308 redirect never resends a request body to another origin or from https to http.
+- TLS verification is on unless you opt out for one request (`# @insecure`) or one environment.
+- Body files must lie inside the workspace folder, and a captured value or response can never choose which file is sent.
+- The response panel runs with a strict content security policy and shows response data as text only.
+
+Report a vulnerability privately as described in [SECURITY.md](SECURITY.md).
 
 ## Restricted workspaces
 
-In a workspace you have not trusted, Streamscope still colours, outlines and checks `.http` files. Before sending, it asks once per session. It never reads secrets, `.env` files, `http-client.private.env.json`, environments from your user settings, process variables or body files there, and ignores `# @insecure` and environment TLS opt-outs. It uses only your own `streamscope.request.caFile` setting, and only when it is an absolute path. When you trust the workspace, the values captured and the responses received until then are no longer used by later requests, so run their requests again.
+In a workspace you have not trusted, Streamscope still colours, outlines and checks `.http` files. Before sending, it asks once per session. It never reads secrets, `.env` files, `http-client.private.env.json`, environments from your user settings, process variables or body files there, ignores `# @insecure` and environment TLS opt-outs, and does not run files from the Testing view. It uses only your own `streamscope.request.caFile` setting, and only when it is an absolute path. When you trust the workspace, the values captured and the responses received until then are no longer used by later requests, so run their requests again.
 
 ## Requirements
 
-- VS Code 1.101 or later
+- VS Code 1.101 or later, on macOS, Windows or Linux, desktop only.
 
 ## Development
 
@@ -138,4 +229,4 @@ npm run test:integration
 npm run package
 ```
 
-Press F5 in VS Code to launch an Extension Development Host with the extension loaded.
+Press F5 in VS Code to launch an Extension Development Host with the extension loaded. [docs/design.md](docs/design.md) describes the design and [docs/benchmarks.md](docs/benchmarks.md) the benchmarks, including how the recordings above are made (`npm run bench -- record`).

@@ -28,6 +28,8 @@ caffeinate -d -i npm run bench -- view --surface m6 --rate 500 --size 1024 --min
 npm run bench -- view --walkthrough --surface m6-dark --theme "Default Dark Modern"
 npm run bench -- view --surface <name> --extension <path>
 npm run bench -- activation --files 300
+npm run bench -- record --scene stream
+npm run bench -- record --scene file-run
 npm run bench -- serve
 ```
 
@@ -44,6 +46,7 @@ Run `npm run build` first. `npm run bench` bundles the benchmark and its driver,
 - **`--surface`** names the run. Results, logs and screenshots are named by it. Use `m6` for Streamscope's response view.
 - **`--theme`** writes `workbench.colorTheme` into the throwaway profile. It accepts `Default Dark Modern`, `Default Light Modern`, `Default High Contrast` and `Default High Contrast Light`. Without it, VS Code's default theme applies.
 - **`activation`** starts VS Code stable 5 times, each time in a fresh throwaway profile on a folder with `--files` synthetic `.http` files (default 1), so `workspaceContains` activates Streamscope as it would for a user. The extension records how long its bundle took to load and `activate()` took to return, from a `performance.now()` stamp that esbuild places at the top of `dist/extension.js`, and the driver reads it with `streamscope.benchmark.activation`. The runner prints each run, the median and the slowest. Build with `npm run build:production` first to measure what users get.
+- **`record`** makes the README's recordings, `images/live-stream.gif` and `images/file-run.gif`. Run `npm run package` first: it installs the packaged VSIX into a throwaway profile, so the window looks as it does for a user, and opens a folder with a synthetic `.http` file. It drives the scene with key events over the DevTools protocol (Quick Open, Send Request, or Run File in the Testing view), keeps the frames of `Page.startScreencast` in `out/record/<scene>/`, and assembles them with `ffmpeg` at 10 frames/s and 1,200 px wide with a palette pass. A recording over 8 MB fails. The `stream` scene streams 500 events/s of 1 KiB for 12 s; the `file-run` scene runs three requests, one of which cannot connect and one skipped as its dependant. It needs `ffmpeg` on the `PATH` and, like `--walkthrough`, opens a DevTools port on 127.0.0.1 while it runs.
 - **`serve`** prints the URL of the synthetic stream server and keeps it running, for trying a surface by hand.
 
 Things to know:
