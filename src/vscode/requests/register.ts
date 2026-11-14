@@ -11,6 +11,7 @@ import type { HttpFile, HttpRequest, Range } from '../../http-file/model';
 import { fileSafeName, formatBytes, requestLabel, saveExtension } from '../../response/labels';
 import { historyItems, type HistoryItem } from '../../response/run-status';
 import type { BodyFileContext } from '../../runs/body-files';
+import type { StepStart } from '../../runs/file-run';
 import { panelViews, type PanelView } from '../../response/panel-protocol';
 import { RunHistory } from '../../runs/history';
 import { isActive, RunRegistry } from '../../runs/registry';
@@ -59,6 +60,17 @@ interface RunAction {
   title: string;
   label: string;
   producer: string;
+}
+
+interface StartOptions {
+  reveal: boolean;
+  toasts: boolean;
+}
+
+interface Launch {
+  start: StepStart;
+  settled: Promise<void>;
+  notify: boolean;
 }
 
 interface BlockedToast {
@@ -221,6 +233,12 @@ async function showBlocked(
 export interface RequestFeatures {
   shutdown: () => Promise<void>;
   hasRun: (key: string) => boolean;
+  startForTest: (
+    document: vscode.TextDocument,
+    file: HttpFile,
+    request: HttpRequest,
+    index: number,
+  ) => Promise<StepStart>;
 }
 
 export function registerRequestFeatures(
@@ -484,37 +502,82 @@ export function registerRequestFeatures(
     return showAttached(key, false);
   };
 
-  const send = async (
-    uri?: vscode.Uri,
-    line?: number,
-    started?: (handle: RunHandle) => void,
-  ): Promise<void> => {
-    const found = await target(uri, line);
-    if (!found) {
-      void vscode.window.showInformationMessage(
-        'Put the cursor in a request in a .http file to send it.',
-      );
+  const notStarted = (message: string, notify: boolean): Launch => ({
+    start: { kind: 'not-started', message },
+    settled: Promise.resolve(),
+    notify,
+  });
+
+  const follow = async (handle: RunHandle, found: Target, options: StartOptions): Promise<void> => {
+    const { document, file, key } = found;
+    const shown = (): boolean => presenter.run(key) === handle;
+    const showRun = (): void => {
+      if (shown() || registry.latest(key) !== handle) {
+        return;
+      }
+      if (options.reveal || panels.isOpen(key)) {
+        panels.show(handle, document.uri, { reveal: options.reveal, readOnly: false });
+      }
+    };
+    let loggedWait: string | undefined;
+    const stopWatching = handle.onUpdate(() => {
+      const snapshot = handle.snapshot();
+      if (snapshot.status === 'waiting' && snapshot.waitingFor !== loggedWait) {
+        loggedWait = snapshot.waitingFor;
+        logRunWaiting(runLog, snapshot);
+      }
+      if (snapshot.status === 'receiving') {
+        showRun();
+        stopWatching();
+      }
+    });
+    const run = await handle.done;
+    stopWatching();
+    logRunEnd(runLog, run);
+    if (registry.latest(key) !== handle) {
       return;
     }
+    if (run.status === 'blocked') {
+      const toast = options.toasts ? blockedToast(document, file, run) : undefined;
+      if (toast !== undefined) {
+        lastBlocked = testMode ? { uri: document.uri, toast } : undefined;
+        void showBlocked(document, toast, cache);
+      }
+      return;
+    }
+    if (hasResponse(run) && !panels.keepsOpenedRun(handle)) {
+      showRun();
+    }
+    if (shown()) {
+      await presenter.body(handle);
+    }
+    lenses.refresh();
+  };
+
+  const launch = async (
+    found: Target,
+    options: StartOptions,
+    started?: (handle: RunHandle) => void,
+  ): Promise<Launch> => {
     const settings = await readRequestSettings(found.document.uri, !vscode.workspace.isTrusted);
     if (!settings.ok) {
-      void vscode.window.showErrorMessage(settings.message);
-      return;
+      return notStarted(settings.message, true);
     }
     const limits = readStreamSettings(found.document.uri);
     if (!limits.ok) {
-      void vscode.window.showErrorMessage(limits.message);
-      return;
+      return notStarted(limits.message, true);
     }
     const captureSettings = readCaptureSettings();
     if (!captureSettings.ok) {
-      void vscode.window.showErrorMessage(captureSettings.message);
-      return;
+      return notStarted(captureSettings.message, true);
     }
     const { document, file, request, key } = found;
     const prepared = await variablesFor(document, file, request, environments, secrets);
     if (!prepared) {
-      return;
+      return notStarted(
+        `A secret was not entered, so ${requestLabel(request)} was not sent.`,
+        false,
+      );
     }
     const restricted = !vscode.workspace.isTrusted;
     const area = await spill;
@@ -549,45 +612,51 @@ export function registerRequestFeatures(
     });
     history.add(handle);
     started?.(handle);
-    const shown = (): boolean => presenter.run(key) === handle;
-    const showRun = (): void => {
-      if (!shown() && registry.latest(key) === handle) {
-        panels.show(handle, document.uri, { reveal: true, readOnly: false });
-      }
+    return {
+      start: { kind: 'started', run: handle },
+      settled: follow(handle, found, options),
+      notify: false,
     };
-    let loggedWait: string | undefined;
-    const stopWatching = handle.onUpdate(() => {
-      const snapshot = handle.snapshot();
-      if (snapshot.status === 'waiting' && snapshot.waitingFor !== loggedWait) {
-        loggedWait = snapshot.waitingFor;
-        logRunWaiting(runLog, snapshot);
+  };
+
+  const send = async (
+    uri?: vscode.Uri,
+    line?: number,
+    started?: (handle: RunHandle) => void,
+  ): Promise<void> => {
+    const found = await target(uri, line);
+    if (!found) {
+      void vscode.window.showInformationMessage(
+        'Put the cursor in a request in a .http file to send it.',
+      );
+      return;
+    }
+    const launched = await launch(found, { reveal: true, toasts: true }, started);
+    if (launched.start.kind === 'not-started') {
+      if (launched.notify) {
+        void vscode.window.showErrorMessage(launched.start.message);
       }
-      if (snapshot.status === 'receiving') {
-        showRun();
-        stopWatching();
-      }
+      return;
+    }
+    await launched.settled;
+  };
+
+  const startForTest = async (
+    document: vscode.TextDocument,
+    file: HttpFile,
+    request: HttpRequest,
+    index: number,
+  ): Promise<StepStart> => {
+    const key = requestKey(document.uri.toString(), request, index);
+    const launched = await launch(
+      { document, file, request, key },
+      { reveal: false, toasts: false },
+    );
+    launched.settled.catch((error: unknown) => {
+      const reason = error instanceof Error ? error.message : String(error);
+      log.error(`Showing the response of ${requestLabel(request)} failed: ${reason}`);
     });
-    const run = await handle.done;
-    stopWatching();
-    logRunEnd(runLog, run);
-    if (registry.latest(key) !== handle) {
-      return;
-    }
-    if (run.status === 'blocked') {
-      const toast = blockedToast(document, file, run);
-      if (toast !== undefined) {
-        lastBlocked = testMode ? { uri: document.uri, toast } : undefined;
-        void showBlocked(document, toast, cache);
-      }
-      return;
-    }
-    if (hasResponse(run) && !panels.keepsOpenedRun(handle)) {
-      showRun();
-    }
-    if (shown()) {
-      await presenter.body(handle);
-    }
-    lenses.refresh();
+    return launched.start;
   };
 
   const sendRequest = (uri?: vscode.Uri, line?: number): Promise<void> => send(uri, line);
@@ -844,6 +913,7 @@ export function registerRequestFeatures(
   }
 
   return {
+    startForTest,
     shutdown: sessionShutdown(history, spill),
     hasRun: (key) => {
       const run = registry.latest(key);
