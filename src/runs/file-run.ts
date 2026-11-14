@@ -1,4 +1,5 @@
 import type { CheckEntry } from '../checks/registry';
+import type { HttpRequest } from '../http-file/model';
 import { maskUrl, maskValues } from '../masking/masking';
 import type { RunSnapshot } from './run';
 
@@ -40,6 +41,28 @@ export interface FileRunHooks<S extends FileRunStep> {
 export const fileRunStoppedReason = 'The file run was stopped.';
 export const requestStoppedReason = 'The request was stopped.';
 export const checksReplacedMessage = 'A newer run of this request replaced its check results.';
+
+const stoppedMark = Symbol('stopped');
+
+function whenAborted(signal: AbortSignal): Promise<typeof stoppedMark> {
+  return new Promise((resolve) => {
+    if (signal.aborted) {
+      resolve(stoppedMark);
+      return;
+    }
+    signal.addEventListener(
+      'abort',
+      () => {
+        resolve(stoppedMark);
+      },
+      { once: true },
+    );
+  });
+}
+
+export function expectsChecks(request: HttpRequest): boolean {
+  return request.expects.some(({ expression }) => expression !== undefined);
+}
 
 function failedChecks(checks: readonly CheckEntry[]): FailedCheck[] {
   const failed: FailedCheck[] = [];
@@ -123,6 +146,7 @@ export async function runFile<S extends FileRunStep>(
 ): Promise<void> {
   const fileRunIds = new Set<number>();
   const aborted = (): boolean => signal.aborted;
+  const stopped = whenAborted(signal);
   for (const step of steps) {
     if (aborted()) {
       return;
@@ -153,8 +177,21 @@ export async function runFile<S extends FileRunStep>(
     } finally {
       signal.removeEventListener('abort', cancel);
     }
-    const checks = snapshot.status === 'completed' ? await hooks.checks(step, run.id) : undefined;
-    const sensitive = [...snapshot.sensitiveValues, ...(await hooks.secrets(step, run.id))];
+    const checks =
+      snapshot.status === 'completed'
+        ? await Promise.race([hooks.checks(step, run.id), stopped])
+        : undefined;
+    const secrets =
+      checks === stoppedMark
+        ? stoppedMark
+        : await Promise.race([hooks.secrets(step, run.id), stopped]);
+    if (checks === stoppedMark || secrets === stoppedMark) {
+      hooks.report(step, { kind: 'skipped', reason: fileRunStoppedReason }, snapshot, (text) =>
+        maskUrl(maskValues(text, snapshot.sensitiveValues)),
+      );
+      return;
+    }
+    const sensitive = [...snapshot.sensitiveValues, ...secrets];
     const mask = (text: string): string => maskUrl(maskValues(text, sensitive));
     hooks.report(
       step,

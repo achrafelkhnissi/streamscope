@@ -4,6 +4,7 @@ import type { CheckRegistry } from '../../checks/registry';
 import type { HttpFile, Range } from '../../http-file/model';
 import { describeOutcome, requestLabel } from '../../response/labels';
 import {
+  expectsChecks,
   runFile,
   withoutControls,
   type FileRunHooks,
@@ -169,7 +170,8 @@ export async function runTests(
             kind: 'not-started',
             message: `Another request in this file is also named ${step.test.duplicateOf}.`,
           }),
-    checks: (step, runId) => checks.settled(step.test.key, runId),
+    checks: (step, runId) =>
+      expectsChecks(step.test.request) ? checks.settled(step.test.key, runId) : Promise.resolve([]),
     secrets: async (_step, runId) => {
       await captures.settled(runId);
       return captures.secretsOf(runId);

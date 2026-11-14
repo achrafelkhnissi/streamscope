@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import type { CheckEntry } from '../../../src/checks/registry';
 import type { ResolutionProblem } from '../../../src/variables/resolve';
+import { parseHttpFile } from '../../../src/http-file/parse';
 import {
+  expectsChecks,
   requestVerdict,
   runFile,
   withoutControls,
@@ -455,6 +457,58 @@ describe('runFile after the review', () => {
     releaseSecrets([]);
     await running;
     expect(log).toEqual(['secrets', 'report']);
+  });
+
+  it('stops waiting for checks and captures when the run is stopped', async () => {
+    for (const waiting of ['checks', 'secrets'] as const) {
+      const controller = new AbortController();
+      const log: string[] = [];
+      const reports: [string, RequestVerdict][] = [];
+      const never = new Promise<never>(() => undefined);
+      let next = 0;
+      const hooks: FileRunHooks<FileRunStep> = {
+        begin: (step) => {
+          log.push(`begin ${step.key}`);
+        },
+        start: () => {
+          next += 1;
+          const run = fakeRun(next);
+          run.end({});
+          return started(run);
+        },
+        checks: () => (waiting === 'checks' ? never : Promise.resolve([])),
+        secrets: () => (waiting === 'secrets' ? never : Promise.resolve([])),
+        report: (step, verdict) => {
+          reports.push([step.key, verdict]);
+        },
+      };
+
+      const running = runFile(steps('a', 'b'), hooks, controller.signal);
+      await settle();
+      expect(reports).toEqual([]);
+      controller.abort();
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect(reports, waiting).toEqual([
+        ['a', { kind: 'skipped', reason: 'The file run was stopped.' }],
+      ]);
+      await running;
+      expect(log, waiting).toEqual(['begin a']);
+    }
+  });
+
+  it('expects check results only from a request with a parsed # @expect line', () => {
+    const [checked, plain] = parseHttpFile(
+      [
+        '# @expect status == 200',
+        'GET https://api.example.test/checked',
+        '',
+        '###',
+        'GET https://api.example.test/plain',
+      ].join('\n'),
+    ).requests;
+    expect(checked === undefined ? undefined : expectsChecks(checked)).toBe(true);
+    expect(plain === undefined ? undefined : expectsChecks(plain)).toBe(false);
   });
 
   it('withoutControls strips terminal control characters but keeps line breaks and tabs', () => {
