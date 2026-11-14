@@ -10,6 +10,7 @@ import {
   type WalkthroughRequest,
 } from '../../benchmark/contract';
 import { sentAtOf } from '../../benchmark/latency';
+import { walkthroughRequest, walkthroughTestFile } from '../../benchmark/walkthrough';
 import { RenderTracker } from '../../benchmark/render-tracker';
 import { TaskTimer } from '../../benchmark/task-timer';
 import type { EventStore } from '../../events/store';
@@ -167,7 +168,10 @@ async function walkthrough(
 ): Promise<void> {
   refuse(request.url);
   refuse(request.controlUrl);
-  const document = await openRequest(request.url);
+  const document = await vscode.workspace.openTextDocument({
+    language: 'http',
+    content: walkthroughRequest(request.url),
+  });
   await vscode.window.showTextDocument(document, vscode.ViewColumn.One);
   const { handle, finished } = await sendRequest(send, document, () => undefined);
   const { key } = handle.snapshot();
@@ -200,6 +204,15 @@ async function walkthrough(
     panels.selectView(key, 'checks');
   });
   await finished;
+  await step('testing', async () => {
+    const file = await vscode.workspace.openTextDocument({
+      language: 'http',
+      content: walkthroughTestFile(request.url),
+    });
+    await vscode.window.showTextDocument(file, vscode.ViewColumn.One);
+    await vscode.commands.executeCommand('streamscope.runFile', file.uri);
+    await vscode.commands.executeCommand('workbench.view.testing.focus');
+  });
 }
 
 export function registerBenchmarkCommands(

@@ -146,3 +146,9 @@ function outcomeText(run: RunSnapshot): string {
         : `Running · ${events} · ${formatDuration(run.elapsedMs)}`;
   }
 }
+
+export const checkMarkColors = {
+  passed: 'testing.iconPassed',
+  failed: 'errorForeground',
+  pending: 'descriptionForeground',
+} as const;

@@ -23,11 +23,12 @@ import {
 import {
   bodyCaptureHint,
   bodyNote,
-  captureWhereHint,
+  captureLabel,
   captureText,
+  captureWhereHint,
   eventCaptureHint,
-  notJsonHint,
   historyNote,
+  notJsonHint,
   rawNote,
   replyNote,
   stateAnnouncement,
@@ -320,6 +321,7 @@ function captureItem(capture: PanelCapture): HTMLLIElement {
   const item = document.createElement('li');
   item.dataset.state = capture.state;
   item.textContent = captureText(capture);
+  item.setAttribute('aria-label', captureLabel(capture));
   return item;
 }
 

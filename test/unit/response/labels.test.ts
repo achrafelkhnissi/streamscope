@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { parseHttpFile } from '../../../src/http-file/parse';
 import {
+  checkMarkColors,
   bodyExtension,
   describeOutcome,
   fileSafeName,
@@ -241,5 +242,15 @@ describe('labels', () => {
         }),
       ),
     ).toBe('Failed: Could not resolve ••••••.');
+  });
+});
+
+describe('checkMarkColors', () => {
+  it('colours failed check marks with errorForeground, which both high-contrast themes define', () => {
+    expect(checkMarkColors).toEqual({
+      passed: 'testing.iconPassed',
+      failed: 'errorForeground',
+      pending: 'descriptionForeground',
+    });
   });
 });

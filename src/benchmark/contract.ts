@@ -59,6 +59,7 @@ export const walkthroughSteps = [
   'detail',
   'stopped',
   'checks',
+  'testing',
 ] as const;
 
 export type WalkthroughStep = (typeof walkthroughSteps)[number];

@@ -99,6 +99,17 @@ export function bodyNote(body: PanelBody): string {
   }
 }
 
+export function captureLabel(capture: PanelCapture): string {
+  switch (capture.state) {
+    case 'pending':
+      return `${capture.name}, waiting`;
+    case 'resolved':
+      return `${capture.name}, captured: ${capture.text}`;
+    case 'failed':
+      return `${capture.name}, failed: ${capture.text}`;
+  }
+}
+
 export function captureText(capture: PanelCapture): string {
   switch (capture.state) {
     case 'pending':

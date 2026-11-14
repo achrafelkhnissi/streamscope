@@ -3,6 +3,7 @@ import type { PanelStatus } from '../../../src/response/panel-protocol';
 import { maxReplyLength } from '../../../src/streaming/limits';
 import {
   bodyNote,
+  captureLabel,
   captureText,
   historyNote,
   rawNote,
@@ -179,5 +180,19 @@ describe('captureText', () => {
       }),
     ).toBe('threadId · ✗ startRun was cancelled before threadId resolved');
     expect(captureText({ name: 'empty', state: 'resolved', text: '' })).toBe('empty · ');
+  });
+});
+
+describe('captureLabel', () => {
+  it('names the state in words for screen readers', () => {
+    expect(captureLabel({ name: 'threadId', state: 'resolved', text: 'thread-1' })).toBe(
+      'threadId, captured: thread-1',
+    );
+    expect(captureLabel({ name: 'threadId', state: 'pending', text: '' })).toBe(
+      'threadId, waiting',
+    );
+    expect(captureLabel({ name: 'threadId', state: 'failed', text: 'no event matched' })).toBe(
+      'threadId, failed: no event matched',
+    );
   });
 });
