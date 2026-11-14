@@ -1,6 +1,6 @@
 Third-party notices
 
-Streamscope bundles the following packages into dist/extension.js, and the RFC 9535 grammar that one of them embeds.
+Streamscope bundles the following packages into dist/extension.js and dist/capture-worker.js, and the RFC 9535 grammar that one of them embeds.
 
 ================================================================================
 @swaggerexpert/jsonpath 4.0.5

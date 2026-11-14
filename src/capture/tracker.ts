@@ -390,7 +390,7 @@ function collect(
 
 async function bodySubject(end: CompletedEnd): Promise<BodySubject | string> {
   if (end.bodyLength > fileBodyBytes) {
-    const path = await end.spillPath(end.bodyLength).catch(() => undefined);
+    const path = await end.spillPath(end.bodyLength);
     return path === undefined
       ? bodyNotSentReason
       : { kind: 'file', path, length: end.bodyLength, contentType: end.contentType };
@@ -715,7 +715,7 @@ export class CaptureTracker {
       tracked.inFlight = true;
     }
     const work = async (): Promise<void> => {
-      const path = await this.access?.spillPath(match.offset + match.length).catch(() => undefined);
+      const path = await this.access?.spillPath(match.offset + match.length);
       const subject: BodySubject = { kind: 'events', format: match.format, path, query: undefined };
       const jobs: TrackedJob[] = [];
       for (const tracked of batch) {
@@ -772,7 +772,7 @@ export class CaptureTracker {
       const reach = format === undefined ? 0 : furthest(tracked);
       let path = paths.get(reach);
       if (reach > 0 && !paths.has(reach)) {
-        path = await end.spillPath(reach).catch(() => undefined);
+        path = await end.spillPath(reach);
         paths.set(reach, path);
       }
       const job = this.job(tracked, { ...subject, path });
@@ -825,11 +825,11 @@ export class CaptureTracker {
     const queryPath =
       query === undefined || query.budget.end === 0
         ? undefined
-        : await end.spillPath(query.budget.end).catch(() => undefined);
+        : await end.spillPath(query.budget.end);
     let spillFile = queryPath;
     for (const tracked of pending) {
       const reach = furthest(tracked);
-      spillFile ??= reach > 0 ? await end.spillPath(reach).catch(() => undefined) : undefined;
+      spillFile ??= reach > 0 ? await end.spillPath(reach) : undefined;
     }
     return {
       subject: {

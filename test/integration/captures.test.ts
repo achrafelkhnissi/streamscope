@@ -37,6 +37,24 @@ async function waitFor(
   }
 }
 
+async function unchangedFor(read: () => Thenable<number>, quietMs: number): Promise<number> {
+  const deadline = Date.now() + 5000;
+  let value = await read();
+  let since = Date.now();
+  while (Date.now() - since < quietMs) {
+    if (Date.now() > deadline) {
+      throw new Error(`the value kept changing for 5000 ms`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const next = await read();
+    if (next !== value) {
+      value = next;
+      since = Date.now();
+    }
+  }
+  return value;
+}
+
 async function lensTitles(uri: vscode.Uri): Promise<string[]> {
   const lenses = await vscode.commands.executeCommand<vscode.CodeLens[]>(
     'vscode.executeCodeLensProvider',
@@ -538,11 +556,18 @@ describe('captures in the editor', () => {
     );
     const changes = (): Thenable<number> =>
       vscode.commands.executeCommand<number>('streamscope.test.inlayHintChanges');
-    await new Promise((resolve) => setTimeout(resolve, 300));
-    const before = await changes();
+    const before = await unchangedFor(changes, 500);
 
     await send(document.uri, producerLine);
-    await new Promise((resolve) => setTimeout(resolve, 400));
+    await waitFor(
+      async () => (await changes()) - before >= 2,
+      'onDidChangeInlayHints did not fire twice',
+    );
+    const deadline = Date.now() + 500;
+    while (Date.now() < deadline) {
+      assert.equal((await changes()) - before, 2);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
 
     assert.equal((await changes()) - before, 2);
     assert.ok((await hintLabels(document)).includes('= thread-1'));
