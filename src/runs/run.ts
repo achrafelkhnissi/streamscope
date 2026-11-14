@@ -290,6 +290,7 @@ export function startRun(
   let observer: RunObserver | undefined;
   let observed = false;
   let untilFailure: RunFailure | undefined;
+  const untilStop = new AbortController();
   const until = untilCondition(request);
   const untilWatch = until === undefined ? undefined : new UntilWatch(until);
   let markHead = (): void => undefined;
@@ -467,7 +468,7 @@ export function startRun(
       };
     }
     session?.stop();
-    controller.abort();
+    untilStop.abort();
   };
 
   const sink: ResponseSink = {
@@ -654,7 +655,7 @@ export function startRun(
         prepared.request,
         options,
         sink,
-        controller.signal,
+        AbortSignal.any([controller.signal, untilStop.signal]),
       );
     } catch (error) {
       await closeStream(false);

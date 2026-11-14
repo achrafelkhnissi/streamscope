@@ -1,4 +1,5 @@
 import type { CheckEntry } from '../checks/registry';
+import { maskUrl, maskValues } from '../masking/masking';
 import type { RunSnapshot } from './run';
 
 export interface FileRunStep {
@@ -27,7 +28,13 @@ export interface FileRunHooks<S extends FileRunStep> {
   begin(step: S): void;
   start(step: S): Promise<StepStart>;
   checks(step: S, runId: number): Promise<readonly CheckEntry[] | undefined>;
-  report(step: S, verdict: RequestVerdict, run: RunSnapshot | undefined): void;
+  secrets(step: S, runId: number): Promise<readonly string[]>;
+  report(
+    step: S,
+    verdict: RequestVerdict,
+    run: RunSnapshot | undefined,
+    mask: (text: string) => string,
+  ): void;
 }
 
 export const fileRunStoppedReason = 'The file run was stopped.';
@@ -76,6 +83,39 @@ export function requestVerdict(
   }
 }
 
+export function withoutControls(text: string): string {
+  let kept = '';
+  for (const character of text) {
+    const code = character.charCodeAt(0);
+    const control =
+      (code < 0x20 && character !== '\n' && character !== '\t') || (code >= 0x7f && code <= 0x9f);
+    if (!control) {
+      kept += character;
+    }
+  }
+  return kept;
+}
+
+function maskedVerdict(verdict: RequestVerdict, mask: (text: string) => string): RequestVerdict {
+  switch (verdict.kind) {
+    case 'passed':
+      return verdict;
+    case 'failed':
+      return {
+        ...verdict,
+        checks: verdict.checks.map((check) => ({
+          ...check,
+          text: mask(check.text),
+          detail: mask(check.detail),
+        })),
+      };
+    case 'errored':
+      return { ...verdict, message: mask(verdict.message) };
+    case 'skipped':
+      return { ...verdict, reason: mask(verdict.reason) };
+  }
+}
+
 export async function runFile<S extends FileRunStep>(
   steps: readonly S[],
   hooks: FileRunHooks<S>,
@@ -92,8 +132,9 @@ export async function runFile<S extends FileRunStep>(
     if (start.kind === 'not-started') {
       hooks.report(
         step,
-        { kind: 'errored', durationMs: undefined, message: start.message },
+        { kind: 'errored', durationMs: undefined, message: maskUrl(start.message) },
         undefined,
+        maskUrl,
       );
       continue;
     }
@@ -113,6 +154,13 @@ export async function runFile<S extends FileRunStep>(
       signal.removeEventListener('abort', cancel);
     }
     const checks = snapshot.status === 'completed' ? await hooks.checks(step, run.id) : undefined;
-    hooks.report(step, requestVerdict(snapshot, checks, fileRunIds, aborted()), snapshot);
+    const sensitive = [...snapshot.sensitiveValues, ...(await hooks.secrets(step, run.id))];
+    const mask = (text: string): string => maskUrl(maskValues(text, sensitive));
+    hooks.report(
+      step,
+      maskedVerdict(requestVerdict(snapshot, checks, fileRunIds, aborted()), mask),
+      snapshot,
+      mask,
+    );
   }
 }

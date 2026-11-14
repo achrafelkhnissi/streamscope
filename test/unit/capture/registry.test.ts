@@ -684,3 +684,56 @@ describe('CaptureRegistry', () => {
     expect(error.message).toBe('startRun › threadId did not arrive within 30 s.');
   });
 });
+
+describe('CaptureRegistry.settled', () => {
+  const run = (id: number, key = 'k') => ({ id, key, label: 'producer', startedAt: id });
+  const declarations = [
+    { name: 'a', secret: false },
+    { name: 'b', secret: false },
+  ];
+
+  it('resolves once every capture of the run has settled', async () => {
+    const registry = new CaptureRegistry();
+    registry.begin(run(1), declarations);
+    let settled = false;
+    const waiting = registry.settled(1).then(() => {
+      settled = true;
+    });
+
+    registry.update(1, 'a', { state: 'failed', reason: 'no match' });
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(settled).toBe(false);
+
+    registry.update(1, 'b', { state: 'failed', reason: 'no match' });
+    await waiting;
+    expect(registry.settledWaiterCount).toBe(0);
+  });
+
+  it('resolves at once for a run without captures or already settled', async () => {
+    const registry = new CaptureRegistry();
+    await registry.settled(9);
+    registry.begin(run(1), declarations);
+    registry.update(1, 'a', { state: 'failed', reason: 'x' });
+    registry.update(1, 'b', { state: 'failed', reason: 'x' });
+    await registry.settled(1);
+    expect(registry.settledWaiterCount).toBe(0);
+  });
+
+  it('resolves when a newer run begins, the captures are cleared or the request is evicted', async () => {
+    const registry = new CaptureRegistry(1);
+    registry.begin(run(1), declarations);
+    const replaced = registry.settled(1);
+    registry.begin(run(2), declarations);
+    await replaced;
+
+    const cleared = registry.settled(2);
+    registry.clear();
+    await cleared;
+
+    registry.begin(run(3), declarations);
+    const evicted = registry.settled(3);
+    registry.begin(run(4, 'other'), declarations);
+    await evicted;
+    expect(registry.settledWaiterCount).toBe(0);
+  });
+});

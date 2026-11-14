@@ -1,9 +1,11 @@
 import * as vscode from 'vscode';
+import type { CaptureRegistry } from '../../capture/registry';
 import type { CheckRegistry } from '../../checks/registry';
 import type { HttpFile, Range } from '../../http-file/model';
 import { describeOutcome, requestLabel } from '../../response/labels';
 import {
   runFile,
+  withoutControls,
   type FileRunHooks,
   type FileRunStep,
   type RequestVerdict,
@@ -27,6 +29,7 @@ export interface TestRunContext {
   cache: ParseCache;
   requests: RequestFeatures;
   checks: CheckRegistry;
+  captures: CaptureRegistry;
   record: ((report: TestReport) => void) | undefined;
 }
 
@@ -75,7 +78,7 @@ export async function runTests(
   request: vscode.TestRunRequest,
   token: vscode.CancellationToken,
 ): Promise<void> {
-  const { controller, items, cache, requests, checks, record } = context;
+  const { controller, items, cache, requests, checks, captures, record } = context;
   const excluded = new Set((request.exclude ?? []).map(({ id }) => id));
   const planned = planOf(request, items);
   const testRun = controller.createTestRun(request);
@@ -93,15 +96,21 @@ export async function runTests(
       step.document.uri,
       rangeOf(step.test.request.requestLine.range),
     );
-    testRun.appendOutput(crlf(text), location, step.test.item);
-    record?.({ kind: 'output', id: step.test.item.id, output: text });
+    const shown = withoutControls(text);
+    testRun.appendOutput(crlf(shown), location, step.test.item);
+    record?.({ kind: 'output', id: step.test.item.id, output: shown });
   };
 
-  const report = (step: TestStep, verdict: RequestVerdict, run: RunSnapshot | undefined): void => {
+  const report = (
+    step: TestStep,
+    verdict: RequestVerdict,
+    run: RunSnapshot | undefined,
+    mask: (text: string) => string,
+  ): void => {
     const { item, request: httpRequest, key } = step.test;
     const { uri } = step.document;
     if (run !== undefined) {
-      output(`${step.label}: ${describeOutcome(run, checks.summary(key))}`, step);
+      output(mask(`${step.label}: ${describeOutcome(run, checks.summary(key))}`), step);
     }
     switch (verdict.kind) {
       case 'passed':
@@ -160,6 +169,10 @@ export async function runTests(
             message: `Another request in this file is also named ${step.test.duplicateOf}.`,
           }),
     checks: (step, runId) => checks.settled(step.test.key, runId),
+    secrets: async (_step, runId) => {
+      await captures.settled(runId);
+      return captures.secretsOf(runId);
+    },
     report,
   };
 

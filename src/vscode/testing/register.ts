@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import type { CaptureRegistry } from '../../capture/registry';
 import type { CheckRegistry } from '../../checks/registry';
 import { parseHttpFile } from '../../http-file/parse';
 import type { ParseCache } from '../language/parse-cache';
@@ -15,6 +16,10 @@ const noFileMessage = 'Open a .http file to run it.';
 
 function isTested(document: vscode.TextDocument): boolean {
   return document.languageId === 'http' && testedSchemes.has(document.uri.scheme);
+}
+
+function isDependency(uri: vscode.Uri): boolean {
+  return uri.path.split('/').includes('node_modules');
 }
 
 function openDocument(uri: vscode.Uri): vscode.TextDocument | undefined {
@@ -37,6 +42,7 @@ export class HttpTesting implements vscode.Disposable {
     private readonly cache: ParseCache,
     private readonly requests: RequestFeatures,
     private readonly checks: CheckRegistry,
+    private readonly captures: CaptureRegistry,
     private readonly recording: boolean,
   ) {
     this.controller = vscode.tests.createTestController('streamscope', 'Streamscope');
@@ -70,8 +76,10 @@ export class HttpTesting implements vscode.Disposable {
     this.watch();
     const uris = await vscode.workspace.findFiles(testedFiles, undefined, maxTestFiles);
     for (const uri of uris) {
-      this.discovered.add(uri.toString());
-      this.items.fileItem(uri);
+      if (!isDependency(uri)) {
+        this.discovered.add(uri.toString());
+        this.items.fileItem(uri);
+      }
     }
   }
 
@@ -103,6 +111,7 @@ export class HttpTesting implements vscode.Disposable {
         cache: this.cache,
         requests: this.requests,
         checks: this.checks,
+        captures: this.captures,
         record: this.recording
           ? (report) => {
               this.reports.push(report);
@@ -163,7 +172,7 @@ export class HttpTesting implements vscode.Disposable {
     this.subscriptions.push(
       watcher,
       watcher.onDidCreate((uri) => {
-        if (this.discovered.size < maxTestFiles) {
+        if (this.discovered.size < maxTestFiles && !isDependency(uri)) {
           this.discovered.add(uri.toString());
           this.items.fileItem(uri);
         }
@@ -188,12 +197,13 @@ export function registerTesting(
   cache: ParseCache,
   requests: RequestFeatures,
   checks: CheckRegistry,
+  captures: CaptureRegistry,
 ): void {
   const testMode = context.extensionMode === vscode.ExtensionMode.Test;
   let testing: HttpTesting | undefined;
   const create = (): void => {
     if (testing === undefined && vscode.workspace.isTrusted) {
-      testing = new HttpTesting(cache, requests, checks, testMode);
+      testing = new HttpTesting(cache, requests, checks, captures, testMode);
       context.subscriptions.push(testing);
     }
   };

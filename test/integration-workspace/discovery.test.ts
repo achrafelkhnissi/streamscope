@@ -1,5 +1,5 @@
 import * as assert from 'node:assert/strict';
-import { rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import * as vscode from 'vscode';
 
 interface ItemState {
@@ -38,12 +38,23 @@ function workspaceUri(...segments: string[]): vscode.Uri {
 
 describe('testing view discovery', () => {
   const created = (): vscode.Uri => workspaceUri('created.http');
+  const dependency = (): vscode.Uri => workspaceUri('node_modules');
+
+  before(async () => {
+    await vscode.extensions.getExtension('achrafelkhnissi.streamscope')?.activate();
+    mkdirSync(vscode.Uri.joinPath(dependency(), 'pkg').fsPath, { recursive: true });
+    writeFileSync(
+      vscode.Uri.joinPath(dependency(), 'pkg', 'example.http').fsPath,
+      'GET https://api.example.test/dependency\n',
+    );
+  });
 
   after(() => {
     rmSync(created().fsPath, { force: true });
+    rmSync(dependency().fsPath, { recursive: true, force: true });
   });
 
-  it('discovers .http and .rest files without opening them, respecting files.exclude', async () => {
+  it('discovers .http and .rest files without opening them, respecting files.exclude and skipping node_modules', async () => {
     await resolveTests();
     const labels = (await testItems()).map(({ label }) => label).sort();
 

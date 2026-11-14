@@ -90,6 +90,7 @@ export class CaptureRegistry {
   private readonly waitsByCapture = new Map<string, Set<Wait>>();
   private readonly waitsByRun = new Map<number, Set<Wait>>();
   private readonly listeners = new Set<(request: string, name: string) => void>();
+  private readonly settledWaiters = new Map<number, (() => void)[]>();
   private waits = 0;
   private newestRun = Number.NEGATIVE_INFINITY;
   private clearedThrough = Number.NEGATIVE_INFINITY;
@@ -106,6 +107,29 @@ export class CaptureRegistry {
 
   get listenerCount(): number {
     return this.listeners.size;
+  }
+
+  get settledWaiterCount(): number {
+    let count = 0;
+    for (const waiting of this.settledWaiters.values()) {
+      count += waiting.length;
+    }
+    return count;
+  }
+
+  settled(runId: number): Promise<void> {
+    const captures = this.runs.get(runId);
+    if (captures === undefined || isSettled(captures)) {
+      return Promise.resolve();
+    }
+    return new Promise((resolve) => {
+      const waiting = this.settledWaiters.get(runId);
+      if (waiting === undefined) {
+        this.settledWaiters.set(runId, [resolve]);
+      } else {
+        waiting.push(resolve);
+      }
+    });
   }
 
   begin(
@@ -173,6 +197,9 @@ export class CaptureRegistry {
     }
     for (const wait of [...(this.waitsByCapture.get(captureKey(captures.key, name)) ?? [])]) {
       wait.settle(updated);
+    }
+    if (this.settledWaiters.has(runId) && isSettled(captures)) {
+      this.releaseSettled(runId);
     }
   }
 
@@ -364,9 +391,18 @@ export class CaptureRegistry {
     }
   }
 
+  private releaseSettled(runId: number): void {
+    const waiting = this.settledWaiters.get(runId);
+    this.settledWaiters.delete(runId);
+    for (const resolve of waiting ?? []) {
+      resolve();
+    }
+  }
+
   private remove(captures: RequestCaptures): void {
     this.requests.delete(captures.key);
     this.runs.delete(captures.runId);
+    this.releaseSettled(captures.runId);
     for (const name of captures.entries.keys()) {
       removed(this.declaring, name, captures);
     }
@@ -386,6 +422,15 @@ export class CaptureRegistry {
       this.remove(oldest);
     }
   }
+}
+
+function isSettled(captures: RequestCaptures): boolean {
+  for (const entry of captures.entries.values()) {
+    if (entry.result.state === 'pending') {
+      return false;
+    }
+  }
+  return true;
 }
 
 function captureKey(request: string, name: string): string {

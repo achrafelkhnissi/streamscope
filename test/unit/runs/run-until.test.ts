@@ -6,11 +6,12 @@ import { CheckRegistry } from '../../../src/checks/registry';
 import { CheckService } from '../../../src/checks/service';
 import { startRun, type RunSnapshot } from '../../../src/runs/run';
 import { startHttpServer, type LocalServer } from '../../support/servers';
-import { missingWorker } from '../capture/worker';
+import { missingWorker, useCaptureWorker } from '../capture/worker';
 import { dependencies, runInput, useSpillArea } from './support';
 
 const servers: LocalServer[] = [];
 useSpillArea();
+const workerFiles = useCaptureWorker();
 
 afterEach(async () => {
   await Promise.all(servers.splice(0).map((server) => server.close()));
@@ -194,4 +195,93 @@ describe('startRun with # @until', () => {
     expect(snapshot.untilEvent).toBeUndefined();
     expect(snapshot.bodyLength).toBeGreaterThan(0);
   });
+});
+
+describe('startRun with # @until after the review', () => {
+  async function untilRun(
+    body: string,
+    lines: string[],
+  ): Promise<{
+    snapshot: RunSnapshot;
+    captures: CaptureRegistry;
+    checks: CheckRegistry;
+    key: string;
+  }> {
+    const server = await serve((_request, response) => {
+      response.writeHead(200, { 'Content-Type': 'application/x-ndjson' });
+      response.write(body);
+    });
+    const input = runInput([...lines, `GET ${server.url}/stream`]);
+    const captures = new CaptureRegistry();
+    const checks = new CheckRegistry();
+    const worker = workerFiles().worker;
+    const run = startRun(
+      {
+        ...input,
+        captures: new CaptureService({
+          registry: captures,
+          documentUri: 'file:///requests.http',
+          file: input.file,
+          request: input.request,
+          workerFile: worker,
+          runs: () => undefined,
+        }),
+        checks: new CheckService({ registry: checks, request: input.request, workerFile: worker }),
+      },
+      dependencies,
+    );
+    const snapshot = await run.done;
+    await checks.settled(input.key, snapshot.id);
+    await captures.settled(snapshot.id);
+    await run.release();
+    return { snapshot, captures, checks, key: input.key };
+  }
+
+  it('lets all(…) captures and unique(all(…)) checks of a run ended by # @until resolve', async () => {
+    const body = [
+      { type: 'TOOL_CALL_START', id: 'a' },
+      { type: 'TOOL_CALL_START', id: 'b' },
+      { type: 'TEXT', n: 3 },
+      { type: 'RUN_FINISHED' },
+      { type: 'TOOL_CALL_START', id: 'c' },
+    ]
+      .map((value) => `${JSON.stringify(value)}\n`)
+      .join('');
+
+    const { snapshot, captures, checks, key } = await untilRun(body, [
+      '# @capture ids = all(type == "TOOL_CALL_START").id',
+      '# @expect unique(all(type == "TOOL_CALL_START").id)',
+      '# @until type == "RUN_FINISHED"',
+    ]);
+
+    expect(snapshot.status).toBe('completed');
+    expect(snapshot.untilEvent).toBe(4);
+    expect(captures.get(key, 'ids')?.result).toMatchObject({
+      state: 'resolved',
+      text: '["a","b"]',
+    });
+    expect(checks.forRequest(key).map(({ result }) => result.state)).toEqual(['passed']);
+  }, 30_000);
+
+  it('lets captures and checks of a burst ended by # @until resolve', async () => {
+    const lines: string[] = [];
+    for (let n = 1; n < 20_000; n += 1) {
+      lines.push(line(n));
+    }
+    lines.push(line(20_000, 'DONE'));
+    lines.push(line(20_001));
+
+    const { snapshot, captures, checks, key } = await untilRun(lines.join(''), [
+      '# @capture doneN = first(type == "DONE").n',
+      '# @capture lastN = last().n',
+      '# @expect count(type == "STEP") == 19999',
+      '# @until type == "DONE"',
+    ]);
+
+    expect(snapshot.status).toBe('completed');
+    expect(snapshot.untilEvent).toBe(20_000);
+    expect(captures.get(key, 'doneN')?.result).toMatchObject({ state: 'resolved', text: '20000' });
+    expect(captures.get(key, 'lastN')?.result).toMatchObject({ state: 'resolved', text: '20000' });
+    expect(checks.forRequest(key).map(({ result }) => result.state)).toEqual(['passed']);
+  }, 30_000);
 });

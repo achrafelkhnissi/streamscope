@@ -4,6 +4,7 @@ import type { ResolutionProblem } from '../../../src/variables/resolve';
 import {
   requestVerdict,
   runFile,
+  withoutControls,
   type FileRunHooks,
   type FileRunStep,
   type RequestVerdict,
@@ -84,6 +85,7 @@ function recorder(
         recorded.log.push(`checks ${step.key} ${String(runId)}`);
         return checks(step, runId);
       },
+      secrets: () => Promise.resolve([]),
       report: (step, verdict) => {
         recorded.log.push(`report ${step.key} ${verdict.kind}`);
         recorded.reports.push([step.key, verdict]);
@@ -378,5 +380,84 @@ describe('runFile', () => {
       ['a', { kind: 'skipped', reason: 'The request was stopped.' }],
       ['b', { kind: 'passed', durationMs: 120 }],
     ]);
+  });
+});
+
+describe('runFile after the review', () => {
+  it("masks the run's secret captures, sensitive values and URL user info in every reported text", async () => {
+    const secret = 'sk-late-secret-123';
+    const reports: RequestVerdict[] = [];
+    const masked: string[] = [];
+    let next = 0;
+    const hooks: FileRunHooks<FileRunStep> = {
+      begin: () => undefined,
+      start: (step) => {
+        next += 1;
+        const run = fakeRun(next);
+        if (step.key === 'checked') {
+          run.end({});
+        } else if (step.key === 'failed') {
+          run.end({
+            status: 'failed',
+            sensitiveValues: ['synthetic-header-token'],
+            failure: {
+              kind: 'refused',
+              message: `https://user:pass@api.example.test/ refused synthetic-header-token and ${secret}`,
+            },
+          });
+        } else {
+          run.end({ status: 'blocked', problems: [problem(`needs ${secret}`, 1)] });
+        }
+        return started(run);
+      },
+      checks: () => Promise.resolve([entry(0, failedCheck(`got "${secret}"`))]),
+      secrets: () => Promise.resolve([secret]),
+      report: (_step, verdict, _run, mask) => {
+        reports.push(verdict);
+        masked.push(mask(`outcome ${secret}`));
+      },
+    };
+
+    await runFile(steps('checked', 'failed', 'blocked'), hooks, new AbortController().signal);
+
+    expect(JSON.stringify(reports)).not.toContain(secret);
+    expect(JSON.stringify(reports)).not.toContain('synthetic-header-token');
+    expect(JSON.stringify(reports)).not.toContain('user:pass');
+    expect(masked.some((text) => text.includes(secret))).toBe(false);
+    expect(reports.map(({ kind }) => kind)).toEqual(['failed', 'errored', 'skipped']);
+  });
+
+  it("waits for the run's captures before reporting", async () => {
+    const log: string[] = [];
+    let releaseSecrets: (values: readonly string[]) => void = () => undefined;
+    const hooks: FileRunHooks<FileRunStep> = {
+      begin: () => undefined,
+      start: () => {
+        const run = fakeRun(1);
+        run.end({});
+        return started(run);
+      },
+      checks: () => Promise.resolve([]),
+      secrets: () => {
+        log.push('secrets');
+        return new Promise((resolve) => {
+          releaseSecrets = resolve;
+        });
+      },
+      report: () => {
+        log.push('report');
+      },
+    };
+
+    const running = runFile(steps('a'), hooks, new AbortController().signal);
+    await settle();
+    expect(log).toEqual(['secrets']);
+    releaseSecrets([]);
+    await running;
+    expect(log).toEqual(['secrets', 'report']);
+  });
+
+  it('withoutControls strips terminal control characters but keeps line breaks and tabs', () => {
+    expect(withoutControls('a\u001b[31mred\u0007\tb\nc\u009bd\u007f')).toBe('a[31mred\tb\ncd');
   });
 });
