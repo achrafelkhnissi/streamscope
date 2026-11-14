@@ -1,10 +1,13 @@
 import * as assert from 'node:assert/strict';
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import * as path from 'node:path';
 import * as vscode from 'vscode';
 
 interface ItemState {
   id: string;
   label: string;
+  error: string | undefined;
   children: ItemState[];
 }
 
@@ -30,6 +33,14 @@ function resolveTests(uri?: vscode.Uri): Thenable<void> {
   return vscode.commands.executeCommand('streamscope.test.resolveTests', uri);
 }
 
+function runFileNotices(): Thenable<string[]> {
+  return vscode.commands.executeCommand<string[]>('streamscope.test.runFileNotices');
+}
+
+function testReports(): Thenable<unknown[]> {
+  return vscode.commands.executeCommand<unknown[]>('streamscope.test.testReports');
+}
+
 function workspaceUri(...segments: string[]): vscode.Uri {
   const folder = vscode.workspace.workspaceFolders?.[0];
   assert.ok(folder, 'the workspace test needs a folder');
@@ -38,6 +49,7 @@ function workspaceUri(...segments: string[]): vscode.Uri {
 
 describe('testing view discovery', () => {
   const created = (): vscode.Uri => workspaceUri('created.http');
+  const big = (): vscode.Uri => workspaceUri('big.http');
   const dependency = (): vscode.Uri => workspaceUri('node_modules');
 
   before(async () => {
@@ -51,6 +63,7 @@ describe('testing view discovery', () => {
 
   after(() => {
     rmSync(created().fsPath, { force: true });
+    rmSync(big().fsPath, { force: true });
     rmSync(dependency().fsPath, { recursive: true, force: true });
   });
 
@@ -102,5 +115,57 @@ describe('testing view discovery', () => {
       async () => (await testItems(uri)).length === 0,
       'the deleted file stayed in the tests',
     );
+  });
+
+  it('clears a file error once the file reads again', async () => {
+    await resolveTests();
+    const uri = big();
+    writeFileSync(uri.fsPath, `# ${'x'.repeat(1_048_574)}\n`);
+    await waitFor(async () => (await testItems(uri)).length === 1, 'the big file never appeared');
+
+    await resolveTests(uri);
+    let item = (await testItems(uri))[0];
+    assert.equal(
+      item?.error,
+      'This file is larger than 1 MiB, so Streamscope does not list its requests.',
+    );
+    assert.deepEqual(item.children, []);
+
+    writeFileSync(uri.fsPath, 'GET https://api.example.test/big\n');
+    await waitFor(
+      async () => (await testItems(uri))[0]?.children.length === 1,
+      'the rewritten file never listed its request',
+    );
+    item = (await testItems(uri))[0];
+    assert.equal(item?.error, undefined);
+  });
+});
+
+describe('Run File in a workspace', () => {
+  before(async () => {
+    await vscode.extensions.getExtension('achrafelkhnissi.streamscope')?.activate();
+  });
+
+  it('refuses Run File for a file outside the workspace', async () => {
+    const outside = mkdtempSync(path.join(tmpdir(), 'streamscope-outside-'));
+    const file = vscode.Uri.file(path.join(outside, 'outside.http'));
+    writeFileSync(file.fsPath, 'GET https://api.example.test/outside\n');
+    try {
+      await runFileNotices();
+      await testReports();
+
+      await vscode.commands.executeCommand('streamscope.runFile', file);
+
+      assert.deepEqual(await runFileNotices(), [
+        'Run File runs .http files in this workspace or untitled ones.',
+      ]);
+      assert.deepEqual(await testReports(), []);
+      assert.ok(
+        !vscode.workspace.textDocuments.some(({ uri }) => uri.toString() === file.toString()),
+        'Run File opened the file',
+      );
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
   });
 });

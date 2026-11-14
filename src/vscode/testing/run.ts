@@ -11,6 +11,7 @@ import {
   type RequestVerdict,
 } from '../../runs/file-run';
 import type { RunSnapshot } from '../../runs/run';
+import { isTestedUri } from '../../runs/test-file';
 import type { ParseCache } from '../language/parse-cache';
 import type { RequestFeatures } from '../requests/register';
 import type { HttpTestItems, RequestTest } from './items';
@@ -56,7 +57,7 @@ function planOf(request: vscode.TestRunRequest, items: HttpTestItems): PlannedFi
   const excluded = new Set((request.exclude ?? []).map(({ id }) => id));
   const planned = new Map<string, PlannedFile>();
   for (const item of request.include ?? items.files()) {
-    if (excluded.has(item.id) || item.uri === undefined) {
+    if (excluded.has(item.id) || item.uri === undefined || !isTestedUri(item.uri)) {
       continue;
     }
     const key = item.uri.toString();
@@ -179,7 +180,23 @@ export async function runTests(
   try {
     const batches: TestStep[][] = [];
     for (const { uri, ids } of planned) {
-      const document = await vscode.workspace.openTextDocument(uri);
+      let document: vscode.TextDocument;
+      try {
+        document = await vscode.workspace.openTextDocument(uri);
+      } catch (error) {
+        const fileItem = items.get(uri);
+        if (fileItem !== undefined) {
+          const reason = error instanceof Error ? error.message : String(error);
+          const text = `Streamscope could not open ${vscode.workspace.asRelativePath(uri)}: ${reason}`;
+          testRun.errored(fileItem, new vscode.TestMessage(text));
+          record?.({
+            kind: 'errored',
+            id: fileItem.id,
+            messages: [{ text, line: undefined }],
+          });
+        }
+        continue;
+      }
       const file = cache.get(document);
       items.sync(uri, file);
       const fileItem = items.get(uri);

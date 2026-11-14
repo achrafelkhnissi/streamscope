@@ -225,9 +225,16 @@ async function listsNoTests(): Promise<void> {
 
 async function runsNoFiles(folder: string): Promise<void> {
   const uri = vscode.Uri.file(path.join(folder, 'requests.http'));
+  await vscode.commands.executeCommand('streamscope.test.runFileNotices');
   await vscode.commands.executeCommand('streamscope.runFile', uri);
   const reports = await vscode.commands.executeCommand<unknown[]>('streamscope.test.testReports');
   assert.deepEqual(reports, [], 'a restricted workspace ran a file');
+  const notices = await vscode.commands.executeCommand<string[]>('streamscope.test.runFileNotices');
+  assert.deepEqual(
+    notices,
+    ['File runs need a trusted workspace. Trust it to run requests from the Testing view.'],
+    'a restricted workspace did not explain why Run File did nothing',
+  );
 }
 
 export async function run(): Promise<void> {

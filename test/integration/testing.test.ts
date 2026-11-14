@@ -12,8 +12,11 @@ interface ItemState {
   description: string | undefined;
   sortText: string | undefined;
   range: [number, number] | undefined;
+  error: string | undefined;
   children: ItemState[];
 }
+
+const outsideMessage = 'Run File runs .http files in this workspace or untitled ones.';
 
 async function waitFor(
   condition: () => boolean | Promise<boolean>,
@@ -37,10 +40,66 @@ async function fileItem(uri: vscode.Uri): Promise<ItemState | undefined> {
   return (await testItems(uri))[0];
 }
 
+function resolveTests(uri?: vscode.Uri): Thenable<void> {
+  return vscode.commands.executeCommand('streamscope.test.resolveTests', uri);
+}
+
+function runFileNotices(): Thenable<string[]> {
+  return vscode.commands.executeCommand<string[]>('streamscope.test.runFileNotices');
+}
+
+class MemoryFileSystem implements vscode.FileSystemProvider {
+  private readonly changes = new vscode.EventEmitter<vscode.FileChangeEvent[]>();
+  readonly onDidChangeFile = this.changes.event;
+
+  constructor(private readonly files: ReadonlyMap<string, string>) {}
+
+  watch(): vscode.Disposable {
+    return new vscode.Disposable(() => undefined);
+  }
+
+  stat(uri: vscode.Uri): vscode.FileStat {
+    const text = this.files.get(uri.path);
+    if (text === undefined) {
+      throw vscode.FileSystemError.FileNotFound(uri);
+    }
+    return { type: vscode.FileType.File, ctime: 0, mtime: 0, size: text.length };
+  }
+
+  readDirectory(): [string, vscode.FileType][] {
+    return [];
+  }
+
+  readFile(uri: vscode.Uri): Uint8Array {
+    const text = this.files.get(uri.path);
+    if (text === undefined) {
+      throw vscode.FileSystemError.FileNotFound(uri);
+    }
+    return new TextEncoder().encode(text);
+  }
+
+  createDirectory(uri: vscode.Uri): void {
+    throw vscode.FileSystemError.NoPermissions(uri);
+  }
+
+  writeFile(uri: vscode.Uri): void {
+    throw vscode.FileSystemError.NoPermissions(uri);
+  }
+
+  delete(uri: vscode.Uri): void {
+    throw vscode.FileSystemError.NoPermissions(uri);
+  }
+
+  rename(uri: vscode.Uri): void {
+    throw vscode.FileSystemError.NoPermissions(uri);
+  }
+}
+
 describe('testing view items', () => {
   let folder = '';
 
-  before(() => {
+  before(async () => {
+    await vscode.extensions.getExtension('achrafelkhnissi.streamscope')?.activate();
     folder = mkdtempSync(path.join(tmpdir(), 'streamscope-testing-'));
   });
 
@@ -185,6 +244,61 @@ describe('testing view items', () => {
       async () => (await fileItem(document.uri))?.children.length === 1,
       'the untitled request never appeared',
     );
+  });
+
+  it('gives unnamed requests an id with the URL user info masked', async () => {
+    const opened = await open('userinfo.http', ['GET https://user:secret@api.example.test/']);
+    await waitFor(
+      async () => (await fileItem(opened.uri))?.children.length === 1,
+      'the request never appeared',
+    );
+    const id = (await fileItem(opened.uri))?.children[0]?.id ?? '';
+    assert.equal(id, `${opened.uri.toString()}\n#0 GET https://••••••@api.example.test/`);
+    assert.ok(!id.includes('secret'), id);
+  });
+
+  it('lists a request whose URL holds a NUL character', async () => {
+    const document = await vscode.workspace.openTextDocument({
+      language: 'http',
+      content: 'GET https://api.example.test/a\u0000b\n',
+    });
+    await vscode.window.showTextDocument(document);
+    await waitFor(
+      async () => (await fileItem(document.uri))?.children.length === 1,
+      'the request never appeared',
+    );
+    assert.equal(
+      (await fileItem(document.uri))?.children[0]?.id,
+      `${document.uri.toString()}\n#0 GET https://api.example.test/a\ufffdb`,
+    );
+  });
+
+  it('lists and runs only local and untitled documents', async () => {
+    const registration = vscode.workspace.registerFileSystemProvider(
+      'streamscope-test',
+      new MemoryFileSystem(new Map([['/virtual.http', 'GET https://api.example.test/virtual\n']])),
+      { isReadonly: true },
+    );
+    try {
+      await runFileNotices();
+      const virtual = vscode.Uri.from({ scheme: 'streamscope-test', path: '/virtual.http' });
+      const document = await vscode.workspace.openTextDocument(virtual);
+      await vscode.window.showTextDocument(document);
+      assert.equal(document.languageId, 'http');
+      const local = await open('after-virtual.http', ['GET https://api.example.test/local']);
+      await waitFor(
+        async () => (await fileItem(local.uri))?.children.length === 1,
+        'the local request never appeared',
+      );
+      assert.deepEqual(await testItems(virtual), []);
+
+      await vscode.commands.executeCommand('streamscope.runFile', virtual);
+
+      assert.deepEqual(await runFileNotices(), [outsideMessage]);
+      assert.deepEqual(await testItems(virtual), []);
+    } finally {
+      registration.dispose();
+    }
   });
 
   it('removes an item when its document closes', async () => {
@@ -443,6 +557,33 @@ describe('file runs', () => {
       () => (server?.sockets.closed ?? 0) > closedBefore,
       'the slow request kept its connection',
     );
+  });
+
+  it('runs the other files when one file cannot be opened', async () => {
+    const binary = vscode.Uri.file(path.join(folder, 'binary.http'));
+    writeFileSync(
+      binary.fsPath,
+      Buffer.concat([
+        Buffer.from('# @name broken\nGET https://api.example.test/broken\n# '),
+        Buffer.from([0x00, 0x01, 0x02, 0x0a]),
+      ]),
+    );
+    const healthy = vscode.Uri.file(path.join(folder, 'healthy.http'));
+    writeFileSync(healthy.fsPath, `# @name healthy\nPOST ${server?.url ?? ''}/continue\n`);
+    await resolveTests(binary);
+    await resolveTests(healthy);
+
+    await vscode.commands.executeCommand('streamscope.test.runFiles', [binary, healthy]);
+
+    const reports = await testReports();
+    const errored = reports.find(({ kind, id }) => kind === 'errored' && id === binary.toString());
+    const text = errored?.messages?.[0]?.text ?? '';
+    assert.ok(text.startsWith('Streamscope could not open '), text);
+    assert.ok(text.includes('binary.http: '), text);
+    assert.deepEqual(outcomes(reports.filter(({ id }) => id !== binary.toString())), [
+      ['started', 'healthy'],
+      ['passed', 'healthy'],
+    ]);
   });
 
   it('runs one request from its test item', async () => {
