@@ -1,3 +1,4 @@
+import { maskValues } from '../masking/masking';
 import type { CheckResult } from './tracker';
 
 export const maxCheckRequests = 500;
@@ -75,6 +76,30 @@ export class CheckRegistry {
     }
     entry.result = result;
     this.emit(request.key);
+  }
+
+  runOf(key: string): number | undefined {
+    return this.requests.get(key)?.runId;
+  }
+
+  remask(key: string, values: readonly string[]): void {
+    const request = this.requests.get(key);
+    if (request === undefined || values.length === 0) {
+      return;
+    }
+    let changed = false;
+    for (const entry of request.entries) {
+      if (entry.result.state === 'failed') {
+        const detail = maskValues(entry.result.detail, values);
+        if (detail !== entry.result.detail) {
+          entry.result = { ...entry.result, detail };
+          changed = true;
+        }
+      }
+    }
+    if (changed) {
+      this.emit(key);
+    }
   }
 
   forRequest(key: string): readonly CheckEntry[] {

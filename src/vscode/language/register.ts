@@ -201,8 +201,10 @@ export function registerLanguageFeatures(
         );
         return document === undefined
           ? []
-          : checkDecorations(document, cache, checks).map(({ line, state, text }) => ({
+          : checkDecorations(document, cache, checks).map(({ line, start, end, state, text }) => ({
               line,
+              start,
+              end,
               state,
               text,
             }));

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { compileCheck, type CheckProgram } from '../../../src/checks/compile';
 import { CheckTracker, type CheckResult } from '../../../src/checks/tracker';
-import { verdictOf, type TermState } from '../../../src/checks/verdict';
+import { cutText, shown, verdictOf, type TermState } from '../../../src/checks/verdict';
 import type { JsonValue, StreamEvent } from '../../../src/events/model';
 import type { SourceNode } from '../../../src/expressions/ast';
 import { evaluate, holds, type Outcome } from '../../../src/expressions/evaluate';
@@ -161,7 +161,7 @@ function finalStates(
       states.set(
         term.id,
         outcome.present
-          ? { kind: 'value', value: outcome.value }
+          ? { kind: 'value', value: outcome.value, preview: shown(outcome.value) }
           : { kind: 'missing', reason: outcome.reason },
       );
     } else if (term.kind === 'count') {
@@ -173,6 +173,7 @@ function finalStates(
           condition: term.condition,
           span: { start: 0, end: 0 },
         }).length,
+        index: undefined,
         final: true,
       });
     } else {
@@ -232,11 +233,7 @@ describe('CheckTracker', () => {
       { state: 'passed', settledAt: undefined },
       { state: 'passed', settledAt: 1 },
       { state: 'passed', settledAt: 5 },
-      {
-        state: 'failed',
-        detail: 'first(type == "RUN_ERROR") is {"type":"RUN_ERROR","code":500}',
-        settledAt: 7,
-      },
+      { state: 'failed', detail: 'first(type == "RUN_ERROR") matched event 7', settledAt: 7 },
       { state: 'passed', settledAt: 1 },
       { state: 'passed', settledAt: undefined },
       { state: 'failed', detail: '"t1" appears more than once', settledAt: undefined },
@@ -437,7 +434,10 @@ describe('CheckTracker', () => {
 
     expect(results.get(0)).toEqual({
       state: 'failed',
-      detail: `first().${key} is missing: An expression is at most 4,096 characters.`,
+      detail: cutText(
+        `first().${key} could not be evaluated: An expression is at most 4,096 characters.`,
+        4_096,
+      ),
       settledAt: undefined,
     });
   });
@@ -480,4 +480,169 @@ describe('CheckTracker', () => {
     expect(checked?.results.size).toBe(64);
     expect(stallMs).toBeLessThan(100);
   }, 120_000);
+});
+
+describe('CheckTracker after the review', () => {
+  const okHead: ResponseHead = {
+    httpVersion: '1.1',
+    status: 200,
+    statusText: 'OK',
+    headers: [['Content-Type', 'application/x-ndjson']],
+  };
+  const access = {
+    spillPath: () => Promise.resolve(undefined),
+    signal: new AbortController().signal,
+  };
+
+  function direct(
+    texts: readonly string[],
+    options: { sensitiveValues?: string[]; secrets?: string[] } = {},
+  ) {
+    const results = new Map<number, CheckResult>();
+    const tracker = new CheckTracker(
+      { id: 1, label: 'run', wallStartedAt: 0, sensitiveValues: options.sensitiveValues ?? [] },
+      texts.map((text, index) => ({ index, program: program(text) })),
+      (index, result) => results.set(index, result),
+      workerFiles().worker,
+      undefined,
+      () => options.secrets ?? [],
+    );
+    tracker.head(okHead, access);
+    let index = 0;
+    const send = (value: JsonValue) => {
+      index += 1;
+      tracker.event({ ...(scripted([value])[0] as StreamEvent), index, line: index });
+    };
+    return { tracker, results, send };
+  }
+
+  function detailOf(result: CheckResult | undefined): string {
+    return result?.state === 'failed' ? result.detail : '';
+  }
+
+  it("masks the run's secret captures in a detail", () => {
+    const { results, send } = direct(['first(type == "AUTH").token == "x"'], {
+      secrets: ['sk-synthetic-secret-123'],
+    });
+    send({ type: 'AUTH', token: 'sk-synthetic-secret-123' });
+    expect(results.get(0)).toEqual({ state: 'failed', detail: 'got "••••••"', settledAt: 1 });
+  });
+
+  it('masks a secret that straddles the 200-character cut', () => {
+    const secret = 'sk-synthetic-0123456789abcdefghij';
+    const { results, send } = direct(['first(type == "A").v == "y"'], {
+      sensitiveValues: [secret],
+    });
+    send({ type: 'A', v: `${'x'.repeat(190)}${secret}` });
+    const detail = detailOf(results.get(0));
+    expect(detail).not.toBe('');
+    for (let at = 0; at + 8 <= secret.length; at += 1) {
+      expect(detail).not.toContain(secret.slice(at, at + 8));
+    }
+  });
+
+  it('masks user info in a URL in a detail', () => {
+    const { results, send } = direct(['first(type == "A").url == "y"']);
+    send({ type: 'A', url: 'https://admin:pw@internal.example/' });
+    expect(results.get(0)).toEqual({
+      state: 'failed',
+      detail: 'got "https://••••••@internal.example/"',
+      settledAt: 1,
+    });
+  });
+
+  it('caps a detail at 4,096 characters', () => {
+    const sides = Array.from({ length: 30 }, (_, at) => `first(type == "A").v${String(at)} == "y"`);
+    const { results, send } = direct([sides.join(' || ')]);
+    const value: Record<string, JsonValue> = { type: 'A' };
+    for (let at = 0; at < 30; at += 1) {
+      value[`v${String(at)}`] = 'z'.repeat(300);
+    }
+    send(value);
+    expect(results.get(0)?.state).toBe('failed');
+    expect(detailOf(results.get(0)).length).toBeLessThanOrEqual(4_096);
+  });
+
+  it('fails a negated exists on an event too large to insert, from its match', async () => {
+    const url = await serve([
+      { type: 'RUN_STARTED' },
+      { type: 'RUN_ERROR', pad: 'x'.repeat(1_200_000) },
+    ]);
+    const { results } = await checkRun(url, ['!exists(first(type == "RUN_ERROR"))']);
+    expect(results.get(0)).toEqual({
+      state: 'failed',
+      detail: 'first(type == "RUN_ERROR") matched event 2',
+      settledAt: 2,
+    });
+  });
+
+  it('fails a before whose condition needs too much work', async () => {
+    const url = await serve([
+      { type: 'B', items: Array.from({ length: 600_001 }, (_, at) => at + 8) },
+      { type: 'A' },
+    ]);
+    const { results } = await checkRun(url, ['before(type == "A", items contains 7)']);
+    expect(results.get(0)).toMatchObject({
+      state: 'failed',
+      detail:
+        'before(type == "A", items contains 7) could not be evaluated: the capture needs too much work for this stream',
+    });
+  }, 30_000);
+
+  it('settles every check of a completed run', async () => {
+    const url = await serve(agentStream);
+    const { results } = await checkRun(url, ['/abc/ == "abc"']);
+    expect(results.get(0)).toEqual({
+      state: 'failed',
+      detail: 'the check could not be decided',
+      settledAt: undefined,
+    });
+  });
+
+  it('reports a count of 0 at the headers', () => {
+    const { results } = direct(['count(type == "A") >= 0', 'count(type == "A") < 0']);
+    expect(results.get(0)).toEqual({ state: 'passed', settledAt: undefined });
+    expect(results.get(1)).toEqual({
+      state: 'failed',
+      detail: 'count(type == "A") reached 0',
+      settledAt: undefined,
+    });
+  });
+
+  it('fails checks beyond 64 internal values', () => {
+    const texts = Array.from({ length: 70 }, (_, at) => `first(type == "A").v${String(at)} == 1`);
+    const { results } = direct(texts);
+    expect(results.get(63)).toBeUndefined();
+    for (let at = 64; at < 70; at += 1) {
+      expect(results.get(at)).toEqual({
+        state: 'failed',
+        detail:
+          'the checks of this request read more than 64 values, so this check is not evaluated',
+        settledAt: undefined,
+      });
+    }
+  });
+
+  it('keeps nothing for a settled check', () => {
+    const { tracker, send } = direct([
+      'first(type == "A").n == 1',
+      'count(type == "A") > 0',
+      'before(type == "A", type == "B")',
+    ]);
+    send({ type: 'A', n: 1 });
+    expect(tracker.retained).toBe(0);
+  });
+
+  it('does not format a large settled value again on every event', () => {
+    const { send, results } = direct([
+      'exists(first(type == "A").big) && count(type == "B") > 100000',
+    ]);
+    send({ type: 'A', big: 'x'.repeat(200_000) });
+    const started = performance.now();
+    for (let at = 0; at < 3_000; at += 1) {
+      send({ type: 'B' });
+    }
+    expect(performance.now() - started).toBeLessThan(1_000);
+    expect(results.get(0)).toBeUndefined();
+  });
 });

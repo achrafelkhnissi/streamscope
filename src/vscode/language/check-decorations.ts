@@ -8,6 +8,8 @@ type CheckState = CheckEntry['result']['state'];
 
 export interface CheckDecoration {
   line: number;
+  start: number;
+  end: number;
   state: CheckState;
   text: string;
   hover: string;
@@ -21,21 +23,22 @@ function cut(text: string, length: number): string {
   return text.length <= length ? text : `${text.slice(0, length - 1)}…`;
 }
 
-function decorationOf(expect: ExpectDirective, entry: CheckEntry): CheckDecoration {
+function decorationOf(expect: ExpectDirective, entry: CheckEntry, end: number): CheckDecoration {
   const { result } = entry;
   const line = expect.range.start.line;
+  const range = { line, start: 0, end };
   switch (result.state) {
     case 'passed':
-      return { line, state: 'passed', text: '✓', hover: `Passed: ${entry.text}` };
+      return { ...range, state: 'passed', text: '✓', hover: `Passed: ${entry.text}` };
     case 'failed':
       return {
-        line,
+        ...range,
         state: 'failed',
         text: `✗ ${cut(result.detail, maxInlineDetail)}`,
         hover: cut(`Failed: ${entry.text}\n\n${result.detail}`, maxHover),
       };
     case 'pending':
-      return { line, state: 'pending', text: '…', hover: `Pending: ${entry.text}` };
+      return { ...range, state: 'pending', text: '…', hover: `Pending: ${entry.text}` };
   }
 }
 
@@ -58,7 +61,9 @@ export function checkDecorations(
         return [];
       }
       unused.splice(at, 1);
-      return [decorationOf(expect, entry)];
+      return [
+        decorationOf(expect, entry, document.lineAt(expect.range.start.line).range.end.character),
+      ];
     });
   });
 }
@@ -128,9 +133,13 @@ export class CheckDecorations implements vscode.Disposable {
           found
             .filter((decoration) => decoration.state === state)
             .map((decoration) => {
-              const end = editor.document.lineAt(decoration.line).range.end;
               return {
-                range: new vscode.Range(end, end),
+                range: new vscode.Range(
+                  decoration.line,
+                  decoration.start,
+                  decoration.line,
+                  decoration.end,
+                ),
                 hoverMessage: new vscode.MarkdownString().appendText(decoration.hover),
                 renderOptions: { after: { contentText: decoration.text } },
               };

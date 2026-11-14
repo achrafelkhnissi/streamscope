@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { canonicalKey } from '../../../src/checks/canonical';
 import { compileCheck, type CheckProgram } from '../../../src/checks/compile';
-import { verdictOf, type TermState, type Verdict } from '../../../src/checks/verdict';
+import { shown, verdictOf, type TermState, type Verdict } from '../../../src/checks/verdict';
+import { WorkBudget } from '../../../src/expressions/work';
 import type { Value } from '../../../src/expressions/ast';
 import { parseExpression } from '../../../src/expressions/parse';
 
@@ -22,9 +23,14 @@ function verdict(text: string, states: Record<string, TermState>): Verdict {
   return verdictOf(compiled, byId);
 }
 
-const value = (v: Value): TermState => ({ kind: 'value', value: v });
+const value = (v: Value): TermState => ({ kind: 'value', value: v, preview: shown(v) });
 const missing = (reason: string): TermState => ({ kind: 'missing', reason });
-const counted = (count: number, final = false): TermState => ({ kind: 'count', count, final });
+const counted = (count: number, final = false, index?: number): TermState => ({
+  kind: 'count',
+  count,
+  index,
+  final,
+});
 const passed: Verdict = { state: 'passed' };
 const pending: Verdict = { state: 'pending' };
 
@@ -58,10 +64,10 @@ describe('verdictOf', () => {
     expect(verdict('!first(type == "A").ok', { 'first(type == "A").ok': F })).toEqual(passed);
     expect(verdict('!first(type == "A").ok', { 'first(type == "A").ok': U })).toEqual(pending);
     expect(
-      verdict('!exists(first(type == "E"))', { 'first(type == "E")': value({ type: 'E' }) }),
+      verdict('!exists(first(type == "E"))', { 'count(type == "E")': counted(1, false, 4) }),
     ).toEqual({
       state: 'failed',
-      detail: 'first(type == "E") is {"type":"E"}',
+      detail: 'first(type == "E") matched event 4',
     });
     expect(
       verdict('first(type == "A").items', { 'first(type == "A").items': value([]) }).state,
@@ -205,5 +211,119 @@ describe('verdictOf', () => {
     const result = verdict('body.name == "y"', { 'body.name': value(long) });
     expect(result.state).toBe('failed');
     expect(result.state === 'failed' ? result.detail : '').toBe(`got "${'x'.repeat(198)}…`);
+  });
+});
+
+describe('verdictOf after the review', () => {
+  it('compares exists, before and unique with true and false', () => {
+    const first = 'count(type == "A")';
+    expect(
+      verdict('exists(first(type == "A")) == true', { [first]: counted(1, false, 3) }),
+    ).toEqual(passed);
+    expect(
+      verdict('exists(first(type == "A")) != false', { [first]: counted(1, false, 3) }),
+    ).toEqual(passed);
+    expect(
+      verdict('exists(first(type == "A")) == false', { [first]: counted(1, false, 3) }),
+    ).toEqual({
+      state: 'failed',
+      detail: 'first(type == "A") matched event 3',
+    });
+    const before = 'before(type == "A", type == "B")';
+    expect(
+      verdict(`${before} == true`, {
+        [before]: { kind: 'before', first: 2, second: undefined, final: false },
+      }),
+    ).toEqual(passed);
+    expect(verdict('unique(all().id) != true', { 'all().id': value([1, 1]) })).toEqual(passed);
+  });
+
+  it('decides exists of a first, last or nth event from its match, not its value', () => {
+    const text = '!exists(first(type == "RUN_ERROR"))';
+    const term = 'count(type == "RUN_ERROR")';
+    expect(verdict(text, { [term]: counted(0) })).toEqual(pending);
+    expect(verdict(text, { [term]: counted(1, false, 7) })).toEqual({
+      state: 'failed',
+      detail: 'first(type == "RUN_ERROR") matched event 7',
+    });
+    expect(verdict(text, { [term]: counted(0, true) })).toEqual(passed);
+    expect(verdict('exists(nth(2, type == "A"))', { 'count(type == "A")': counted(1) })).toEqual(
+      pending,
+    );
+    expect(
+      verdict('exists(nth(2, type == "A"))', { 'count(type == "A")': counted(1, true) }),
+    ).toEqual({
+      state: 'failed',
+      detail: 'nth(2, type == "A") matched no event',
+    });
+    expect(verdict('exists(last())', { 'count()': counted(1, false, 1) })).toEqual(passed);
+  });
+
+  it('fails a check whose term could not be evaluated, whatever surrounds it', () => {
+    const error: TermState = { kind: 'error', reason: 'the value is larger than 1 MiB' };
+    const detail = 'first(type == "A").x could not be evaluated: the value is larger than 1 MiB';
+    expect(verdict('!exists(first(type == "A").x)', { 'first(type == "A").x': error })).toEqual({
+      state: 'failed',
+      detail,
+    });
+    expect(
+      verdict('status == 200 || first(type == "A").x == 1', {
+        status: value(200),
+        'first(type == "A").x': error,
+      }),
+    ).toEqual({ state: 'failed', detail });
+  });
+
+  it('explains a passing count or unique, so a negation that fails has a detail', () => {
+    expect(verdict('!(count(type == "A") > 1)', { 'count(type == "A")': counted(2) })).toEqual({
+      state: 'failed',
+      detail: 'count(type == "A") reached 2',
+    });
+    expect(verdict('!unique(all().id)', { 'all().id': value([1, 2]) })).toEqual({
+      state: 'failed',
+      detail: 'all values of all().id are distinct',
+    });
+  });
+
+  it('decides each settled comparison once when given a memo', () => {
+    const compiled = program('text contains "needle" && count(type == "B") > 5');
+    const states = new Map<number, TermState>();
+    for (const term of compiled.terms) {
+      states.set(
+        term.id,
+        term.kind === 'value'
+          ? value(`${'x'.repeat(100_000)}needle`)
+          : { kind: 'count', count: 1, index: 1, final: false },
+      );
+    }
+    const memo = new Map();
+    const first = new WorkBudget({ units: 10_000_000 });
+    expect(verdictOf(compiled, states, { format: shown, budget: first, memo })).toEqual(pending);
+    const second = new WorkBudget({ units: 10_000_000 });
+    expect(verdictOf(compiled, states, { format: shown, budget: second, memo })).toEqual(pending);
+    expect(first.spent).toBeGreaterThan(0);
+    expect(second.spent).toBe(0);
+  });
+
+  it('fails a comparison that needs more work than its budget', () => {
+    const compiled = program('text contains "needle"');
+    const states = new Map<number, TermState>([[0, value(`${'x'.repeat(100_000)}needle`)]]);
+    expect(
+      verdictOf(compiled, states, { format: shown, budget: new WorkBudget({ units: 1_000 }) }),
+    ).toEqual({ state: 'failed', detail: 'the check needs too much work for this response' });
+  });
+
+  it('keeps objects with a text field apart in unique', () => {
+    const text = 'unique(all().part)';
+    expect(
+      verdict(text, {
+        'all().part': value([
+          { type: 'text', text: 'hi', id: 1 },
+          { type: 'text', text: 'hi', id: 2 },
+        ]),
+      }),
+    ).toEqual(passed);
+    expect(canonicalKey({ text: '"hi"' })).not.toBe(canonicalKey('hi'));
+    expect(canonicalKey({ text: 'hi' })).toBe('{"text":"hi"}');
   });
 });

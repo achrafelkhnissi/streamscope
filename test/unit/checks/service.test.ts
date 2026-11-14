@@ -67,4 +67,40 @@ describe('CheckService', () => {
     });
     expect(service.observer(run)).toBeUndefined();
   });
+
+  it("masks the run's secret captures in what it reports", () => {
+    const registry = new CheckRegistry();
+    const service = new CheckService({
+      registry,
+      request: request([
+        '# @expect first(type == "AUTH").token == "x"',
+        'POST https://example.test/make',
+      ]),
+      workerFile: missingWorker,
+      secretsOf: (runId) => (runId === 3 ? ['sk-synthetic-secret-9'] : []),
+    });
+    service.begin({ id: 3, key: 'k', startedAt: 0 });
+    const observer = service.observer(run);
+    observer?.head({ ...head, headers: [['Content-Type', 'application/x-ndjson']] }, access);
+    observer?.event({
+      index: 1,
+      time: 1,
+      offset: 0,
+      length: 16,
+      line: 1,
+      kind: 'json',
+      value: { type: 'AUTH', token: 'sk-synthetic-secret-9' },
+      label: undefined,
+      sse: undefined,
+      marker: undefined,
+      error: undefined,
+      unterminated: false,
+    });
+
+    expect(registry.forRequest('k')[0]?.result).toEqual({
+      state: 'failed',
+      detail: 'got "••••••"',
+      settledAt: 1,
+    });
+  });
 });

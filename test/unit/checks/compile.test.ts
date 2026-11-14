@@ -21,7 +21,7 @@ describe('compileCheck', () => {
       ['count', 'count(type == "A")'],
     ]);
     expect(terms('!exists(first(type == "RUN_ERROR")) || headers["x"] contains "y"')).toEqual([
-      ['value', 'first(type == "RUN_ERROR")'],
+      ['count', 'count(type == "RUN_ERROR")'],
       ['value', 'headers["x"]'],
     ]);
     expect(terms('unique(all(type == "A").id)')).toEqual([['value', 'all(type == "A").id']]);
@@ -54,5 +54,30 @@ describe('compileCheck', () => {
 
   it('gives identical terms of one check one id', () => {
     expect(terms('status >= 200 && status < 300')).toEqual([['value', 'status']]);
+  });
+});
+
+describe('compileCheck after the review', () => {
+  it('turns exists of a first, last or nth event into a count term', () => {
+    expect(terms('!exists(first(type == "RUN_ERROR"))')).toEqual([
+      ['count', 'count(type == "RUN_ERROR")'],
+    ]);
+    expect(terms('exists(nth(3, type == "A")) && exists(last())')).toEqual([
+      ['count', 'count(type == "A")'],
+      ['count', 'count()'],
+    ]);
+    expect(terms('exists(first(type == "A").id)')).toEqual([['value', 'first(type == "A").id']]);
+  });
+
+  it('marks a value term that uses a check function outside logic', () => {
+    const compiled = program('exists(body.id) == 1');
+    expect(
+      compiled.terms.map((term) => [term.text, term.kind === 'value' ? term.problem : undefined]),
+    ).toEqual([
+      [
+        'exists(body.id)',
+        'exists(…), before(…) and unique(…) can only be combined with &&, || and !, or compared with true or false',
+      ],
+    ]);
   });
 });

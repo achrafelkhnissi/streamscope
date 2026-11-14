@@ -284,6 +284,13 @@ export function registerRequestFeatures(
   };
   const registry = new RunRegistry(dependencies);
   const lenses = new RequestCodeLenses(cache, registry, checks);
+  const stopRemasking = captures.onDidChange((key) => {
+    const runId = checks.runOf(key);
+    if (runId !== undefined) {
+      checks.remask(key, captures.secretsOf(runId));
+    }
+  });
+  context.subscriptions.push({ dispose: stopRemasking });
   const statusBar = new RunStatusBar(registry);
 
   const saveStream = async (stream: StreamSession, chosen: vscode.Uri): Promise<void> => {
@@ -532,7 +539,12 @@ export function registerRequestFeatures(
         workerFile: captureWorker,
         runs: (producer) => registry.latest(producer),
       }),
-      checks: new CheckService({ registry: checks, request, workerFile: captureWorker }),
+      checks: new CheckService({
+        registry: checks,
+        request,
+        workerFile: captureWorker,
+        secretsOf: (runId) => captures.secretsOf(runId),
+      }),
       waitTimeoutMs: captureSettings.waitTimeoutMs,
     });
     history.add(handle);

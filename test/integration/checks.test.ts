@@ -25,6 +25,11 @@ interface Decoration {
   text: string;
 }
 
+interface DecorationRange extends Decoration {
+  start: number;
+  end: number;
+}
+
 const echoedSecret = 'synthetic-check-secret';
 
 async function waitFor(
@@ -48,8 +53,15 @@ function responseState(key: string): Thenable<ResponseState | undefined> {
   );
 }
 
-function decorations(uri: vscode.Uri): Thenable<Decoration[]> {
-  return vscode.commands.executeCommand<Decoration[]>('streamscope.test.checkDecorations', uri);
+function decorationRanges(uri: vscode.Uri): Thenable<DecorationRange[]> {
+  return vscode.commands.executeCommand<DecorationRange[]>(
+    'streamscope.test.checkDecorations',
+    uri,
+  );
+}
+
+async function decorations(uri: vscode.Uri): Promise<Decoration[]> {
+  return (await decorationRanges(uri)).map(({ line, state, text }) => ({ line, state, text }));
 }
 
 describe('checks', () => {
@@ -166,6 +178,11 @@ describe('checks', () => {
         text: '✓',
       },
     ]);
+    for (const decoration of await decorationRanges(opened.uri)) {
+      assert.equal(decoration.start, 0);
+      assert.equal(decoration.end, opened.document.lineAt(decoration.line).text.length);
+      assert.ok(decoration.end > decoration.start);
+    }
   });
 
   it("shows the checks in the panel's Checks tab and the summary in the status line", async () => {

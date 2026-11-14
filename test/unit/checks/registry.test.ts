@@ -63,4 +63,20 @@ describe('CheckRegistry', () => {
     expect(changed).toEqual(['k', 'k']);
     expect(registry.listenerCount).toBe(0);
   });
+
+  it('masks stored details again with secrets that resolved later', () => {
+    const registry = new CheckRegistry();
+    registry.begin({ id: 4, key: 'k', startedAt: 4 }, two);
+    registry.update(4, 0, { state: 'failed', detail: 'got "late-secret-value"', settledAt: 2 });
+    expect(registry.runOf('k')).toBe(4);
+    expect(registry.runOf('other')).toBeUndefined();
+
+    registry.remask('k', ['late-secret-value']);
+
+    expect(registry.forRequest('k')[0]?.result).toEqual({
+      state: 'failed',
+      detail: 'got "••••••"',
+      settledAt: 2,
+    });
+  });
 });

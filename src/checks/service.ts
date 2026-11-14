@@ -8,6 +8,7 @@ export interface CheckServiceOptions {
   registry: CheckRegistry;
   request: HttpRequest;
   workerFile: string;
+  secretsOf?: (runId: number) => readonly string[];
 }
 
 export class CheckService implements RunChecks {
@@ -38,7 +39,7 @@ export class CheckService implements RunChecks {
     if (this.definitions.length === 0) {
       return undefined;
     }
-    const { registry, workerFile } = this.options;
+    const { registry, workerFile, secretsOf } = this.options;
     const tracker = new CheckTracker(
       run,
       this.definitions,
@@ -46,6 +47,8 @@ export class CheckService implements RunChecks {
         registry.update(run.id, index, result);
       },
       workerFile,
+      undefined,
+      () => secretsOf?.(run.id) ?? [],
     );
     return {
       head: (head, access) => {
