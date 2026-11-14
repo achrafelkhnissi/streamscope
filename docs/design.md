@@ -82,7 +82,10 @@ JavaScript scripts, GraphQL helpers, WebSocket and gRPC, cURL import and export,
 - **FR-C3** `first`/`nth` captures resolve as soon as the matching event arrives; `last`, `all`, `count` and `text` resolve when the stream ends.
 - **FR-C4** A request that needs a pending capture waits for it (default 30 s, setting `streamscope.capture.waitTimeout`) in the run status Waiting, its CodeLens showing "Waiting for startRun › threadId · 3 s" beside Stop. If the value fails or times out, the request is blocked with an error.
 - **FR-C5** A new run of the producer resets its captures to pending.
-- **FR-C6** Click-to-capture: in event detail and Body views, "Capture This Value…" on a JSON value writes a `# @capture` line on the producing request, with a suggested name, the event condition (`first(type == "…")` or the discriminator in use) and the path. The user can edit the name before it is written.
+- **FR-C6** Click-to-capture: in event detail and Body views, "Capture This Value…" on a JSON value writes a `# @capture` line on the producing request, with a suggested name, the event condition (`first(type == "…")` or the discriminator in use) and the path. The user can edit the name before it is written. M8 settles the details:
+  - **Entry points:** a **Capture This Value…** button below the expanded event and beside **Open in Editor** for a JSON Body, used after clicking a value; the same command in the context menu and Command Palette of an event or Body document, at the cursor; and the Command Palette while the panel is active. Without a selected value, the panel shows a hint that points to the editor document, where the keyboard and screen readers work.
+  - **The condition:** the event's discriminator is the first `streamscope.stream.typeFields` field the run used that holds a non-empty string or a number, else its SSE event name, else none, as for event labels. The first such event gives `first(…)`, the k-th `nth(k, …)`, counted with the tracker's own test over the earlier `json` and `text` events. If earlier events are no longer kept, the capture is refused.
+  - **The line:** keys that are not plain identifiers, and lexer keywords, are written `["…"]`; control, format and line-separator characters are written `\uXXXX`; the expression must parse and fit in 4,096 characters. The name input takes an optional `secret ` prefix, and a credential-looking name gets `secret` anyway. The line goes after the request's last `@capture` line, else directly above its request line, with the request's comment marker, after the document is parsed again once the name is chosen.
 - **FR-C7** After a run, an inlay hint after each `# @capture` line shows the value (masked if secret) or the failure.
 
 ### Checks
@@ -562,6 +565,7 @@ The M5 spike chose the webview; [decisions/response-surface.md](decisions/respon
 - Documents are an overflow. Open in Editor opens the Body, the Headers or a single event as a read-only editor tab, and content over a size limit is shown that way instead of inside the panel. Each document leads back to the panel with Show Response.
 - The safeguards above apply in full, and the record's "Consequences for M6" lists the rest: masking before anything reaches the panel, validating every message from it, byte caps, and benchmark commands registered only in development and test mode.
 - Raw is coloured in the panel by its own tokenizer. VS Code's `jsonl` grammar colours Raw only when it is opened as a document.
+- For click-to-capture the panel sends only an event index (for an event) and a character offset in the text it shows, not path segments. The extension rebuilds that text, finds the JSON path with its own scanner (`src/response/json-position.ts`) and builds, checks and writes the line itself (M8).
 
 ### Editor-side presentation (both surfaces)
 
