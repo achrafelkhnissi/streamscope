@@ -55,6 +55,7 @@ const manifest = JSON.parse(
 
 const readme = readFileSync(new URL('../../README.md', import.meta.url), 'utf8');
 const changelog = readFileSync(new URL('../../CHANGELOG.md', import.meta.url), 'utf8');
+const trial = readFileSync(new URL('../../docs/team-trial.md', import.meta.url), 'utf8');
 
 function defaultText(value: unknown): string {
   if (Array.isArray(value)) {
@@ -447,6 +448,15 @@ describe('extension manifest', () => {
 });
 
 describe('README and changelog', () => {
+  it('documents # @stream ndjson for a first event that waits for the second line', () => {
+    expect(readme).toMatch(/^\| `# @stream ndjson` +\|/m);
+    expect(readme).toContain(
+      'so a `first(…)` capture from its first line waits for that line; `# @stream ndjson` on the request reads it as NDJSON from the first line.',
+    );
+    expect(trial).toContain('Put `# @stream ndjson` on the request');
+    expect(changelog).toContain('`# @stream`');
+  });
+
   it('documents every setting in the README', () => {
     const rows = readme.split('\n').filter((line) => line.startsWith('| `streamscope.'));
     const { properties } = manifest.contributes.configuration;

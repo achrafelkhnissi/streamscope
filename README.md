@@ -43,15 +43,16 @@ Requests are separated by `###` lines. File variables (`@name = value`) and the 
 
 Streamscope's directives go on comment lines before the request line:
 
-| Directive                         | Effect                                                                                               |
-| --------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| `# @name startRun`                | Names the request, so other requests can read its captures and response                              |
-| `# @capture threadId = …`         | Takes a value from the response or from one event (see Captures)                                     |
-| `# @expect status == 200`         | States what the response must satisfy (see Checks)                                                   |
-| `# @until type == "RUN_FINISHED"` | Ends a stream at the first matching event, closes the connection and counts the request as completed |
-| `# @timeout 30s`                  | Limits the request's total time                                                                      |
-| `# @no-redirect`                  | Returns a redirect response instead of following it                                                  |
-| `# @insecure`                     | Skips TLS verification for this request only                                                         |
+| Directive                         | Effect                                                                                                          |
+| --------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `# @name startRun`                | Names the request, so other requests can read its captures and response                                         |
+| `# @capture threadId = …`         | Takes a value from the response or from one event (see Captures)                                                |
+| `# @expect status == 200`         | States what the response must satisfy (see Checks)                                                              |
+| `# @until type == "RUN_FINISHED"` | Ends a stream at the first matching event, closes the connection and counts the request as completed            |
+| `# @stream ndjson`                | Reads the response as `sse`, `ndjson`, `json`, `text` or `raw` instead of detecting its format (`auto` detects) |
+| `# @timeout 30s`                  | Limits the request's total time                                                                                 |
+| `# @no-redirect`                  | Returns a redirect response instead of following it                                                             |
+| `# @insecure`                     | Skips TLS verification for this request only                                                                    |
 
 Hover over `{{…}}` to see a value and where it comes from (secrets and credential-like values stay hidden). Completion offers variables after `{{` and directives after `# @`, and undefined variables get a warning.
 
@@ -79,7 +80,7 @@ Content-Type: application/json
 {"threadId": "{{startRun.threadId}}", "messageId": "{{messageId}}"}
 ```
 
-- **When a value is ready.** `first(…)` and `nth(k, …)` resolve as soon as the matching event arrives, so a request can use `threadId` while the stream is still running. `last(…)`, `all(…)`, `count(…)` and `text` resolve when the stream ends; `status`, `headers` and `cookies` when the headers arrive; `body` and `jsonpath("$…")` when the body has arrived.
+- **When a value is ready.** `first(…)` and `nth(k, …)` resolve as soon as the matching event arrives, so a request can use `threadId` while the stream is still running. `last(…)`, `all(…)`, `count(…)` and `text` resolve when the stream ends; `status`, `headers` and `cookies` when the headers arrive; `body` and `jsonpath("$…")` when the body has arrived. A stream labelled `application/json` becomes NDJSON when its second line arrives, so a `first(…)` capture from its first line waits for that line; `# @stream ndjson` on the request reads it as NDJSON from the first line.
 - **Capturing without typing.** Click a value in an expanded event or in the Body view and press **Capture This Value…**, or put the cursor on a value in an event or body opened in the editor and run **Streamscope: Capture This Value…**. Streamscope suggests a name, writes the line, such as `# @capture delta = nth(3, type == "TEXT_MESSAGE_CONTENT").delta`, on the request that produced the response, and selects it. Start the name with `secret ` to mask the value; a name or key that looks like a credential, such as `sessionId` or `auth`, gets `secret` on its own. The line takes effect the next time the request runs.
 - **Reading a value.** `{{startRun.threadId}}` reads the capture of the request named `startRun`. `{{messageId}}` reads the newest capture with that name from a request in the same file that still has the `# @capture` line. A file variable, environment or `$shared` value of that name comes next, and a capture from another file only after them. So `@cursor = start` seeds a request that captures `cursor` itself: the first send uses `start`, later sends the captured value.
 - **Waiting.** A request that needs a value still pending waits for it, up to `streamscope.capture.waitTimeout` (30 s), and its CodeLens shows "Waiting for startRun › threadId" beside **Stop**. If the producer has not run in this session and nothing else defines the name, the request is not sent, and the message offers to run it. Streamscope never sends a request you did not send.

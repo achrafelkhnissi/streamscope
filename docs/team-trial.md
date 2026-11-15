@@ -26,7 +26,7 @@ Use your own endpoints and `.http` files:
 3. Run a whole file from the Testing view, with `# @expect` lines and an `# @until` line.
 4. Keep a long stream running while you type in the editor.
 
-A stream labelled `application/json` is recognised as NDJSON when its second line arrives. Until then its first line shows as a JSON body, and a capture from it waits. Note it if your backend pauses after its first event and the delay shows.
+A stream labelled `application/json` is recognised as NDJSON when its second line arrives. Until then its first line shows as a JSON body, and a capture from it waits. Put `# @stream ndjson` on the request to read such a stream as NDJSON from its first line, and note it if your backend pauses after its first event.
 
 ## Questions for each tester
 

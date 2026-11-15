@@ -13,7 +13,7 @@ The first pre-release.
 - **Environments:** `rest-client.environmentVariables`, `http-client.env.json` and `http-client.private.env.json`, with `$shared`, a status bar picker and **Select Environment**.
 - **Secrets:** `{{$secret}}` values in VS Code's secret storage, with **Set Secret**, **Clear Secret**, **List Secrets** and **Move to Secret Storage**.
 - **Transport:** gzip, deflate, br and zstd decompression, redirects, `# @timeout`, `# @no-redirect`, `# @insecure`, an extra CA file, and body files (`< path`, `<@ path`) inside the workspace.
-- **Streaming:** NDJSON and Server-Sent Events detected from the bytes, chunked bodies, and LLM streams. Events are shown as they arrive, the newest in memory and older ones on disk, so a stream can run for hours.
+- **Streaming:** NDJSON and Server-Sent Events detected from the bytes, chunked bodies, and LLM streams. `# @stream` sets the format when detection should not decide. Events are shown as they arrive, the newest in memory and older ones on disk, so a stream can run for hours.
 - **Response panel:** Events, Reply (AG-UI, OpenAI Chat Completions, OpenAI Responses, Anthropic Messages and Ollama), Raw, Headers, Body and Checks views, live status, Stop, **Save Response**, **Show History** and Open in Editor for large bodies and events.
 - **Captures:** `# @capture` takes values from a response or from single streamed events with an expression language (`first`, `nth`, `last`, `all`, `count`, filters, pipes, `jsonpath`), for later requests that wait up to 30 s for them. **Capture This Value…** writes the line from a clicked value.
 - **Checks:** `# @expect` lines settle live, at the event that decides them, and show in the Checks view, the status line, the CodeLens and as ✓ / ✗ beside each line.
