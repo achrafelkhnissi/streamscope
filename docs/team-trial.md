@@ -103,7 +103,7 @@ If a token sits in a file variable such as `@apiToken = …`, use the **Move to 
 
 - Pass: in every place above the token either does not show or shows only as `••••••`, and `git diff` shows no token.
 - Fail: the token shows in clear text in any place above, or in a `.http` file in `git diff`.
-- Not a fail: response bodies, events and response headers, which show what the server sent, and a token in a URL query string, which is not masked. Keep tokens out of URLs.
+- Not a fail: response bodies, events and response headers other than credential headers, which show what the server sent, and a token written in a URL query string, which is not masked. Keep tokens out of URLs.
 
 ## Reporting
 
@@ -111,7 +111,7 @@ If a token sits in a file variable such as `@apiToken = …`, use the **Move to 
 - Anything that needs the team's own backend: tell Achraf directly.
 - Never paste tokens, real ids, real URLs or the team's `.http` files into an issue.
 - If a token or secret showed in clear text, say where it showed, never the value, and attach no screenshot of it; then rotate the token. Report it privately, not in a public issue: use **Report a vulnerability** on the repository's Security tab (see [SECURITY.md](../SECURITY.md)) or tell Achraf directly.
-- Response bodies, events and response headers show tokens exactly as the server sent them, which is expected.
+- Response bodies, events and response headers other than credential headers show tokens exactly as the server sent them, which is expected.
 - Share logs or `.http` excerpts only after replacing hosts, ids and values, and never share environment files. Check screenshots and recordings the same way.
 - This file is public: the Issues column holds only public issue numbers or neutral summaries, with no hosts, event names or ids from the team's backend. Every other cell holds only `yes` or `no`, and a secret that showed is recorded as `no` with "reported privately" in the Issues column.
 
