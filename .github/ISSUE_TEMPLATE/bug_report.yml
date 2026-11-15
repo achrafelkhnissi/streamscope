@@ -4,29 +4,69 @@ labels: [bug]
 body:
   - type: markdown
     attributes:
-      value: Use made-up URLs and values. Never paste tokens, secrets, real ids or real URLs.
+      value: |
+        Use made-up hosts, URLs, ids and values in every field. Never paste tokens, secrets, real ids or real URLs, and attach no screenshot that shows them.
+
+        If Streamscope showed a secret in clear text, say where it showed and never the value.
+
+        To report a security vulnerability, use [private reporting](https://github.com/achrafelkhnissi/streamscope/security/advisories/new) instead of this form.
   - type: textarea
     id: what-happened
     attributes:
       label: What happened
+      description: What you saw, in a sentence or two. Quote any error message exactly, after replacing real values.
+    validations:
+      required: true
+  - type: textarea
+    id: request
+    attributes:
+      label: Request
+      description: 'The smallest `.http` snippet that shows the problem, with made-up URLs and values. Keep any `# @` directives, variables and captures it uses.'
+      placeholder: |
+        POST https://agent.example.test/run
+        Content-Type: application/json
+
+        {"message": "hello"}
+      render: http
     validations:
       required: true
   - type: textarea
     id: steps
     attributes:
       label: Steps to reproduce
-      description: A request with a made-up URL that shows the problem, and what you did with it.
-      render: http
+      description: What you did, in order, from opening the file to seeing the problem.
+      placeholder: |
+        1. Save the request above in a file named example.http.
+        2. Run Send Request on it.
+        3. Watch the response panel until the stream ends.
     validations:
       required: true
   - type: textarea
     id: expected
     attributes:
       label: What you expected
+      description: What should have happened instead.
+    validations:
+      required: true
+  - type: dropdown
+    id: response-format
+    attributes:
+      label: Response format
+      description: What the body is, even if the server labels it differently. An NDJSON stream is often labelled `application/json`.
+      options:
+        - Server-Sent Events (SSE)
+        - NDJSON
+        - JSON
+        - Plain text
+        - Other or not sure
+        - No response (the request failed or was not sent)
+    validations:
+      required: true
   - type: input
     id: streamscope-version
     attributes:
       label: Streamscope version
+      description: Shown in the Extensions view, or run `code --list-extensions --show-versions`.
       placeholder: 0.1.0
     validations:
       required: true
@@ -34,30 +74,51 @@ body:
     id: vscode-version
     attributes:
       label: VS Code version
-      description: Help → About, or `code --version`
+      description: The first line of `code --version`, or the version in the About dialog. Name the editor if it is not VS Code.
+      placeholder: 1.101.0
     validations:
       required: true
   - type: dropdown
     id: os
     attributes:
       label: Operating system
+      description: The system Streamscope runs on. In a remote window, that is the remote machine.
       options:
         - macOS
         - Windows
         - Linux
-        - Remote (SSH, WSL or container)
+    validations:
+      required: true
+  - type: dropdown
+    id: remote
+    attributes:
+      label: Remote window
+      description: Keep Local window unless VS Code is connected to another machine or a container.
+      options:
+        - Local window
+        - SSH
+        - WSL
+        - Dev container
+        - Codespace or tunnel
+        - Other remote
+      default: 0
     validations:
       required: true
   - type: textarea
     id: log
     attributes:
       label: Log excerpt
-      description: 'From **Streamscope: Show Log**.'
+      description: >-
+        Optional. Run **Streamscope: Show Log** and copy the lines for the failing request. The log
+        masks secrets stored in Streamscope, `Authorization`, `Proxy-Authorization`, `Cookie`,
+        `Set-Cookie` and API-key headers, and user info in URLs. It shows everything else as
+        written, including hosts, paths, query strings and other header values, and credentials in
+        a query string are not masked. Replace anything real with made-up values before you paste.
       render: text
   - type: checkboxes
     id: no-secrets
     attributes:
       label: Before you submit
       options:
-        - label: I removed tokens, secrets and real URLs from everything above
+        - label: I replaced every token, secret, real id, real URL and real host in this report with made-up values, including in the log and screenshots
           required: true
