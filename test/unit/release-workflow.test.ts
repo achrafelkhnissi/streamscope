@@ -1,6 +1,10 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
+const manifest = JSON.parse(
+  readFileSync(new URL('../../package.json', import.meta.url), 'utf8'),
+) as { scripts: Record<string, string> };
+
 const workflow = readFileSync(
   new URL('../../.github/workflows/release.yml', import.meta.url),
   'utf8',
@@ -94,6 +98,12 @@ describe('release workflow', () => {
     for (const action of uses) {
       expect(action).toMatch(/^[a-z0-9-]+\/[a-z0-9-]+@[0-9a-f]{40}$/);
     }
+  });
+
+  it('packages and publishes without vsce allow or skip flags', () => {
+    const forbidden = /--(allow-[a-z-]+|skip-license|no-verify)\b/;
+    expect(JSON.stringify(manifest.scripts)).not.toMatch(forbidden);
+    expect(workflow).not.toMatch(forbidden);
   });
 
   it('stores no publishing token', () => {

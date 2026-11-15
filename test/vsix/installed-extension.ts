@@ -1,6 +1,6 @@
 import * as assert from 'node:assert/strict';
 import { existsSync, realpathSync, writeFileSync } from 'node:fs';
-import { createServer } from 'node:http';
+import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
@@ -11,8 +11,12 @@ function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
-async function until(condition: () => boolean, what: string): Promise<void> {
-  const deadline = Date.now() + dialogTimeoutMs;
+async function until(
+  condition: () => boolean,
+  what: string,
+  timeoutMs = dialogTimeoutMs,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
   while (!condition()) {
     assert.ok(Date.now() < deadline, what);
     await delay(50);
@@ -75,6 +79,113 @@ async function ignoresTestArguments(scratch: string): Promise<void> {
   }
 }
 
+interface LiveStreamState {
+  started: boolean;
+  finished: boolean;
+  continuedWhileOpen: boolean;
+  threadId: string | undefined;
+}
+
+const syntheticThreadId = 'thread-synthetic-7f3a';
+const streamHoldMs = 15_000;
+
+function liveStreamServer(state: LiveStreamState): Server {
+  const continued = { release: (): void => undefined };
+  const continuation = new Promise<void>((resolve) => {
+    continued.release = resolve;
+  });
+  return createServer((request, response) => {
+    if (request.url === '/agent/run') {
+      request.resume();
+      response.writeHead(200, { 'Content-Type': 'application/json' });
+      response.write(
+        [
+          JSON.stringify({ type: 'RUN_STARTED', threadId: syntheticThreadId }),
+          JSON.stringify({ type: 'TEXT_MESSAGE_START', messageId: 'message-synthetic-1' }),
+          '',
+        ].join('\n'),
+      );
+      state.started = true;
+      const timer = setTimeout(continued.release, streamHoldMs);
+      void continuation.then(() => {
+        clearTimeout(timer);
+        state.finished = true;
+        response.end(`${JSON.stringify({ type: 'RUN_FINISHED' })}\n`);
+      });
+      return;
+    }
+    const chunks: Buffer[] = [];
+    request.on('data', (chunk: Buffer) => chunks.push(chunk));
+    request.on('end', () => {
+      const body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as { threadId?: unknown };
+      state.threadId = typeof body.threadId === 'string' ? body.threadId : undefined;
+      state.continuedWhileOpen = !state.finished;
+      response.writeHead(200, { 'Content-Type': 'application/json' });
+      response.end('{"ok":true}');
+      continued.release();
+    });
+  });
+}
+
+async function capturesFromALiveStream(scratch: string): Promise<void> {
+  const state: LiveStreamState = {
+    started: false,
+    finished: false,
+    continuedWhileOpen: false,
+    threadId: undefined,
+  };
+  const server = liveStreamServer(state);
+  await new Promise<void>((resolve) => {
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  try {
+    const { port } = server.address() as AddressInfo;
+    const origin = `http://127.0.0.1:${String(port)}`;
+    const text = [
+      '### Start agent run',
+      '# @name startRun',
+      '# @capture threadId = first(type == "RUN_STARTED").threadId',
+      `POST ${origin}/agent/run`,
+      'Content-Type: application/json',
+      '',
+      '{"message": "hello"}',
+      '',
+      '### Continue',
+      `POST ${origin}/agent/continue`,
+      'Content-Type: application/json',
+      '',
+      '{"threadId": "{{startRun.threadId}}"}',
+      '',
+    ].join('\n');
+    const file = path.join(scratch, 'live.http');
+    writeFileSync(file, text);
+    const lines = text.split('\n');
+    const runLine = lines.indexOf(`POST ${origin}/agent/run`);
+    const continueLine = lines.indexOf(`POST ${origin}/agent/continue`);
+    const uri = vscode.Uri.file(file);
+    await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(uri));
+
+    const first = vscode.commands.executeCommand('streamscope.sendRequest', uri, runLine);
+    await until(() => state.started, 'the stream did not start');
+    await vscode.commands.executeCommand('streamscope.sendRequest', uri, continueLine);
+    await until(() => state.threadId !== undefined, 'Continue was never sent', 20_000);
+
+    assert.equal(
+      state.threadId,
+      syntheticThreadId,
+      'Continue was not sent with the captured threadId',
+    );
+    assert.ok(state.continuedWhileOpen, 'Continue was sent only after the stream ended');
+    await first;
+
+    await until(() => responsePanelTabs().length === 2, 'both response panels did not open');
+    await vscode.window.tabGroups.close(responsePanelTabs());
+    await until(() => responsePanelTabs().length === 0, 'the response panels did not close');
+  } finally {
+    server.close();
+  }
+}
+
 function requiredEnv(name: string): string {
   const value = process.env[name];
   assert.ok(value, `${name} is not set`);
@@ -113,4 +224,5 @@ export async function run(): Promise<void> {
   await vscode.commands.executeCommand('streamscope.showLog');
 
   await ignoresTestArguments(requiredEnv('SCRATCH_DIR'));
+  await capturesFromALiveStream(requiredEnv('SCRATCH_DIR'));
 }

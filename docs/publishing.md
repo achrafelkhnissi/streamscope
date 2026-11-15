@@ -7,7 +7,7 @@ Status: approved 2026-11-11. Nothing is published, pushed or submitted without t
 | Item                  | Value                                                                                | Status                                                                                                                                                       |
 | --------------------- | ------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | Extension name        | `streamscope`                                                                        | Free on both registries when checked                                                                                                                         |
-| Display name          | Streamscope: HTTP Client with Live Streaming                                         | To confirm free on the Marketplace before the first publish (display names must be unique)                                                                   |
+| Display name          | Streamscope: HTTP Client with Live Streaming                                         | Free on 2026-11-14: a Marketplace search for "Streamscope" found no extension (display names must be unique)                                                 |
 | Extension id          | `achrafelkhnissi.streamscope`                                                        |                                                                                                                                                              |
 | Marketplace publisher | [`achrafelkhnissi`](https://marketplace.visualstudio.com/publishers/achrafelkhnissi) | Created; personal Microsoft account; profile links to GitHub, LinkedIn and X                                                                                 |
 | Open VSX namespace    | `achrafelkhnissi`                                                                    | Created; Publisher Agreement signed; ownership granted 2026-11-12 ([EclipseFdn/open-vsx.org#15561](https://github.com/EclipseFdn/open-vsx.org/issues/15561)) |
@@ -92,7 +92,7 @@ The workflow, written in milestone M11:
   4. `publish-open-vsx`: in the `release` environment, `ovsx publish --trusted-publishing --packagePath` with the same VSIX. It runs only when the repository variable `OPEN_VSX_TRUSTED` is `true`, which M12 sets after the first token publish (one-time setup, step 4);
   5. `github-release`: after the Marketplace publish (and Open VSX, when it ran), creates the GitHub release `vVERSION` with the VSIX and the notes.
 - **Gate:** each publish job that runs waits for approval of the `release` environment, so once that environment exists with a required reviewer (one-time setup, step 1), a tag or a dispatch never publishes without it. Rejecting the approval ends the run there. The `package` job also refuses a commit that is not on `main`.
-- **Dry run:** dispatch the workflow with the current version and reject the approval: `check` and `package` run in full and the VSIX can be downloaded from the run.
+- **Dry run:** dispatch the workflow with the current version and reject the approval: `check` and `package` run in full and the VSIX can be downloaded from the run. Done on 2026-11-15 from `main` at `2e1e9dd` ([run 43656874837](https://github.com/achrafelkhnissi/streamscope/actions/runs/43656874837)): `check` passed on Linux, macOS and Windows, `package` passed and uploaded `streamscope-0.1.0.vsix` and the release notes, `publish-open-vsx` was skipped, and `publish-marketplace` waited for approval. The approval was rejected, so the publish job ran no steps and no release was created.
 - `test/unit/release-workflow.test.ts` pins the triggers, the environment and permissions of each job, the pinned actions, the absence of stored tokens, the Open VSX switch and the single package. `actionlint` checks the file.
 
 ## One-time setup before the first release (milestone M12)
@@ -120,4 +120,4 @@ The workflow, written in milestone M11:
 - [ ] `--skip-license` and `--allow-missing-repository` no longer used
 - [ ] VSIX contents checked with `npm run package:list`
 - [ ] Release environment approval given
-- [ ] After publishing: install from each registry in a clean profile and send a streaming request
+- [ ] After publishing: `npm run verify:registry -- marketplace <version>` and `-- open-vsx <version>`, which install from each registry in a clean profile, send a streaming request and use a value captured from it

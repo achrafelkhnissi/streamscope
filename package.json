@@ -422,6 +422,7 @@
     "package": "vsce package --no-dependencies",
     "package:list": "vsce ls --tree --no-dependencies",
     "verify:vsix": "npm run package && npm run compile:host-tests && node scripts/verify-vsix.mjs",
+    "verify:registry": "npm run compile:host-tests && node scripts/verify-registry.mjs",
     "bench": "node scripts/benchmark.mjs"
   },
   "devDependencies": {

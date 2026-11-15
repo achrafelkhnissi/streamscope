@@ -55,6 +55,7 @@ const manifest = JSON.parse(
 
 const readme = readFileSync(new URL('../../README.md', import.meta.url), 'utf8');
 const changelog = readFileSync(new URL('../../CHANGELOG.md', import.meta.url), 'utf8');
+const trial = readFileSync(new URL('../../docs/team-trial.md', import.meta.url), 'utf8');
 
 function defaultText(value: unknown): string {
   if (Array.isArray(value)) {
@@ -447,6 +448,30 @@ describe('extension manifest', () => {
 });
 
 describe('README and changelog', () => {
+  it('states in the changelog exactly which values are masked and dropped on redirects', () => {
+    expect(changelog).not.toContain('drop any header that carries a secret');
+    expect(changelog).toContain('Credentials written in a URL query string are not masked');
+    expect(changelog).toContain(
+      'redirects to another origin drop credential headers and any header that contains one of those values',
+    );
+  });
+
+  it('tells testers how to report a secret and what to keep out of the public results', () => {
+    expect(trial).toContain('say where it showed, never the value');
+    expect(trial).toContain('rotate the token');
+    expect(trial).toContain('only public issue numbers or neutral summaries');
+    expect(trial).toContain('the publisher is achrafelkhnissi');
+  });
+
+  it('documents # @stream ndjson for a first event that waits for the second line', () => {
+    expect(readme).toMatch(/^\| `# @stream ndjson` +\|/m);
+    expect(readme).toContain(
+      'so a `first(…)` capture that matches the first line resolves only when the second line arrives. Put `# @stream ndjson` on the request to read it as NDJSON from the first line.',
+    );
+    expect(trial).toContain('Put `# @stream ndjson` on the request');
+    expect(changelog).toContain('`# @stream`');
+  });
+
   it('documents every setting in the README', () => {
     const rows = readme.split('\n').filter((line) => line.startsWith('| `streamscope.'));
     const { properties } = manifest.contributes.configuration;
@@ -483,18 +508,14 @@ describe('README and changelog', () => {
     expect(readme).toContain('[SECURITY.md](SECURITY.md)');
   });
 
-  it('has a 0.1.0 changelog section with Keep a Changelog headings', () => {
+  it('has a dated 0.1.0 changelog section with only Added', () => {
     const start = changelog.search(/^## \[0\.1\.0\]/m);
     expect(start).toBeGreaterThanOrEqual(0);
     const rest = changelog.slice(start + 1);
     const end = rest.search(/^## /m);
     const section = end === -1 ? rest : rest.slice(0, end);
-    expect(section.match(/^### \w+$/gm)).toEqual([
-      '### Added',
-      '### Changed',
-      '### Fixed',
-      '### Security',
-    ]);
+    expect(section.match(/^### \w+$/gm)).toEqual(['### Added']);
+    expect(changelog).toMatch(/^## \[0\.1\.0\] - \d{4}-\d{2}-\d{2}$/m);
     expect(changelog).toMatch(
       /^\[0\.1\.0\]: https:\/\/github\.com\/achrafelkhnissi\/streamscope\/releases\/tag\/v0\.1\.0$/m,
     );

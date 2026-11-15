@@ -1,21 +1,7 @@
-import { spawnSync } from 'node:child_process';
-import {
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  realpathSync,
-  rmSync,
-  statSync,
-  writeFileSync,
-} from 'node:fs';
-import { tmpdir } from 'node:os';
+import { readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
-import {
-  downloadAndUnzipVSCode,
-  resolveCliArgsFromVSCodeExecutablePath,
-  runTests,
-} from '@vscode/test-electron';
 import { listFiles, PackageManager } from '@vscode/vsce';
+import { verifyInCleanProfile } from './clean-profile.mjs';
 import { maxVsixBytes, vsixBudgetProblem } from './vsix-budget.mjs';
 import { vsixContentsProblem } from './vsix-contents.mjs';
 
@@ -37,53 +23,4 @@ if (contentsProblem !== undefined) {
   throw new Error(contentsProblem);
 }
 
-const sandbox = realpathSync(mkdtempSync(path.join(tmpdir(), 'vsix-verify-')));
-const userDataDir = path.join(sandbox, 'user-data');
-const extensionsDir = path.join(sandbox, 'extensions');
-mkdirSync(path.join(userDataDir, 'User'), { recursive: true });
-mkdirSync(extensionsDir);
-writeFileSync(
-  path.join(userDataDir, 'User', 'settings.json'),
-  JSON.stringify({ 'files.simpleDialog.enable': true }),
-);
-
-try {
-  const vscodeExecutablePath = await downloadAndUnzipVSCode('stable');
-  const [cli] = resolveCliArgsFromVSCodeExecutablePath(vscodeExecutablePath, {
-    reuseMachineInstall: true,
-  });
-  const profileArgs = [`--user-data-dir=${userDataDir}`, `--extensions-dir=${extensionsDir}`];
-
-  const install = spawnSync(cli, [...profileArgs, '--install-extension', vsix], {
-    encoding: 'utf8',
-  });
-  process.stdout.write(install.stdout);
-  process.stderr.write(install.stderr);
-  if (install.status !== 0) {
-    throw new Error(`Installing ${vsix} failed with exit code ${String(install.status)}`);
-  }
-
-  const listed = spawnSync(cli, [...profileArgs, '--list-extensions', '--show-versions'], {
-    encoding: 'utf8',
-  });
-  const expected = `${extensionId}@${manifest.version}`;
-  if (!listed.stdout.split('\n').includes(expected)) {
-    throw new Error(`Expected ${expected} in the isolated profile, found:\n${listed.stdout}`);
-  }
-  console.log(`Installed ${expected} into ${extensionsDir}`);
-
-  await runTests({
-    vscodeExecutablePath,
-    extensionDevelopmentPath: path.join(root, 'test', 'vsix', 'harness'),
-    extensionTestsPath: path.join(root, 'out', 'vsix', 'installed-extension.js'),
-    launchArgs: profileArgs,
-    extensionTestsEnv: {
-      EXPECTED_EXTENSION_ID: extensionId,
-      EXPECTED_EXTENSIONS_DIR: extensionsDir,
-      SCRATCH_DIR: sandbox,
-    },
-  });
-  console.log(`${extensionId} activated from the isolated profile`);
-} finally {
-  rmSync(sandbox, { recursive: true, force: true });
-}
+await verifyInCleanProfile({ root, install: [vsix], extensionId, version: manifest.version });
