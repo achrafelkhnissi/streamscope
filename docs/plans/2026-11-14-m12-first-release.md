@@ -461,17 +461,17 @@ Expected: PASS, including the live capture. The listing at `https://marketplace.
 - [ ] **Step 1: Download the released VSIX**
 
 Run: `gh release download v0.1.0 --pattern 'streamscope-0.1.0.vsix' --dir <a new empty directory>`
-Expected: one file, the same size as the run artifact.
+Expected: one file whose `shasum -a 256` equals the run artifact's.
 
 - [ ] **Step 2: You create a token and publish from your own terminal**
 
 Create an access token at open-vsx.org (Settings → Access Tokens), then in a terminal in the repository:
 
 ```bash
-read -rs OVSX_PAT && export OVSX_PAT && npm exec --no -- ovsx publish --packagePath <dir>/streamscope-0.1.0.vsix; unset OVSX_PAT
+( read -rs OVSX_PAT && export OVSX_PAT && npm exec --no -- ovsx publish --packagePath <dir>/streamscope-0.1.0.vsix )
 ```
 
-The token is typed into the hidden prompt, so it is not in the command line, the shell history or any file. `ovsx` reads the pre-release flag from the VSIX.
+The token is typed into the hidden prompt, so it is not in the command line, the shell history or any file, and the subshell drops it on every exit, Ctrl+C included. Delete the token in Step 3 even if the publish fails. `ovsx` reads the pre-release flag from the VSIX.
 Expected: "Published achrafelkhnissi.streamscope v0.1.0".
 
 - [ ] **Step 3: You set up trusted publishing and delete the token**

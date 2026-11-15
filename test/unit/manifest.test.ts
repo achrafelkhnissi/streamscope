@@ -448,6 +448,21 @@ describe('extension manifest', () => {
 });
 
 describe('README and changelog', () => {
+  it('states in the changelog exactly which values are masked and dropped on redirects', () => {
+    expect(changelog).not.toContain('drop any header that carries a secret');
+    expect(changelog).toContain('Credentials written in a URL query string are not masked');
+    expect(changelog).toContain(
+      'redirects to another origin drop credential headers and any header that contains one of those values',
+    );
+  });
+
+  it('tells testers how to report a secret and what to keep out of the public results', () => {
+    expect(trial).toContain('say where it showed, never the value');
+    expect(trial).toContain('rotate the token');
+    expect(trial).toContain('only public issue numbers or neutral summaries');
+    expect(trial).toContain('the publisher is achrafelkhnissi');
+  });
+
   it('documents # @stream ndjson for a first event that waits for the second line', () => {
     expect(readme).toMatch(/^\| `# @stream ndjson` +\|/m);
     expect(readme).toContain(

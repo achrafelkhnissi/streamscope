@@ -13,7 +13,7 @@ M12 is accepted when the team confirms "no copied ids, events live".
 
 ## Install
 
-- In VS Code, search for "Streamscope" in the Extensions view and install it. `0.1.0` is a pre-release.
+- In VS Code, search for "Streamscope" in the Extensions view and check that the publisher is achrafelkhnissi before you install it. `0.1.0` is a pre-release.
 - Or from a terminal: `code --install-extension achrafelkhnissi.streamscope --pre-release`.
 - REST Client can stay installed; see [Using Streamscope with REST Client](../README.md#using-streamscope-with-rest-client).
 
@@ -41,6 +41,9 @@ A stream labelled `application/json` is recognised as NDJSON when its second lin
 - Anything you can reproduce with a made-up request: open a GitHub issue with the **Bug report** form.
 - Anything that needs the team's own backend: tell Achraf directly.
 - Never paste tokens, real ids, real URLs or the team's `.http` files into an issue.
+- If a token or secret showed in clear text, say where it showed, never the value, and attach no screenshot of it; then rotate the token. Response bodies, events and response headers show tokens exactly as the server sent them, which is expected.
+- Share logs or `.http` excerpts only after replacing hosts, ids and values, and never share environment files.
+- This file is public: the Issues column holds only public issue numbers or neutral summaries, with no hosts, event names or ids from the team's backend.
 
 ## Results
 
