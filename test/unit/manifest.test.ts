@@ -466,7 +466,7 @@ describe('README and changelog', () => {
   it('documents # @stream ndjson for a first event that waits for the second line', () => {
     expect(readme).toMatch(/^\| `# @stream ndjson` +\|/m);
     expect(readme).toContain(
-      'so a `first(…)` capture from its first line waits for that line; `# @stream ndjson` on the request reads it as NDJSON from the first line.',
+      'so a `first(…)` capture that matches the first line resolves only when the second line arrives. Put `# @stream ndjson` on the request to read it as NDJSON from the first line.',
     );
     expect(trial).toContain('Put `# @stream ndjson` on the request');
     expect(changelog).toContain('`# @stream`');

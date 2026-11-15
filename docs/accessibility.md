@@ -1,10 +1,10 @@
 # Accessibility
 
-Streamscope is designed to be used from the keyboard alone, with a screen reader, and in any VS Code colour theme. This page describes the keys of the response panel, what it gives screen readers, the themes and keyboard steps it was checked with and when, and the VoiceOver check that is still open.
+Streamscope is designed to be used from the keyboard alone, with a screen reader, and in any VS Code colour theme. This page describes the keys of the response panel, what it gives screen readers, the themes and keyboard steps it was checked with and when, and a VoiceOver checklist.
 
 ## Keyboard
 
-Streamscope's actions are commands under **Streamscope:** in the Command Palette (`Cmd+Shift+P`, or `Ctrl+Shift+P` on Windows and Linux), so you can run any of them without the mouse and bind them to keys in Keyboard Shortcuts.
+Streamscope's commands are under **Streamscope:** in the Command Palette (`Cmd+Shift+P`, or `Ctrl+Shift+P` on Windows and Linux), so you can run any of them without the mouse and bind them to keys in Keyboard Shortcuts.
 
 | Where          | Keys                                                    | What happens                                                                                |
 | -------------- | ------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
@@ -66,7 +66,7 @@ The capture step used an event opened in the editor. A body opened in the editor
 
 ## VoiceOver checklist
 
-This check is still open. Run it on macOS with Streamscope installed and VoiceOver on (`Cmd+F5`). You need a server that streams NDJSON or Server-Sent Events: a `RUN_STARTED` event with `"threadId": "thread-1"`, then a few thousand `TEXT_MESSAGE_CONTENT` events, each sent while the stream runs. Send this request from an untitled `http` document, with the stream's URL in place of the example one:
+Run this checklist on macOS with Streamscope installed and VoiceOver on (`Cmd+F5`). You need a server that streams NDJSON or Server-Sent Events: a `RUN_STARTED` event with `"threadId": "thread-1"`, then a few thousand `TEXT_MESSAGE_CONTENT` events, each sent while the stream runs. Send this request from an untitled `http` document, with the stream's URL in place of the example one:
 
 ```http
 # @name walkthrough
